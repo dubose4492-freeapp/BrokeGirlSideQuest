@@ -3,78 +3,185 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Daily Free Finder</title>
+<title>BrokeGirlSideQuest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Baloo+2:wght@500;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --green-900: #0f3d2e; --green-800: #1b4a38; --green-100: #dcefe4; --green-700: #1f6b4c;
-    --amber-400: #f2b544; --amber-100: #fdf0da;
-    --stone-50: #faf8f5; --stone-100: #f1ede6; --stone-200: #e4ddd2;
-    --stone-500: #7a7266; --stone-700: #4a453c; --stone-900: #292520;
+    /* ---- pastel 8-bit palette ---- */
+    --ink: #2b1d3f;            /* near-black plum, all borders/text */
+    --bg: #fdf1ff;             /* pastel lilac page background */
+    --panel: #fffdf9;          /* card white-cream */
+    --pink: #ff8fc7;
+    --pink-soft: #ffe1f2;
+    --lav: #a68bff;
+    --lav-soft: #ece3ff;
+    --mint: #6ee7b7;
+    --mint-soft: #d7fbec;
+    --sky: #7cc4ff;
+    --sky-soft: #dcefff;
+    --sun: #ffd23f;
+    --sun-soft: #fff2cc;
+    --coral: #ff6b6b;
+    --coral-soft: #ffe1e1;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; background: var(--stone-50); color: var(--stone-900); }
-  header { background: var(--green-900); color: white; padding: 14px 18px; position: sticky; top: 0; z-index: 10; }
+  html { image-rendering: pixelated; }
+  body {
+    margin: 0; font-family: 'Baloo 2', system-ui, sans-serif; color: var(--ink); font-size: 16px; line-height: 1.5;
+    background: var(--bg);
+    background-image:
+      radial-gradient(var(--lav-soft) 2px, transparent 2px),
+      radial-gradient(var(--pink-soft) 2px, transparent 2px);
+    background-size: 28px 28px;
+    background-position: 0 0, 14px 14px;
+  }
+  .pixel-font { font-family: 'Press Start 2P', monospace; }
+
+  /* notched "8-bit window" corner cut, reused on header/nav/cards/buttons */
+  .notch {
+    clip-path: polygon(
+      0 8px, 8px 8px, 8px 0,
+      calc(100% - 8px) 0, calc(100% - 8px) 8px, 100% 8px,
+      100% calc(100% - 8px), calc(100% - 8px) calc(100% - 8px), calc(100% - 8px) 100%,
+      8px 100%, 8px calc(100% - 8px), 0 calc(100% - 8px)
+    );
+  }
+
+  header {
+    background: var(--lav); color: var(--ink); padding: 14px 18px 18px;
+    position: sticky; top: 0; z-index: 10;
+    border-bottom: 4px solid var(--ink);
+  }
   header .row { display: flex; align-items: center; justify-content: space-between; max-width: 1000px; margin: 0 auto; flex-wrap: wrap; gap: 10px; }
-  header h1 { font-size: 18px; margin: 0; }
-  header .sub { font-size: 12px; color: #a9d6c1; margin-top: 2px; }
-  .refresh-btn { background: var(--amber-400); color: var(--green-900); border: none; font-weight: 700; padding: 10px 16px; border-radius: 999px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 6px; }
-  .refresh-btn:disabled { opacity: 0.6; cursor: default; }
-  .spin { display: inline-block; animation: spin 1s linear infinite; }
+  header .brand { display: flex; align-items: center; gap: 10px; }
+  header .coin {
+    width: 52px; height: 52px; background: var(--sun-soft); border: 3px solid var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 3px 3px 0 var(--ink); flex: none; padding: 4px;
+  }
+  header .coin svg { width: 100%; height: 100%; }
+  .mascot-empty { width: 90px; height: 90px; margin: 0 auto 10px; }
+  header h1 { font-family: 'Press Start 2P', monospace; font-size: 13px; margin: 0; line-height: 1.6; letter-spacing: 0.5px; text-shadow: 2px 2px 0 var(--panel); }
+  header .sub { font-size: 13px; color: #1f1030; margin-top: 4px; font-weight: 800; }
+  .refresh-btn {
+    background: var(--sun); color: var(--ink); border: 3px solid var(--ink); font-weight: 800;
+    padding: 11px 18px; cursor: pointer; font-size: 15px; display: flex; align-items: center; gap: 8px;
+    box-shadow: 4px 4px 0 var(--ink); transition: transform .08s, box-shadow .08s;
+  }
+  .refresh-btn:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+  .refresh-btn:disabled { opacity: 0.7; cursor: default; }
+  .spin { display: inline-block; animation: spin .8s steps(8) infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  nav { background: white; border-bottom: 1px solid var(--stone-200); position: sticky; top: 62px; z-index: 9; overflow-x: auto; white-space: nowrap; }
+
+  nav { background: var(--panel); border-bottom: 4px solid var(--ink); position: sticky; top: 74px; z-index: 9; overflow-x: auto; white-space: nowrap; }
   nav .inner { max-width: 1000px; margin: 0 auto; display: flex; }
-  nav button { background: none; border: none; border-bottom: 3px solid transparent; padding: 12px 14px; font-size: 13px; font-weight: 600; color: var(--stone-500); cursor: pointer; }
-  nav button.active { color: var(--green-800); border-bottom-color: var(--green-700); }
+  nav button {
+    background: none; border: none; border-right: 2px dashed var(--lav-soft);
+    padding: 13px 16px; font-size: 14px; font-weight: 800; color: #4a3d68; cursor: pointer;
+    font-family: 'Baloo 2', sans-serif;
+  }
+  nav button.active { color: var(--ink); background: var(--sun-soft); box-shadow: inset 0 -4px 0 var(--pink); }
   main { max-width: 1000px; margin: 0 auto; padding: 18px; }
 
   .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-  .filter-chip { background: white; border: 1px solid var(--stone-200); border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--stone-700); cursor: pointer; }
-  .filter-chip.active { background: var(--green-800); color: white; border-color: var(--green-800); }
+  .filter-chip {
+    background: var(--panel); border: 2px solid var(--ink); border-radius: 20px; padding: 6px 12px;
+    font-size: 13px; font-weight: 800; color: var(--ink); cursor: pointer; box-shadow: 2px 2px 0 var(--ink);
+  }
+  .filter-chip.active { background: var(--mint); }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
-  .item-card { background: white; border: 1px solid var(--stone-200); border-radius: 16px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.03); display: flex; flex-direction: column; }
-  .item-media { height: 92px; display: flex; align-items: center; justify-content: center; font-size: 40px; background: var(--green-100); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+  .item-card {
+    background: var(--panel); border: 3px solid var(--ink); overflow: hidden;
+    box-shadow: 5px 5px 0 var(--lav); display: flex; flex-direction: column;
+    transition: transform .1s, box-shadow .1s;
+  }
+  .item-card:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--lav); }
+  .item-media { height: 88px; display: flex; align-items: center; justify-content: center; font-size: 38px; background: var(--sky-soft); border-bottom: 3px solid var(--ink); }
   .item-body { padding: 14px; flex: 1; display: flex; flex-direction: column; gap: 6px; }
-  .item-name { font-size: 14px; font-weight: 700; line-height: 1.3; margin: 0; }
-  .item-store { font-size: 12px; color: var(--stone-500); }
-  .item-price-row { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
-  .item-price { font-weight: 800; font-size: 15px; color: var(--green-800); }
-  .item-price.paid { color: var(--stone-900); }
-  .cat-badge { font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: var(--amber-100); color: #8a5a00; }
-  .req-badge { font-size: 11px; font-weight: 600; color: var(--stone-500); }
-  .item-meta { font-size: 11px; color: var(--stone-500); display: flex; gap: 10px; flex-wrap: wrap; }
-  .item-actions { display: flex; border-top: 1px solid var(--stone-100); }
-  .item-actions button { flex: 1; background: none; border: none; padding: 10px 4px; font-size: 11px; font-weight: 700; color: var(--stone-700); cursor: pointer; border-right: 1px solid var(--stone-100); }
+  .item-name { font-size: 16px; font-weight: 800; line-height: 1.4; margin: 0; }
+  .item-store { font-size: 13px; color: #4a3d68; font-weight: 700; }
+  .item-price-row { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; gap: 6px; }
+  .item-price { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 17px; color: #0d5c3c; background: var(--mint-soft); padding: 3px 9px; border: 2px solid var(--ink); letter-spacing: -0.5px; }
+  .item-price.paid { color: var(--ink); background: var(--pink-soft); }
+  .cat-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun-soft); color: #5c4400; white-space: nowrap; }
+  .req-badge { font-size: 13px; font-weight: 700; color: #4a3d68; }
+  .item-meta { font-size: 12px; color: #4a3d68; display: flex; gap: 10px; flex-wrap: wrap; font-weight: 700; }
+  .item-actions { display: flex; border-top: 3px solid var(--ink); }
+  .item-actions button {
+    flex: 1; background: var(--lav-soft); border: none; padding: 11px 4px; font-size: 12px; font-weight: 800;
+    color: var(--ink); cursor: pointer; border-right: 2px solid var(--ink); font-family: 'Baloo 2', sans-serif;
+  }
   .item-actions button:last-child { border-right: none; }
-  .item-actions button.saved { color: #c23a3a; }
-  .item-actions button:hover { background: var(--stone-50); }
+  .item-actions button.saved { color: var(--coral); background: var(--coral-soft); }
+  .item-actions button:hover { background: var(--sun-soft); }
 
-  .empty-state { text-align: center; padding: 60px 20px; color: var(--stone-500); grid-column: 1 / -1; }
+  .empty-state { text-align: center; padding: 40px 20px; color: #4a3d68; grid-column: 1 / -1; font-weight: 700; font-size: 15px; }
+  .empty-state b { color: var(--ink); }
   .prefs { max-width: 420px; }
-  .prefs label { font-size: 13px; font-weight: 700; display: block; margin: 14px 0 6px; }
-  .prefs input { width: 100%; padding: 9px 10px; border: 1px solid var(--stone-200); border-radius: 8px; font-size: 14px; }
-  .prefs .hint { font-size: 12px; color: var(--stone-500); margin-top: 6px; line-height: 1.5; }
-  .prefs .hint a { color: var(--green-700); }
-  .dashboard-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr)); gap: 10px; margin-bottom: 18px; }
-  .stat { background: white; border: 1px solid var(--stone-200); border-radius: 14px; padding: 12px; text-align: center; }
-  .stat .num { font-size: 22px; font-weight: 800; color: var(--green-800); }
-  .stat .lbl { font-size: 11px; color: var(--stone-500); margin-top: 2px; }
-  .error-box { background: #fde8e8; color: #8a2020; border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
-  .warn-box { background: var(--amber-100); color: #8a5a00; border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px; }
-  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--green-900); color: white; padding: 10px 18px; border-radius: 999px; font-size: 13px; z-index: 20; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .prefs label { font-size: 14px; font-weight: 800; display: block; margin: 14px 0 6px; }
+  .prefs input { width: 100%; padding: 10px; border: 3px solid var(--ink); font-size: 14px; font-family: 'Baloo 2', sans-serif; background: var(--panel); }
+  .prefs .hint { font-size: 13px; color: #4a3d68; margin-top: 6px; line-height: 1.6; font-weight: 700; }
+  .prefs .hint a { color: var(--lav); }
+  .dashboard-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr)); gap: 12px; margin-bottom: 18px; }
+  .stat { background: var(--panel); border: 3px solid var(--ink); padding: 14px; text-align: center; box-shadow: 4px 4px 0 var(--pink); }
+  .stat .num { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 30px; color: var(--ink); letter-spacing: -1px; }
+  .stat .lbl { font-size: 12px; color: #4a3d68; margin-top: 6px; font-weight: 800; }
+  .error-box { background: var(--coral-soft); color: #7a1414; border: 3px solid var(--coral); padding: 12px 14px; font-size: 14px; margin-bottom: 14px; font-weight: 700; }
+  .warn-box { background: var(--sun-soft); color: #5c4400; border: 3px solid var(--sun); padding: 12px 14px; font-size: 14px; margin-bottom: 14px; font-weight: 700; }
+  .toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--sun);
+    padding: 12px 20px; font-size: 14px; z-index: 20; opacity: 0; transition: opacity .2s; pointer-events: none;
+    font-family: 'Baloo 2', sans-serif; font-weight: 800; border: 3px solid var(--ink); box-shadow: 4px 4px 0 var(--lav);
+  }
   .toast.show { opacity: 1; }
+
+  .pixel-footer { border-top: 4px solid var(--ink); line-height: 0; margin-top: 24px; }
+  .pixel-footer svg { display: block; width: 100%; height: 120px; }
+  .pixel-footer-caption {
+    text-align: center; font-family: 'Press Start 2P', monospace; font-size: 10px;
+    color: var(--ink); background: var(--sun-soft); padding: 10px; border-top: 4px solid var(--ink);
+  }
 </style>
 </head>
 <body>
 
 <header>
   <div class="row">
-    <div>
-      <h1>Daily Free Finder</h1>
-      <div class="sub" id="lastScanLabel">Not scanned yet</div>
+    <div class="brand">
+      <div class="coin"><svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="kawaii cat mascot">
+  <polygon points="22,46 42,10 52,44" fill="#ff8fc7" stroke="#2b1d3f" stroke-width="4" stroke-linejoin="round"/>
+  <polygon points="98,46 78,10 68,44" fill="#ff8fc7" stroke="#2b1d3f" stroke-width="4" stroke-linejoin="round"/>
+  <polygon points="30,42 42,20 46,42" fill="#ffe1f2"/>
+  <polygon points="90,42 78,20 74,42" fill="#ffe1f2"/>
+  <circle cx="60" cy="66" r="40" fill="#fffdf9" stroke="#2b1d3f" stroke-width="4"/>
+  <line x1="6" y1="60" x2="30" y2="64" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="6" y1="70" x2="30" y2="70" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="114" y1="60" x2="90" y2="64" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="114" y1="70" x2="90" y2="70" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="28" cy="80" r="8" fill="#ff8fc7" opacity="0.55"/>
+  <circle cx="92" cy="80" r="8" fill="#ff8fc7" opacity="0.55"/>
+  <circle cx="42" cy="62" r="6.5" fill="#2b1d3f"/>
+  <circle cx="78" cy="62" r="6.5" fill="#2b1d3f"/>
+  <circle cx="44.5" cy="59.5" r="2" fill="#fffdf9"/>
+  <circle cx="80.5" cy="59.5" r="2" fill="#fffdf9"/>
+  <polygon points="57,70 63,70 60,75" fill="#ff8fc7"/>
+  <path d="M50,78 Q60,88 70,78" stroke="#2b1d3f" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <g>
+    <polygon points="45,24 60,16 60,32" fill="#6ee7b7" stroke="#2b1d3f" stroke-width="3" stroke-linejoin="round"/>
+    <polygon points="75,24 60,16 60,32" fill="#6ee7b7" stroke="#2b1d3f" stroke-width="3" stroke-linejoin="round"/>
+    <circle cx="60" cy="24" r="5" fill="#ff6b6b" stroke="#2b1d3f" stroke-width="2.5"/>
+  </g>
+</svg></div>
+      <div>
+        <h1>BrokeGirl<br>SideQuest</h1>
+        <div class="sub" id="lastScanLabel">no quest run yet</div>
+      </div>
     </div>
     <button class="refresh-btn" id="refreshBtn" onclick="runFullScan()">
-      <span id="refreshIcon">&#8635;</span> <span id="refreshLabel">Refresh</span>
+      <span id="refreshIcon">&#8635;</span> <span id="refreshLabel">run quest</span>
     </button>
   </div>
 </header>
@@ -85,6 +192,12 @@
   <div id="statusArea"></div>
   <div id="content"></div>
 </main>
+
+<footer class="pixel-footer">
+  <svg viewBox="0 0 80 20" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" role="img" aria-label="pixel village banner"><rect x="0" y="0" width="80" height="9" fill="#ffe1f2"/><rect x="0" y="9" width="80" height="7" fill="#dcefff"/><rect x="74" y="1" width="4" height="3" fill="#ffd23f"/><rect x="6" y="2" width="3" height="1" fill="#fffdf9"/><rect x="5" y="3" width="5" height="1" fill="#fffdf9"/><rect x="28" y="1" width="3" height="1" fill="#fffdf9"/><rect x="27" y="2" width="5" height="1" fill="#fffdf9"/><rect x="54" y="3" width="3" height="1" fill="#fffdf9"/><rect x="53" y="4" width="5" height="1" fill="#fffdf9"/><rect x="0" y="16" width="80" height="1" fill="#8fe0ac"/><rect x="0" y="17" width="80" height="3" fill="#4fae7f"/><rect x="4" y="18" width="1" height="1" fill="#67c493"/><rect x="9" y="18" width="1" height="1" fill="#67c493"/><rect x="15" y="18" width="1" height="1" fill="#67c493"/><rect x="22" y="18" width="1" height="1" fill="#67c493"/><rect x="29" y="18" width="1" height="1" fill="#67c493"/><rect x="37" y="18" width="1" height="1" fill="#67c493"/><rect x="44" y="18" width="1" height="1" fill="#67c493"/><rect x="50" y="18" width="1" height="1" fill="#67c493"/><rect x="57" y="18" width="1" height="1" fill="#67c493"/><rect x="64" y="18" width="1" height="1" fill="#67c493"/><rect x="70" y="18" width="1" height="1" fill="#67c493"/><rect x="76" y="18" width="1" height="1" fill="#67c493"/><rect x="4" y="13" width="2" height="3" fill="#b9835a"/><rect x="4" y="7" width="2" height="2" fill="#4fae7f"/><rect x="4" y="7" width="1" height="2" fill="#6ee7b7"/><rect x="3" y="9" width="4" height="2" fill="#4fae7f"/><rect x="3" y="9" width="1" height="2" fill="#6ee7b7"/><rect x="2" y="11" width="7" height="2" fill="#4fae7f"/><rect x="2" y="11" width="2" height="2" fill="#6ee7b7"/><rect x="12" y="11" width="10" height="5" fill="#fffaf0"/><rect x="12" y="11" width="2" height="5" fill="#ffe9d6"/><rect x="16" y="7" width="2" height="1" fill="#ff8fc7"/><rect x="15" y="8" width="5" height="1" fill="#ff8fc7"/><rect x="13" y="9" width="8" height="1" fill="#ff8fc7"/><rect x="11" y="10" width="12" height="1" fill="#e8629f"/><rect x="16" y="13" width="2" height="3" fill="#2b1d3f"/><rect x="14" y="12" width="2" height="2" fill="#7cc4ff"/><rect x="27" y="13" width="2" height="3" fill="#b9835a"/><rect x="27" y="7" width="2" height="2" fill="#4fae7f"/><rect x="27" y="7" width="1" height="2" fill="#6ee7b7"/><rect x="26" y="9" width="4" height="2" fill="#4fae7f"/><rect x="26" y="9" width="1" height="2" fill="#6ee7b7"/><rect x="25" y="11" width="7" height="2" fill="#4fae7f"/><rect x="25" y="11" width="2" height="2" fill="#6ee7b7"/><rect x="37" y="13" width="1" height="3" fill="#b9835a"/><rect x="37" y="8" width="1" height="2" fill="#4fae7f"/><rect x="37" y="8" width="1" height="2" fill="#6ee7b7"/><rect x="36" y="10" width="3" height="2" fill="#4fae7f"/><rect x="36" y="10" width="1" height="2" fill="#6ee7b7"/><rect x="35" y="12" width="5" height="2" fill="#4fae7f"/><rect x="35" y="12" width="1" height="2" fill="#6ee7b7"/><rect x="46" y="11" width="10" height="5" fill="#fffaf0"/><rect x="46" y="11" width="2" height="5" fill="#ffe9d6"/><rect x="50" y="7" width="2" height="1" fill="#ff8fc7"/><rect x="49" y="8" width="5" height="1" fill="#ff8fc7"/><rect x="47" y="9" width="8" height="1" fill="#ff8fc7"/><rect x="45" y="10" width="12" height="1" fill="#e8629f"/><rect x="50" y="13" width="2" height="3" fill="#2b1d3f"/><rect x="48" y="12" width="2" height="2" fill="#7cc4ff"/><rect x="62" y="13" width="2" height="3" fill="#b9835a"/><rect x="62" y="7" width="2" height="2" fill="#4fae7f"/><rect x="62" y="7" width="1" height="2" fill="#6ee7b7"/><rect x="61" y="9" width="4" height="2" fill="#4fae7f"/><rect x="61" y="9" width="1" height="2" fill="#6ee7b7"/><rect x="60" y="11" width="7" height="2" fill="#4fae7f"/><rect x="60" y="11" width="2" height="2" fill="#6ee7b7"/><rect x="72" y="13" width="1" height="3" fill="#b9835a"/><rect x="72" y="8" width="1" height="2" fill="#4fae7f"/><rect x="72" y="8" width="1" height="2" fill="#6ee7b7"/><rect x="71" y="10" width="3" height="2" fill="#4fae7f"/><rect x="71" y="10" width="1" height="2" fill="#6ee7b7"/><rect x="70" y="12" width="5" height="2" fill="#4fae7f"/><rect x="70" y="12" width="1" height="2" fill="#6ee7b7"/></svg>
+</footer>
+<div class="pixel-footer-caption">thanks for questing, bestie 🌿</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -153,6 +266,8 @@ const KNOWN_CHAINS = [
   "smoothie king", "jamba juice", "auntie anne", "cinnabon", "baskin robbins",
   "cold stone", "sonic drive"
 ];
+
+const CAT_SVG = `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="kawaii cat mascot"> <polygon points="22,46 42,10 52,44" fill="#ff8fc7" stroke="#2b1d3f" stroke-width="4" stroke-linejoin="round"/> <polygon points="98,46 78,10 68,44" fill="#ff8fc7" stroke="#2b1d3f" stroke-width="4" stroke-linejoin="round"/> <polygon points="30,42 42,20 46,42" fill="#ffe1f2"/> <polygon points="90,42 78,20 74,42" fill="#ffe1f2"/> <circle cx="60" cy="66" r="40" fill="#fffdf9" stroke="#2b1d3f" stroke-width="4"/> <line x1="6" y1="60" x2="30" y2="64" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/> <line x1="6" y1="70" x2="30" y2="70" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/> <line x1="114" y1="60" x2="90" y2="64" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/> <line x1="114" y1="70" x2="90" y2="70" stroke="#2b1d3f" stroke-width="2.5" stroke-linecap="round"/> <circle cx="28" cy="80" r="8" fill="#ff8fc7" opacity="0.55"/> <circle cx="92" cy="80" r="8" fill="#ff8fc7" opacity="0.55"/> <circle cx="42" cy="62" r="6.5" fill="#2b1d3f"/> <circle cx="78" cy="62" r="6.5" fill="#2b1d3f"/> <circle cx="44.5" cy="59.5" r="2" fill="#fffdf9"/> <circle cx="80.5" cy="59.5" r="2" fill="#fffdf9"/> <polygon points="57,70 63,70 60,75" fill="#ff8fc7"/> <path d="M50,78 Q60,88 70,78" stroke="#2b1d3f" stroke-width="3" fill="none" stroke-linecap="round"/> <g> <polygon points="45,24 60,16 60,32" fill="#6ee7b7" stroke="#2b1d3f" stroke-width="3" stroke-linejoin="round"/> <polygon points="75,24 60,16 60,32" fill="#6ee7b7" stroke="#2b1d3f" stroke-width="3" stroke-linejoin="round"/> <circle cx="60" cy="24" r="5" fill="#ff6b6b" stroke="#2b1d3f" stroke-width="2.5"/> </g> </svg>`;
 
 const CATEGORIES = {
   dashboard: { label: "Dashboard" },
@@ -337,8 +452,8 @@ function renderList(key) {
   const failed = state.error && state.error.includes(cat.label);
   let body;
   if (filtered.length === 0) {
-    if (failed) body = `<div class="empty-state">This category's search failed on the last refresh — see the error above. Try Refresh again.</div>`;
-    else if (!state.lastScan) body = `<div class="empty-state">Click <b>Refresh</b> above to run today's search.</div>`;
+    if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit Run Quest again.</div>`;
+    else if (!state.lastScan) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top to pull today's loot.</div>`;
     else body = `<div class="empty-state">No results match this filter.</div>`;
   } else {
     body = filtered.map(itemCard).join("");
@@ -350,9 +465,9 @@ function renderDashboard() {
   const counts = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "prefs")
     .map(k => ({ label: CATEGORIES[k].icon + " " + CATEGORIES[k].label, count: (state.results[k] || []).length }));
   return `<div class="dashboard-stats">${counts.map(c => `<div class="stat"><div class="num">${c.count}</div><div class="lbl">${c.label}</div></div>`).join("")}
-    <div class="stat"><div class="num">${state.saved.size}</div><div class="lbl">❤️ Saved</div></div>
+    <div class="stat"><div class="num">${state.saved.size}</div><div class="lbl">💖 Saved</div></div>
   </div>
-  ${state.lastScan ? "" : `<div class="empty-state">Click <b>Refresh</b> above to run today's live search for your area.</div>`}`;
+  ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top to start today's live search for your area.</div>`}`;
 }
 
 function renderPrefs() {
@@ -372,7 +487,7 @@ function renderPrefs() {
 
 function render() {
   buildNav();
-  document.getElementById("lastScanLabel").textContent = state.lastScan ? `Last Updated: ${state.lastScan}` : "Not scanned yet";
+  document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "prefs") content.innerHTML = renderPrefs();
@@ -596,7 +711,7 @@ async function runFullScan() {
   state.scanning = false;
   btn.disabled = false;
   icon.classList.remove("spin");
-  label.textContent = "Refresh";
+  label.textContent = "run quest";
   render();
 }
 
