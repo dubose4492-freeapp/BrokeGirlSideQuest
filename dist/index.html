@@ -192,7 +192,7 @@
 <header>
   <div class="row">
     <div class="brand">
-      <div class="coin"><img src="mascot.jpg" alt="kawaii cat mascot" loading="eager"></div>
+      <div class="coin"><img src="images/mascot.jpg" alt="kawaii cat mascot" loading="eager"></div>
       <div>
         <h1>BrokeGirl<br>SideQuest</h1>
         <div class="sub" id="lastScanLabel">no quest run yet</div>
@@ -257,9 +257,9 @@
 </main>
 
 <footer class="pixel-footer">
-  <img src="banner.jpg" alt="pixel street scene: grocery store and boba shop">
+  <img src="images/banner.jpg" alt="pixel street scene: grocery store and boba shop">
 </footer>
-<div class="pixel-footer-caption">thanks for questing, bestie 🌿</div>
+<div class="pixel-footer-caption">thanks for questing, bestie 🌿-claraann</div>
 
 <div class="toast" id="toast"></div>
 
@@ -281,7 +281,7 @@
 // Target grocery staples only — per spec, nothing else is priced/searched.
 const GROCERY_ITEMS = ["Bread", "Eggs", "Chicken", "Ground beef", "Cheese", "Butter", "Milk", "Adobo seasoning"];
 
-const CAT_SVG = `<img src="mascot.jpg" alt="kawaii cat mascot">`;
+const CAT_SVG = `<img src="images/mascot.jpg" alt="kawaii cat mascot">`;
 
 const CATEGORIES = {
   dashboard: { label: "Dashboard" },
@@ -373,6 +373,70 @@ function priceLabel(item, cat) {
   return cat.isPriced ? "See price" : "FREE / Varies";
 }
 
+// Picks an emoji based on what the item actually IS (from its title/store
+// text) rather than just its category — e.g. a free smoothie shows a
+// smoothie cup instead of the generic Restaurant Deals burger. Order
+// matters: more specific patterns are checked before generic ones. Falls
+// back to the category's own icon (then a gift box) if nothing matches.
+const ITEM_EMOJI_RULES = [
+  [/\bsmoothie/i, "🥤"],
+  [/\bboba\b|bubble tea/i, "🧋"],
+  [/\bcoffee\b|latte|espresso|cappuccino|macchiato|cold brew/i, "☕"],
+  [/\bmilkshake|\bshake\b/i, "🥤"],
+  [/\bjuice\b/i, "🧃"],
+  [/\bbeer\b/i, "🍺"],
+  [/\bwine\b/i, "🍷"],
+  [/\bpizza/i, "🍕"],
+  [/\bburger|cheeseburger/i, "🍔"],
+  [/\btaco/i, "🌮"],
+  [/\bburrito/i, "🌯"],
+  [/\bhot dog/i, "🌭"],
+  [/\bsandwich|\bsub\b/i, "🥪"],
+  [/\bbagel/i, "🥯"],
+  [/\bpretzel/i, "🥨"],
+  [/\bdonut|doughnut/i, "🍩"],
+  [/ice cream|sundae|gelato/i, "🍦"],
+  [/\bcookie/i, "🍪"],
+  [/\bcake|cupcake/i, "🍰"],
+  [/\bpie\b/i, "🥧"],
+  [/\bfries\b/i, "🍟"],
+  [/\bpopcorn/i, "🍿"],
+  [/candy|chocolate/i, "🍫"],
+  [/\bchicken/i, "🍗"],
+  [/\bsushi/i, "🍣"],
+  [/ramen|\bnoodle/i, "🍜"],
+  [/pasta|spaghetti/i, "🍝"],
+  [/\bsalad/i, "🥗"],
+  [/\bsoup\b/i, "🍲"],
+  [/\bbread\b/i, "🍞"],
+  [/\begg\b|\beggs\b/i, "🥚"],
+  [/\bbeef\b|\bsteak\b|ground beef/i, "🥩"],
+  [/\bcheese\b/i, "🧀"],
+  [/\bbutter\b/i, "🧈"],
+  [/\bmilk\b/i, "🥛"],
+  [/\bfruit\b|\bapple\b|\bbanana\b/i, "🍎"],
+  [/t-?shirt|\btee\b/i, "👕"],
+  [/\bshoe|sneaker/i, "👟"],
+  [/backpack/i, "🎒"],
+  [/water bottle/i, "🚰"],
+  [/\btoy\b|lego|hasbro/i, "🧸"],
+  [/\bbook\b/i, "📚"],
+  [/makeup|beauty|skincare|cosmetic/i, "💄"],
+  [/\bsample/i, "🎁"],
+  [/\bpet\b|\bdog\b|\bpuppy\b/i, "🐾"],
+  [/seed|garden|plant/i, "🌱"],
+  [/ticket|concert|festival/i, "🎟️"]
+];
+
+function itemEmoji(item) {
+  const cat = CATEGORIES[item.category];
+  const text = `${item.title || ""} ${item.store || ""}`;
+  for (const [pattern, emoji] of ITEM_EMOJI_RULES) {
+    if (pattern.test(text)) return emoji;
+  }
+  return (cat && cat.icon) || "🎁";
+}
+
 function itemCard(item) {
   const cat = CATEGORIES[item.category];
 
@@ -389,7 +453,7 @@ function itemCard(item) {
     : "";
 
   return `<div class="item-card">
-    <div class="item-media">${cat.icon || "🎁"}</div>
+    <div class="item-media">${itemEmoji(item)}</div>
     <div class="item-body">
       <p class="item-name">${item.title}</p>
       <div class="item-store">${item.store}</div>
