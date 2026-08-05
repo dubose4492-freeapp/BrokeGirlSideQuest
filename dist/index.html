@@ -114,17 +114,6 @@
   nav button.active { color: var(--ink); background: var(--sun-soft); box-shadow: inset 0 -4px 0 var(--pink); }
   main { max-width: 1000px; margin: 0 auto; padding: 18px; }
 
-  .section-scan-row { display: flex; justify-content: flex-end; margin-bottom: 14px; }
-  .scan-section-btn {
-    background: var(--mint); color: #0B2A18; border: 3px solid var(--ink); font-weight: 800;
-    padding: 9px 14px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 7px;
-    font-family: 'Press Start 2P', monospace; box-shadow: 4px 4px 0 var(--ink);
-    transition: transform .08s, box-shadow .08s;
-  }
-  .scan-section-btn:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
-  .scan-section-btn:disabled { opacity: 0.6; cursor: default; }
-  .scan-section-btn .spin { display: inline-block; animation: spin .8s steps(8) infinite; }
-
   .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
   .filter-chip {
     background: var(--panel); border: 2px solid var(--ink); border-radius: 20px; padding: 6px 12px;
@@ -281,7 +270,7 @@
       </div>
     </div>
     <div class="header-actions">
-      <button class="refresh-btn" id="refreshBtn" onclick="runFullScan()">
+      <button class="refresh-btn" id="refreshBtn" onclick="handleScanClick()">
         <span id="refreshIcon">&#8635;</span> <span id="refreshLabel">run quest</span>
       </button>
       <button class="refresh-btn stop-btn" id="stopBtn" onclick="stopScan()" style="display:none;">
@@ -604,24 +593,17 @@ function renderList(key) {
       </button>`).join("")}
   </div>`;
 
-  const scanningThis = state.scanning && state.scanningKey === key;
-  const scanRow = `<div class="section-scan-row">
-    <button class="scan-section-btn" onclick="scanSingleCategory('${key}')" ${state.scanning ? "disabled" : ""}>
-      <span class="${scanningThis ? "spin" : ""}">&#8635;</span> ${scanningThis ? "scanning…" : "scan this section"}
-    </button>
-  </div>`;
-
   const failed = state.failedCategories.has(key);
   let body;
   if (filtered.length === 0) {
-    if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit "scan this section" again.</div>`;
-    else if (!state.lastScan && !scanningThis) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top for everything, or use <b>scan this section</b> above to just pull this one.</div>`;
-    else if (scanningThis) body = `<div class="empty-state">Scanning ${cat.label}…</div>`;
+    if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit the scan button again.</div>`;
+    else if (!state.lastScan && !(state.scanning && state.scanningKey === key)) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>scan ${cat.label.toLowerCase()}</b> up top to pull today's loot for this section.</div>`;
+    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}…</div>`;
     else body = `<div class="empty-state">No results match this filter.</div>`;
   } else {
     body = filtered.map(itemCard).join("");
   }
-  return scanRow + filterBar + `<div class="grid">${body}</div>`;
+  return filterBar + `<div class="grid">${body}</div>`;
 }
 
 // Rolls up everything the HUD bar and Quest Board need in one pass:
@@ -807,6 +789,16 @@ function renderTips() {
       </ul>
       <p class="tip-note">Download your carrier's app and check weekly — most of these deals expire and refresh on a set schedule.</p>
     </div>
+    <div class="tip-card">
+      <h3>🎂 Sign up for emails, apps &amp; birthday clubs</h3>
+      <p>One of the easiest ways to rack up freebies: sign up for a company's email list and app, and enter your birthday when it's asked for.</p>
+      <ul>
+        <li>Most restaurant &amp; retail apps (Starbucks, Sephora, IHOP, Denny's, Krispy Kreme, Bath &amp; Body Works, and many more) send a free item or a big discount during your birthday month/week just for having your birthday on file</li>
+        <li>Email sign-ups alone often unlock a welcome offer (10–20% off or a free item on your first order)</li>
+        <li>Loyalty apps also stack extra perks on top — points, surprise offers, and early access to sales</li>
+      </ul>
+      <p class="tip-note">Consider using a dedicated email address for these sign-ups to keep the freebie offers from burying your main inbox — and only give your real birthday to brands you trust, since some will sell/share that data.</p>
+    </div>
   </div>`;
 }
 
@@ -823,6 +815,7 @@ window.addEventListener("resize", syncNavOffset);
 function render() {
   buildNav();
   renderHud();
+  updateScanButton();
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
@@ -1080,7 +1073,8 @@ function stopScan() {
 // for conserving search/OpenRouter quota when someone only cares about
 // (and is currently looking at) one tab. Blocked while any other scan
 // (full or single) is already in flight, since they'd share the same
-// currentAbortController/state.results slot.
+// currentAbortController/state.results slot. Triggered via
+// handleScanClick() — never call this directly for "dashboard" or "tips".
 async function scanSingleCategory(key) {
   if (state.scanning || key === "dashboard" || key === "tips") return;
 
@@ -1090,7 +1084,9 @@ async function scanSingleCategory(key) {
   currentAbortController = new AbortController();
   state.failedCategories.delete(key);
   const btn = document.getElementById("refreshBtn");
+  const stopBtn = document.getElementById("stopBtn");
   if (btn) btn.disabled = true;
+  if (stopBtn) stopBtn.style.display = "flex";
   state.results[key] = []; // clear before this fetch so a failure never shows stale data
   render();
 
@@ -1106,15 +1102,56 @@ async function scanSingleCategory(key) {
     }
   }
 
+  if (state.stopRequested) showToast("Scan stopped");
+
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
   localStorage.setItem("dff_last_scan", state.lastScan);
   localStorage.setItem("dff_results", JSON.stringify(state.results));
 
   state.scanning = false;
   state.scanningKey = null;
+  state.stopRequested = false;
   currentAbortController = null;
   if (btn) btn.disabled = false;
+  if (stopBtn) stopBtn.style.display = "none";
   render();
+}
+
+// Single entry point for the header button — its meaning depends on
+// whichever tab is currently open: full "Run Quest" sweep on the
+// dashboard, or just that one tab's scan everywhere else. The "tips" tab
+// is static content with nothing to scan, so the button is a no-op there
+// (see updateScanButton(), which also disables/relabels it accordingly).
+function handleScanClick() {
+  if (state.scanning) return;
+  if (state.tab === "dashboard") { runFullScan(); return; }
+  const cat = CATEGORIES[state.tab];
+  if (!cat || cat.static) return; // tips — nothing to scan
+  scanSingleCategory(state.tab);
+}
+
+// Keeps the header button's label/enabled-state in sync with whichever
+// tab is open. Skipped entirely while a scan is actively running, since
+// runFullScan()/scanSingleCategory() are already driving the label
+// ("Scanning X (i/n)", "scanning…", "stopping…") during that time — this
+// only sets the IDLE label.
+function updateScanButton() {
+  const btn = document.getElementById("refreshBtn");
+  const label = document.getElementById("refreshLabel");
+  if (!btn || !label || state.scanning) return;
+  if (state.tab === "dashboard") {
+    btn.disabled = false;
+    label.textContent = "run quest";
+    return;
+  }
+  const cat = CATEGORIES[state.tab];
+  if (!cat || cat.static) {
+    btn.disabled = true;
+    label.textContent = "nothing to scan";
+  } else {
+    btn.disabled = false;
+    label.textContent = `scan ${cat.label.toLowerCase()}`;
+  }
 }
 
 refreshGeminiPromptBox();
