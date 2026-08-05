@@ -129,6 +129,18 @@
   .search-field { flex: 1; min-width: 130px; }
   .search-field label { font-size: 12px; font-weight: 800; display: block; margin-bottom: 6px; }
   .search-field input { width: 100%; padding: 10px; border: 3px solid var(--ink); font-size: 14px; font-family: 'Baloo 2', sans-serif; background: var(--bg); }
+  .ai-info {
+    background: var(--panel); border: 3px solid var(--ink); padding: 10px 14px;
+    margin-bottom: 16px; box-shadow: 4px 4px 0 var(--pink); font-size: 13.5px;
+  }
+  .ai-info summary { font-weight: 800; cursor: pointer; }
+  .ai-info-body { margin-top: 8px; }
+  .ai-info-body p { margin: 0 0 8px; }
+  .ai-info-body p:last-child { margin-bottom: 0; }
+  .ai-info-body a { color: var(--ink); text-decoration: underline; font-weight: 700; }
+  .ai-info-steps { margin: 0 0 8px; padding-left: 22px; }
+  .ai-info-steps li { margin-bottom: 6px; }
+  .ai-info-fineprint { font-size: 12px; opacity: .75; }
   .dashboard-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr)); gap: 12px; margin-bottom: 18px; }
   .stat { background: var(--panel); border: 3px solid var(--ink); padding: 14px; text-align: center; box-shadow: 4px 4px 0 var(--pink); }
   .stat .num { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 30px; color: var(--ink); letter-spacing: -1px; }
@@ -180,6 +192,29 @@
       <input id="radiusInput" type="number" min="1" max="100" placeholder="100" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); localStorage.setItem('dff_radius', String(v))" />
     </div>
   </div>
+  <details class="ai-info">
+    <summary>🔎 How this app looks for deals for you</summary>
+    <div class="ai-info-body">
+      <p>When you press the <b>Run Quest</b> button, this app asks a few different
+      search helpers to look for deals — not just one. If one helper is busy, it
+      just asks the next one instead. You don't have to do anything — this already
+      happens every time, all by itself.</p>
+      <p><b>Want one more helper?</b> There is an extra, free helper called
+      <b>Gemini</b> (made by Google) that you can turn on if you want. This part is
+      optional — the app works great without it too.</p>
+      <p style="margin-left:4px;">If you turn it on:</p>
+      <ol class="ai-info-steps">
+        <li>A small side panel opens next to this app in your web browser.</li>
+        <li>Every time you press <b>Run Quest</b>, Gemini automatically starts
+        searching too — you don't type anything yourself.</li>
+        <li>Gemini's answer shows up right there in that side panel for you to read.</li>
+      </ol>
+      <p><a href="#" onclick="alert('Ask whoever gave you this app for the gemini-sidebar-extension.zip file and the instructions inside it — turning it on takes a few clicks in Chrome. Someone tech-savvy can help you set it up in under 5 minutes.'); return false;">Tap here for how to turn it on</a></p>
+      <p class="ai-info-fineprint">This extra Gemini helper only works on a computer
+      (like a laptop or desktop) using the Google Chrome browser — it does not work
+      on a phone or tablet. It's completely optional.</p>
+    </div>
+  </details>
   <div id="statusArea"></div>
   <div id="content"></div>
 </main>
@@ -501,8 +536,45 @@ async function searchRestaurantCategory() {
   return data.results || [];
 }
 
+// Builds one combined plain-text prompt covering every tab's search, for
+// the optional Gemini-sidebar browser extension to hand to Gemini. Not
+// used by anything in this file directly — it's dispatched as a DOM event
+// below (see dailyFreeFinderRun) which a content script picks up if the
+// extension is installed; if it isn't, this is inert.
+function buildAiPrompt() {
+  const lines = [
+    `Find today's real, currently-active deals for someone in ${state.zip || "[ZIP not set]"} ` +
+      `within ${state.radius} miles. For each item below, list the specific offer, where to get it, ` +
+      `and any requirement (sign-up, loyalty app, minimum purchase) or expiration you can find. ` +
+      `Skip anything that looks expired or unverifiable.`,
+    ""
+  ];
+
+  for (const key of Object.keys(CATEGORIES)) {
+    if (key === "dashboard") continue;
+    const cat = CATEGORIES[key];
+    lines.push(`## ${cat.label}`);
+    if (key === "grocery") {
+      lines.push(`Current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
+    } else if (key === "restaurant") {
+      lines.push(`Free food / BOGO deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week.`);
+    } else {
+      lines.push(cat.query(state.zip, state.radius));
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 async function runFullScan() {
   if (state.scanning) return;
+
+  // Fire-and-forget: hands the same search list to the optional Gemini
+  // sidebar extension, if installed, so it can run in parallel with the
+  // fetches below. Harmless no-op with zero listeners if the extension
+  // isn't installed.
+  window.dispatchEvent(new CustomEvent("dailyFreeFinderRun", { detail: { prompt: buildAiPrompt() } }));
 
   state.scanning = true;
   state.error = null;
