@@ -21,10 +21,20 @@ encrypted secrets and proxy the requests server-side:
   third-party blog or news article, that source shows up as a separate
   "See Details" link.
 
+Both endpoints also now pull apart "roundup" posts — a blog listing deals
+at several different restaurants/stores in one article — into one card
+per restaurant/company instead of a single card for the whole post. With
+OpenRouter configured, the model is asked to return every qualifying deal
+it finds per snippet; without it, the regex fallback does its own
+best-effort version (a known-chain scan for restaurants, a "Brand is
+giving away ... free" pattern for the other tabs).
+
 Because `freebies.js` and `restaurant-deals.js` spend one extra search
-call per result resolving a real "Claim" link, a full "run quest" scan now
-uses noticeably more of your Tavily/Brave (and OpenRouter, if configured)
-quota than before — worth keeping an eye on if you're on a free tier.
+call per *offer* resolving a real "Claim" link, a full "run quest" scan
+now uses noticeably more of your Tavily/Brave (and OpenRouter, if
+configured) quota than before — and potentially more still now that a
+single roundup post can produce several offers instead of one. Worth
+keeping an eye on if you're on a free tier.
 
 ## Files in this package
 ```

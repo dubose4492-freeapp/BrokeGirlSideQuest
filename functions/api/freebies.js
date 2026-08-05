@@ -8,6 +8,11 @@
 // company/organization's own site — separate from whichever blog or
 // article the offer was found on. The client shows that source article as
 // "See Details" and the resolved link as "Claim".
+//
+// Roundup posts ("8 stores giving away free stuff this week") mention
+// several different companies/orgs in one page — both classification paths
+// below extract one offer PER COMPANY/ORG mentioned in a qualifying
+// snippet, not just one card per URL.
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -128,30 +133,69 @@ function dedupeItems(items) {
 }
 
 // ---------- Regex fallback classification ----------
+// No fixed brand list here (unlike restaurant-deals.js's chain map), so
+// multi-offer extraction leans on a "Brand Name is/are giving away/
+// offering ... free" pattern. If a snippet names more than one org this
+// way, emit one card per org; otherwise fall back to a single card the
+// same way this endpoint always used to.
+function findMultipleOrgMentions(text) {
+  const pattern = /\b([A-Z][A-Za-z&'.]*(?:\s+[A-Z][A-Za-z&'.]*){0,3})\s+(?:is|are)\s+(?:giving away|offering|handing out)\b[^.]{0,100}?\bfree\b/g;
+  const seen = new Set();
+  const found = [];
+  let m;
+  while ((m = pattern.exec(text)) !== null) {
+    const name = m[1].trim();
+    const key = name.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); found.push(name); }
+  }
+  return found;
+}
+
 function regexClassify(results, category) {
-  return results
-    .map(raw => {
-      const combinedText = (raw.content || "") + " " + (raw.title || "");
-      if (!ALWAYS_QUALIFIES.has(category) && !looksFree(combinedText)) return null;
+  const items = [];
+  for (const raw of results) {
+    const combinedText = (raw.content || "") + " " + (raw.title || "");
+    if (!ALWAYS_QUALIFIES.has(category) && !looksFree(combinedText)) continue;
 
-      const expires = extractExpiry(raw.content);
-      if (isExpired(expires)) return null;
+    const expires = extractExpiry(raw.content);
+    if (isExpired(expires)) continue;
 
-      const orgName = raw.title || hostname(raw.url);
-      return {
+    const requirementType = extractRequirementType(combinedText);
+    const isLocal = /\blocal\b|\bcommunity\b/i.test(combinedText);
+    const orgMentions = findMultipleOrgMentions(combinedText);
+
+    if (orgMentions.length > 1) {
+      for (const orgName of orgMentions) {
+        items.push({
+          id: `${raw.url}#${orgName.toLowerCase().replace(/\s+/g, "-")}`,
+          title: `Free offer from ${orgName}`,
+          orgName,
+          store: orgName,
+          url: raw.url,
+          isFree: true,
+          isLocal,
+          requirementType,
+          expires,
+          category
+        });
+      }
+    } else {
+      const orgName = orgMentions[0] || raw.title || hostname(raw.url);
+      items.push({
         id: raw.url,
         title: raw.title || "Untitled offer",
         orgName,
         store: orgName,
         url: raw.url,
         isFree: true,
-        isLocal: /\blocal\b|\bcommunity\b/i.test(combinedText),
-        requirementType: extractRequirementType(combinedText),
+        isLocal,
+        requirementType,
         expires,
         category
-      };
-    })
-    .filter(Boolean);
+      });
+    }
+  }
+  return items;
 }
 
 // ---------- LLM classification ----------
@@ -164,24 +208,31 @@ const CATEGORY_HINTS = {
   mail: "free samples available by mail"
 };
 
+// Asks the model to return an "offers" array PER SNIPPET rather than one
+// object per snippet, so a roundup post naming several companies/orgs
+// yields one qualifying offer object per company/org instead of collapsing
+// the whole post into a single card.
 async function openRouterClassify(env, results, category) {
   const snippetText = results
-    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
+    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
   const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
   const today = new Date().toISOString().slice(0, 10);
   const categoryHint = CATEGORY_HINTS[category] || "free offers";
 
-  const prompt = `Today's date is ${today}. You are reviewing search results about ${categoryHint}. For EACH snippet below, decide:
-- qualifies: true only if the snippet is genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).
-- title: a short clean description of the actual offer/resource.
-- orgName: the specific company, brand, or organization behind it (e.g. "Old Navy", "Second Harvest Food Bank"). Use null if unclear.
+  const prompt = `Today's date is ${today}. You are reviewing search results about ${categoryHint}. Some snippets describe just one offer/resource; others are "roundup" posts listing several from different companies/organizations — extract EACH qualifying offer separately in that case, one per company/org.
+
+For EACH snippet below, return an "offers" array (empty if nothing in it qualifies). For every offer/resource found in that snippet, include:
+- orgName: the specific company, brand, or organization behind it (e.g. "Old Navy", "Second Harvest Food Bank"). Always fill this in if the snippet names one.
+- qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).
+- title: a short clean description of that specific offer/resource.
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "unknown".
 - isLocal: true if this is a local/independent org or event, false if it's a well-known national brand/chain.
 - expires: a short date string if an end date is mentioned, else null.
 
 Return ONLY a strict JSON array, one object per snippet, in the same order, with this shape:
-[{"index": 0, "qualifies": true, "title": "...", "orgName": "...", "requirementType": "giveaway", "isLocal": false, "expires": null}, ...]
+[{"index": 0, "offers": [{"orgName": "...", "qualifies": true, "title": "...", "requirementType": "giveaway", "isLocal": false, "expires": null}]}, ...]
+If a snippet is a roundup mentioning several companies/orgs, include one object per company/org inside that snippet's "offers" array. If nothing in a snippet qualifies, use an empty array for "offers".
 
 Snippets:
 ${snippetText}`;
@@ -192,7 +243,7 @@ ${snippetText}`;
       "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 1500 })
+    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 2000 })
   });
   if (!res.ok) throw new Error(`OpenRouter classification failed (${res.status}).`);
   const data = await res.json();
@@ -201,24 +252,29 @@ ${snippetText}`;
   try { parsed = JSON.parse(text); } catch { return null; }
   if (!Array.isArray(parsed)) return null;
 
-  return parsed
-    .filter(p => p && p.qualifies && results[p.index])
-    .map(p => {
-      const raw = results[p.index];
-      const orgName = p.orgName || raw.title || hostname(raw.url);
-      return {
-        id: raw.url,
-        title: p.title || raw.title || "Untitled offer",
+  const items = [];
+  for (const entry of parsed) {
+    if (!entry || !results[entry.index]) continue;
+    const raw = results[entry.index];
+    const offers = Array.isArray(entry.offers) ? entry.offers : [];
+    offers.forEach((o, oi) => {
+      if (!o || !o.qualifies) return;
+      const orgName = o.orgName || raw.title || hostname(raw.url);
+      items.push({
+        id: `${raw.url}#${oi}`,
+        title: o.title || raw.title || "Untitled offer",
         orgName,
         store: orgName,
         url: raw.url,
         isFree: true,
-        isLocal: !!p.isLocal,
-        requirementType: p.requirementType || "unknown",
-        expires: p.expires || null,
+        isLocal: !!o.isLocal,
+        requirementType: o.requirementType || "unknown",
+        expires: o.expires || null,
         category
-      };
+      });
     });
+  }
+  return items;
 }
 
 // ---------- Search providers: Tavily first, Brave as fallback ----------
@@ -272,7 +328,8 @@ async function searchWithFallback(env, query) {
 // Resolves the org's real homepage — separate from whatever blog/article
 // the offer was found on — so "Claim" always points somewhere legitimate.
 // Kept to the final, deduped list of items so it doesn't multiply into a
-// search call per raw result.
+// search call per raw result (it's now per distinct offer, since roundup
+// posts can yield several from the same source URL).
 async function findOfficialSite(env, name) {
   if (!name) return null;
   try {

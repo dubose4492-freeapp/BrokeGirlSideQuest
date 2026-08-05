@@ -6,25 +6,15 @@
 // fallback otherwise), rejects anything already expired, and dedupes
 // repeat listings of the same offer before returning.
 //
+// Roundup posts ("12 restaurants with free food this week") mention several
+// different restaurants in one page — both classification paths below
+// extract one offer PER RESTAURANT mentioned in a qualifying snippet, not
+// just one card per URL.
+//
 // Search provider: tries Tavily first, and automatically falls back to
 // Brave Search if Tavily errors out or you've hit your Tavily cap.
 
 const MAX_QUALIFYING_PURCHASE = 10; // dollars — "$10 minimum purchase at most"
-
-const KNOWN_CHAINS = [
-  "mcdonald", "chick-fil-a", "chickfila", "wendy", "taco bell", "chipotle", "starbucks",
-  "dunkin", "popeyes", "subway", "panera", "sonic", "arby", "burger king", "kfc",
-  "panda express", "wingstop", "culver", "dairy queen", "domino", "pizza hut",
-  "papa john", "little caesars", "zaxby", "bojangles", "ihop", "denny", "cracker barrel",
-  "applebee", "chili's", "chilis", "olive garden", "outback", "buffalo wild wings",
-  "five guys", "in-n-out", "in n out", "whataburger", "jack in the box", "del taco",
-  "qdoba", "jimmy john", "firehouse subs", "jersey mike", "raising cane", "shake shack",
-  "carl's jr", "carls jr", "hardee", "krystal", "checkers", "rally's", "rallys",
-  "long john silver", "captain d", "boston market", "moe's", "moes southwest",
-  "el pollo loco", "church's chicken", "churchs chicken", "wingstreet", "einstein bros",
-  "smoothie king", "jamba juice", "auntie anne", "cinnabon", "baskin robbins",
-  "cold stone", "sonic drive"
-];
 
 // Chain name -> official domain, so a known chain's "Claim" link always
 // goes straight to their real site instead of whatever blog/article the
@@ -59,7 +49,6 @@ const CHAIN_DOMAINS = {
   "auntie anne": "auntieannes.com", "cinnabon": "cinnabon.com",
   "baskin robbins": "baskinrobbins.com", "cold stone": "coldstonecreamery.com"
 };
-const CHAIN_DOMAIN_LIST = Object.values(CHAIN_DOMAINS);
 
 // Chain key -> proper display name, so the "store" shown on the card is the
 // actual restaurant name ("McDonald's") instead of whatever domain the
@@ -107,32 +96,58 @@ const BLOCKED_CLAIM_DOMAINS = [
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 function looksFree(text) { return /\bfree\b/i.test(text || ""); }
 function looksBogo(text) { return /\bbogo\b|buy\s*one[,]?\s*get\s*one/i.test(text || ""); }
-function isKnownChain(text) { const t = (text || "").toLowerCase(); return KNOWN_CHAINS.some(c => t.includes(c)); }
-// Finds a known chain's official domain mentioned in the page text (not
-// just the KNOWN_CHAINS name match used for the [LOCAL] tag).
-function findChainDomain(text) {
+
+// Finds a single known chain key mentioned in a piece of text (used for
+// the LLM path's clean restaurantName string, or as a fallback name hint).
+function matchChainKey(text) {
   const t = (text || "").toLowerCase();
-  for (const [name, domain] of Object.entries(CHAIN_DOMAINS)) {
-    if (t.includes(name)) return domain;
+  for (const key of Object.keys(CHAIN_DOMAINS)) {
+    if (t.includes(key)) return key;
   }
   return null;
 }
+// Finds EVERY distinct known chain mentioned in a longer blob of text —
+// this is what lets a roundup snippet ("Free stuff at McDonald's, Wendy's,
+// and Taco Bell this week") turn into three separate cards instead of one.
+// Dedupes by resolved domain so aliases like "chilis"/"chili's" don't
+// produce the same chain twice.
+function findAllChainKeys(text) {
+  const t = (text || "").toLowerCase();
+  const seenDomains = new Set();
+  const found = [];
+  for (const key of Object.keys(CHAIN_DOMAINS)) {
+    if (t.includes(key)) {
+      const domain = CHAIN_DOMAINS[key];
+      if (!seenDomains.has(domain)) { seenDomains.add(domain); found.push(key); }
+    }
+  }
+  return found;
+}
 
-// Resolves the display name to show under the deal: a known chain's proper
-// name ("McDonald's") when we can detect one — either because the article
-// itself is hosted on the chain's own domain, or because the chain is
-// named in the offer text — otherwise falls back to the source page's
-// hostname (best available signal for an independent/local spot).
-function resolveStoreName(raw, combinedText) {
+// Resolves display name + Claim/See-Details links for an offer where we
+// have a clean, already-extracted restaurant name (from the LLM path).
+function resolveStoreAndClaim(raw, restaurantName) {
   const sourceDomain = hostname(raw.url);
   const domainChainKey = DOMAIN_TO_CHAIN_KEY[sourceDomain];
-  if (domainChainKey) return CHAIN_DISPLAY_NAMES[domainChainKey];
-
-  const t = (combinedText || "").toLowerCase();
-  for (const [key, display] of Object.entries(CHAIN_DISPLAY_NAMES)) {
-    if (t.includes(key)) return display;
+  if (domainChainKey) {
+    return { store: CHAIN_DISPLAY_NAMES[domainChainKey], claimUrl: raw.url, blogUrl: null };
   }
-  return sourceDomain;
+  const chainKey = matchChainKey(restaurantName);
+  if (chainKey) {
+    return { store: CHAIN_DISPLAY_NAMES[chainKey], claimUrl: `https://www.${CHAIN_DOMAINS[chainKey]}`, blogUrl: raw.url };
+  }
+  const store = (restaurantName || "").trim() || sourceDomain;
+  return { store, claimUrl: null, blogUrl: raw.url }; // claimUrl resolved later via findOfficialSite
+}
+// Same, but for the regex fallback path where there's no clean per-offer
+// name — chain matching scans the raw snippet text instead.
+function resolveStoreAndClaimFromText(raw, combinedText) {
+  const sourceDomain = hostname(raw.url);
+  const domainChainKey = DOMAIN_TO_CHAIN_KEY[sourceDomain];
+  if (domainChainKey) {
+    return { store: CHAIN_DISPLAY_NAMES[domainChainKey], claimUrl: raw.url, blogUrl: null };
+  }
+  return { store: sourceDomain, claimUrl: null, blogUrl: raw.url };
 }
 
 function extractRequirementType(text) {
@@ -251,7 +266,8 @@ function filterAndSortByFreshness(results, maxDays) {
 }
 
 // Dedupe repeat listings of the same offer (same store + same offer text
-// showing up from multiple URLs/search hits).
+// showing up from multiple URLs/search hits, or the same chain mentioned
+// in two different roundup posts).
 function dedupeItems(items) {
   const seen = new Set();
   const out = [];
@@ -266,82 +282,95 @@ function dedupeItems(items) {
 }
 
 // ---------- Regex fallback classification ----------
+// Extracts one item per DISTINCT known chain mentioned in a qualifying
+// snippet (so a roundup post naming several chains yields several cards),
+// falling back to a single generic "[LOCAL]" card keyed off the source
+// domain when no known chain name is detected in the text at all.
 function regexClassify(results) {
-  return results
-    .map(raw => {
-      const combinedText = (raw.content || "") + " " + (raw.title || "");
-      const isBogo = looksBogo(combinedText);
-      const minPurchase = extractMinPurchase(combinedText);
-      const qualifiesFree = looksFree(combinedText) && !/\$\s?\d+(\.\d{2})?/.test(combinedText.replace(/free/gi, ""));
-      const qualifiesMinPurchase = minPurchase != null && minPurchase <= MAX_QUALIFYING_PURCHASE && looksFree(combinedText);
+  const items = [];
+  for (const raw of results) {
+    const combinedText = (raw.content || "") + " " + (raw.title || "");
+    const isBogo = looksBogo(combinedText);
+    const minPurchase = extractMinPurchase(combinedText);
+    const qualifiesFree = looksFree(combinedText) && !/\$\s?\d+(\.\d{2})?/.test(combinedText.replace(/free/gi, ""));
+    const qualifiesMinPurchase = minPurchase != null && minPurchase <= MAX_QUALIFYING_PURCHASE && looksFree(combinedText);
+    if (!isBogo && !qualifiesFree && !qualifiesMinPurchase) continue;
 
-      if (!isBogo && !qualifiesFree && !qualifiesMinPurchase) return null;
+    const expires = extractExpiry(raw.content);
+    if (isExpired(expires)) continue;
 
-      const expires = extractExpiry(raw.content);
-      if (isExpired(expires)) return null;
+    let price = null;
+    if (isBogo) price = "BOGO Free";
+    else if (qualifiesMinPurchase) price = `Free w/ $${minPurchase.toFixed(2)} purchase`;
 
-      const isLocal = !isKnownChain(combinedText);
-      let price = null;
-      if (isBogo) price = "BOGO Free";
-      else if (qualifiesMinPurchase) price = `Free w/ $${minPurchase.toFixed(2)} purchase`;
-
-      const { claimUrl, blogUrl } = resolveClaimFromText(raw, combinedText);
-
-      return {
+    const matchedChains = findAllChainKeys(combinedText);
+    if (matchedChains.length === 0) {
+      const { store, claimUrl, blogUrl } = resolveStoreAndClaimFromText(raw, combinedText);
+      items.push({
         id: raw.url,
-        title: (isLocal ? "[LOCAL] " : "") + (raw.title || "Untitled offer"),
-        store: resolveStoreName(raw, combinedText),
+        title: "[LOCAL] " + (raw.title || "Untitled offer"),
+        store,
         url: raw.url,
         price,
         isFree: true,
-        isLocal,
+        isLocal: true,
         requirementType: extractRequirementType(combinedText),
         expires,
         claimUrl,
         blogUrl,
         category: "restaurant"
-      };
-    })
-    .filter(Boolean);
-}
-
-// Cheap, no-search-call resolution: is the source page already the chain's
-// own official domain, or does the text name a known chain we have a
-// domain for? Leaves claimUrl null (to be resolved with a real search in
-// onRequestPost) only for independent/local spots we can't map directly.
-function resolveClaimFromText(raw, combinedText) {
-  const sourceDomain = hostname(raw.url);
-  if (CHAIN_DOMAIN_LIST.includes(sourceDomain)) {
-    return { claimUrl: raw.url, blogUrl: null };
+      });
+    } else {
+      for (const chainKey of matchedChains) {
+        items.push({
+          id: `${raw.url}#${chainKey}`,
+          title: raw.title || "Untitled offer",
+          store: CHAIN_DISPLAY_NAMES[chainKey],
+          url: raw.url,
+          price,
+          isFree: true,
+          isLocal: false,
+          requirementType: extractRequirementType(combinedText),
+          expires,
+          claimUrl: `https://www.${CHAIN_DOMAINS[chainKey]}`,
+          blogUrl: raw.url,
+          category: "restaurant"
+        });
+      }
+    }
   }
-  const knownDomain = findChainDomain(combinedText);
-  if (knownDomain) {
-    return { claimUrl: `https://www.${knownDomain}`, blogUrl: raw.url };
-  }
-  return { claimUrl: null, blogUrl: raw.url };
+  return items;
 }
 
 // ---------- LLM classification ----------
+// Asks the model to return an "offers" array PER SNIPPET rather than one
+// object per snippet, so a roundup post naming several restaurants yields
+// one qualifying offer object per restaurant instead of collapsing the
+// whole post into a single card.
 async function openRouterClassify(env, results) {
   const snippetText = results
-    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
+    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
   const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
   const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today's date is ${today}. You are reviewing restaurant/food deal search results pulled from the open web. For EACH snippet below, decide:
+  const prompt = `Today's date is ${today}. You are reviewing restaurant/food deal search results pulled from the open web. Some snippets describe just one deal; others are "roundup" posts listing deals at several different restaurants — extract EACH qualifying deal separately in that case, one per restaurant.
+
+For EACH snippet below, return an "offers" array (empty if nothing in it qualifies). For every deal found in that snippet, include:
+- restaurantName: the specific restaurant/chain the deal is at (e.g. "McDonald's", "Antonio's Pizza"). Always fill this in if the snippet names a restaurant.
 - qualifies: true ONLY if the offer is one of:
   (a) a genuinely FREE item with no purchase required,
   (b) a BOGO ("buy one get one") free offer, or
   (c) an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_PURCHASE} or less (e.g. "free dessert with any $10 purchase").
   A plain discount, a percentage off, a priced combo, a regular menu mention, an offer requiring MORE than $${MAX_QUALIFYING_PURCHASE} spend, or an offer whose stated end date is before today does NOT qualify.
-- title: a short clean description of the actual offer.
+- title: a short clean description of that specific offer.
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "unknown".
 - minPurchase: the dollar amount required to spend if requirementType is "min_purchase", else null.
 - isLocal: true if this is an independent/local restaurant, false if it's a well-known national/regional chain.
 - expires: a short date string if an end date is mentioned, else null.
 
 Return ONLY a strict JSON array, one object per snippet, in the same order, with this shape:
-[{"index": 0, "qualifies": true, "title": "...", "requirementType": "bogo", "minPurchase": null, "isLocal": false, "expires": null}, ...]
+[{"index": 0, "offers": [{"restaurantName": "McDonald's", "qualifies": true, "title": "...", "requirementType": "bogo", "minPurchase": null, "isLocal": false, "expires": null}]}, ...]
+If a snippet is a roundup mentioning several restaurants' deals, include one object per restaurant inside that snippet's "offers" array. If nothing in a snippet qualifies, use an empty array for "offers".
 
 Snippets:
 ${snippetText}`;
@@ -352,7 +381,7 @@ ${snippetText}`;
       "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 1500 })
+    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 2000 })
   });
   if (!res.ok) throw new Error(`OpenRouter classification failed (${res.status}).`);
   const data = await res.json();
@@ -361,30 +390,34 @@ ${snippetText}`;
   try { parsed = JSON.parse(text); } catch { return null; }
   if (!Array.isArray(parsed)) return null;
 
-  return parsed
-    .filter(p => p && p.qualifies && results[p.index])
-    .map(p => {
-      const raw = results[p.index];
+  const items = [];
+  for (const entry of parsed) {
+    if (!entry || !results[entry.index]) continue;
+    const raw = results[entry.index];
+    const offers = Array.isArray(entry.offers) ? entry.offers : [];
+    offers.forEach((o, oi) => {
+      if (!o || !o.qualifies) return;
       let price = null;
-      if (p.requirementType === "bogo") price = "BOGO Free";
-      else if (p.requirementType === "min_purchase" && p.minPurchase != null) price = `Free w/ $${Number(p.minPurchase).toFixed(2)} purchase`;
-      const combinedText = (p.title || raw.title || "") + " " + (raw.content || "");
-      const { claimUrl, blogUrl } = resolveClaimFromText(raw, combinedText);
-      return {
-        id: raw.url,
-        title: (p.isLocal ? "[LOCAL] " : "") + (p.title || raw.title || "Untitled offer"),
-        store: resolveStoreName(raw, combinedText),
+      if (o.requirementType === "bogo") price = "BOGO Free";
+      else if (o.requirementType === "min_purchase" && o.minPurchase != null) price = `Free w/ $${Number(o.minPurchase).toFixed(2)} purchase`;
+      const { store, claimUrl, blogUrl } = resolveStoreAndClaim(raw, o.restaurantName);
+      items.push({
+        id: `${raw.url}#${oi}`,
+        title: (o.isLocal ? "[LOCAL] " : "") + (o.title || raw.title || "Untitled offer"),
+        store,
         url: raw.url,
         price,
         isFree: true,
-        isLocal: !!p.isLocal,
-        requirementType: p.requirementType || "unknown",
-        expires: p.expires || null,
+        isLocal: !!o.isLocal,
+        requirementType: o.requirementType || "unknown",
+        expires: o.expires || null,
         claimUrl,
         blogUrl,
         category: "restaurant"
-      };
+      });
     });
+  }
+  return items;
 }
 
 // ---------- Search providers: Tavily first, Brave as fallback ----------
@@ -443,7 +476,8 @@ async function searchWithFallback(env, query) {
 
 // For independent/local spots we don't have a domain mapped, spend one
 // extra search to find their real site — kept to the final, deduped list
-// so this doesn't multiply into a search per raw result.
+// so this doesn't multiply into a search per raw result (it's now per
+// distinct offer, since roundup posts can yield several).
 async function findOfficialSite(env, name) {
   if (!name) return null;
   try {
@@ -492,8 +526,7 @@ export async function onRequestPost({ request, env }) {
   let finalResults = dedupeItems(classified);
   finalResults = await Promise.all(finalResults.map(async item => {
     if (item.claimUrl) return item; // already resolved to a known chain or its own domain
-    const name = item.title.replace(/^\[LOCAL\]\s*/, "");
-    const officialUrl = await findOfficialSite(env, name);
+    const officialUrl = await findOfficialSite(env, item.store);
     item.claimUrl = officialUrl || item.url;
     item.blogUrl = officialUrl ? item.url : null;
     return item;
