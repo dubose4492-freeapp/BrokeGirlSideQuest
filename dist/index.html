@@ -122,11 +122,13 @@
 
   .empty-state { text-align: center; padding: 40px 20px; color: #4a3d68; grid-column: 1 / -1; font-weight: 700; font-size: 15px; }
   .empty-state b { color: var(--ink); }
-  .prefs { max-width: 420px; }
-  .prefs label { font-size: 14px; font-weight: 800; display: block; margin: 14px 0 6px; }
-  .prefs input { width: 100%; padding: 10px; border: 3px solid var(--ink); font-size: 14px; font-family: 'Baloo 2', sans-serif; background: var(--panel); }
-  .prefs .hint { font-size: 13px; color: #4a3d68; margin-top: 6px; line-height: 1.6; font-weight: 700; }
-  .prefs .hint a { color: var(--lav); }
+  .search-bar {
+    display: flex; gap: 12px; flex-wrap: wrap; background: var(--panel); border: 3px solid var(--ink);
+    padding: 14px; margin-bottom: 16px; box-shadow: 4px 4px 0 var(--pink);
+  }
+  .search-field { flex: 1; min-width: 130px; }
+  .search-field label { font-size: 12px; font-weight: 800; display: block; margin-bottom: 6px; }
+  .search-field input { width: 100%; padding: 10px; border: 3px solid var(--ink); font-size: 14px; font-family: 'Baloo 2', sans-serif; background: var(--bg); }
   .dashboard-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr)); gap: 12px; margin-bottom: 18px; }
   .stat { background: var(--panel); border: 3px solid var(--ink); padding: 14px; text-align: center; box-shadow: 4px 4px 0 var(--pink); }
   .stat .num { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 30px; color: var(--ink); letter-spacing: -1px; }
@@ -168,6 +170,16 @@
 <nav><div class="inner" id="navBar"></div></nav>
 
 <main>
+  <div class="search-bar">
+    <div class="search-field">
+      <label for="zipInput">ZIP Code</label>
+      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); localStorage.setItem('dff_zip', state.zip)" />
+    </div>
+    <div class="search-field">
+      <label for="radiusInput">Radius (mi)</label>
+      <input id="radiusInput" type="number" min="1" max="100" placeholder="100" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); localStorage.setItem('dff_radius', String(v))" />
+    </div>
+  </div>
   <div id="statusArea"></div>
   <div id="content"></div>
 </main>
@@ -253,8 +265,7 @@ const CATEGORIES = {
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc) =>
     `food pantry OR church food box OR community fridge OR clothing closet OR soup kitchen near ${loc}` },
   mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
-    `free samples by mail 2026 baby beauty coffee pet seeds` },
-  prefs: { label: "Preferences" }
+    `free samples by mail 2026 baby beauty coffee pet seeds` }
 };
 
 const REQ_TYPES = {
@@ -269,9 +280,11 @@ const REQ_TYPES = {
 
 let state = {
   tab: "dashboard",
-  location: localStorage.getItem("dff_location") || "your area",
+  // One ZIP now drives both the Kroger official-price lookup and the
+  // general "near me" web search — falls back to whatever was saved under
+  // the old two-box setup so existing users don't lose their saved value.
+  zip: localStorage.getItem("dff_zip") || localStorage.getItem("dff_kroger_zip") || "",
   radius: localStorage.getItem("dff_radius") || "100",
-  krogerZip: localStorage.getItem("dff_kroger_zip") || "",
   results: {},
   filters: {}, // per-category active requirement-type filter
   saved: new Set(JSON.parse(localStorage.getItem("dff_saved") || "[]")),
@@ -279,7 +292,9 @@ let state = {
   scanning: false,
   error: null
 };
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "prefs") state.results[k] = []; });
+document.getElementById("zipInput").value = state.zip;
+document.getElementById("radiusInput").value = state.radius;
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard") state.results[k] = []; });
 try {
   const saved = JSON.parse(localStorage.getItem("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -405,7 +420,7 @@ function itemCard(item) {
     </div>
     <div class="item-actions">
       <button onclick="toggleSave('${item.id.replace(/'/g, "\\'")}')" class="${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
-      <button onclick="openDirections('${(item.store + " " + state.location).replace(/'/g, "\\'")}')">📍 Directions</button>
+      <button onclick="openDirections('${(item.store + " " + state.zip).replace(/'/g, "\\'")}')">📍 Directions</button>
       <button onclick="window.open('${claimUrl}', '_blank', 'noopener')">🔗 Claim</button>
       <button onclick="shareItem('${item.title.replace(/'/g, "\\'")}', '${claimUrl}')">📤 Share</button>
     </div>
@@ -438,7 +453,7 @@ function renderList(key) {
 }
 
 function renderDashboard() {
-  const counts = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "prefs")
+  const counts = Object.keys(CATEGORIES).filter(k => k !== "dashboard")
     .map(k => ({ label: CATEGORIES[k].icon + " " + CATEGORIES[k].label, count: (state.results[k] || []).length }));
   return `<div class="dashboard-stats">${counts.map(c => `<div class="stat"><div class="num">${c.count}</div><div class="lbl">${c.label}</div></div>`).join("")}
     <div class="stat"><div class="num">${state.saved.size}</div><div class="lbl">💖 Saved</div></div>
@@ -446,24 +461,11 @@ function renderDashboard() {
   ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top to start today's live search for your area.</div>`}`;
 }
 
-function renderPrefs() {
-  return `<div class="item-card prefs" style="padding:16px">
-    <label>Location (city, ZIP, or address)</label>
-    <input id="locInput" value="${state.location}" onchange="state.location=this.value; localStorage.setItem('dff_location', this.value)" />
-    <label>Search radius (miles, max 100)</label>
-    <input id="radiusInput" type="number" max="100" min="1" value="${state.radius}" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); localStorage.setItem('dff_radius', String(v))" />
-    <label>ZIP code (for Kroger real-time pricing)</label>
-    <input id="krogerZipInput" value="${state.krogerZip}" placeholder="e.g. 37083" onchange="state.krogerZip=this.value.trim(); localStorage.setItem('dff_kroger_zip', state.krogerZip)" />
-    <div class="hint">Optional. If set (and a Kroger-family store is within your radius), grocery prices come straight from Kroger's live pricing API instead of web search. Falls back automatically to search-based pricing if no Kroger store is nearby or the lookup fails.</div>
-  </div>`;
-}
-
 function render() {
   buildNav();
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
-  else if (state.tab === "prefs") content.innerHTML = renderPrefs();
   else content.innerHTML = renderList(state.tab);
 
   let statusHtml = "";
@@ -499,7 +501,7 @@ function showToast(msg) {
 // ---------- scanning ----------
 async function searchCategory(key) {
   const cat = CATEGORIES[key];
-  const query = cat.query(state.location, state.radius);
+  const query = cat.query(state.zip, state.radius);
   const body = { query, max_results: 8, search_depth: cat.searchDepth || "basic" };
   if (cat.timeRange) body.time_range = cat.timeRange;
   if (cat.includeDomains) body.include_domains = cat.includeDomains;
@@ -524,8 +526,8 @@ async function searchCategory(key) {
 async function searchGroceryItem(itemName) {
   const params = new URLSearchParams({
     item: itemName,
-    zip: state.krogerZip,
-    location: state.location,
+    zip: state.zip,
+    location: state.zip,
     radius: state.radius
   });
   const response = await fetch(`/api/grocery-price?${params}`);
@@ -568,7 +570,7 @@ async function searchRestaurantCategory() {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ location: state.location, radius: state.radius })
+    body: JSON.stringify({ location: state.zip, radius: state.radius })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
@@ -586,7 +588,7 @@ async function runFullScan() {
   btn.disabled = true;
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "prefs");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard");
   for (let i = 0; i < categoryKeys.length; i++) {
     const key = categoryKeys[i];
     label.textContent = `Scanning ${CATEGORIES[key].label} (${i + 1}/${categoryKeys.length})`;
