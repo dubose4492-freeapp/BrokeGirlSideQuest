@@ -93,6 +93,23 @@ const BLOCKED_CLAIM_DOMAINS = [
   "linkedin.com", "doordash.com", "grubhub.com", "ubereats.com"
 ];
 
+// Known-good freebie roundup sites (The Freebie Guy specifically tracks
+// restaurant app rewards). Still searches the OPEN WEB — this doesn't
+// restrict results — it just also runs an extra domain-scoped pass against
+// these sites so their posts don't get lost in the general results, and
+// floats anything that comes from them to the top with a "trusted source"
+// tag the client can badge.
+const PRIORITY_SOURCES = {
+  "thefreebieguy.com": "The Freebie Guy",
+  "heyitsfree.net": "Hey, It's Free!",
+  "freestufftimes.com": "Free Stuff Times"
+};
+function prioritySourceName(url) {
+  const h = hostname(url);
+  const domain = Object.keys(PRIORITY_SOURCES).find(d => h === d || h.endsWith("." + d));
+  return domain ? PRIORITY_SOURCES[domain] : null;
+}
+
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 function looksFree(text) { return /\bfree\b/i.test(text || ""); }
 function looksBogo(text) { return /\bbogo\b|buy\s*one[,]?\s*get\s*one/i.test(text || ""); }
@@ -318,6 +335,7 @@ function regexClassify(results) {
         expires,
         claimUrl,
         blogUrl,
+        trustedSource: prioritySourceName(raw.url),
         category: "restaurant"
       });
     } else {
@@ -334,6 +352,7 @@ function regexClassify(results) {
           expires,
           claimUrl: `https://www.${CHAIN_DOMAINS[chainKey]}`,
           blogUrl: raw.url,
+          trustedSource: prioritySourceName(raw.url),
           category: "restaurant"
         });
       }
@@ -413,6 +432,7 @@ ${snippetText}`;
         expires: o.expires || null,
         claimUrl,
         blogUrl,
+        trustedSource: prioritySourceName(raw.url),
         category: "restaurant"
       });
     });
@@ -421,14 +441,17 @@ ${snippetText}`;
 }
 
 // ---------- Search providers: Tavily first, Brave as fallback ----------
-async function tavilySearch(env, query) {
+// includeDomains (optional) scopes a search to specific sites — used for
+// the priority-source pass below — without touching the general query.
+async function tavilySearch(env, query, includeDomains) {
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       api_key: env.TAVILY_API_KEY, query, max_results: 12,
-      search_depth: "advanced", include_raw_content: true, days: 7
-      // no include_domains — searches the whole web now
+      search_depth: "advanced", include_raw_content: true, days: 7,
+      ...(includeDomains && includeDomains.length ? { include_domains: includeDomains } : {})
+      // no include_domains by default — searches the whole web
     })
   });
   if (!res.ok) {
@@ -441,8 +464,10 @@ async function tavilySearch(env, query) {
   }));
 }
 
-async function braveSearch(env, query) {
-  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=12&freshness=pw`, {
+async function braveSearch(env, query, includeDomains) {
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query + siteFilter)}&count=12&freshness=pw`, {
     headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY }
   });
   if (!res.ok) {
@@ -456,21 +481,21 @@ async function braveSearch(env, query) {
   }));
 }
 
-async function searchWithFallback(env, query) {
+async function searchWithFallback(env, query, includeDomains) {
   if (!env.TAVILY_API_KEY && !env.BRAVE_API_KEY) {
     throw new Error("Search isn't configured on the server yet (missing TAVILY_API_KEY and BRAVE_API_KEY).");
   }
   if (env.TAVILY_API_KEY) {
     try {
-      const results = await tavilySearch(env, query);
+      const results = await tavilySearch(env, query, includeDomains);
       return { results, provider: "tavily" };
     } catch (tavilyErr) {
       if (!env.BRAVE_API_KEY) throw tavilyErr;
-      const results = await braveSearch(env, query); // let this one throw if it also fails
+      const results = await braveSearch(env, query, includeDomains); // let this one throw if it also fails
       return { results, provider: "brave" };
     }
   }
-  const results = await braveSearch(env, query);
+  const results = await braveSearch(env, query, includeDomains);
   return { results, provider: "brave" };
 }
 
@@ -508,10 +533,26 @@ export async function onRequestPost({ request, env }) {
   } catch (err) {
     return json({ error: err.message }, 502);
   }
+
+  // Best-effort extra pass scoped to the known-good freebie sites, merged
+  // into the general pool — if it fails or turns up nothing, the general
+  // whole-web results still stand on their own.
+  try {
+    const priority = await searchWithFallback(env, query, Object.keys(PRIORITY_SOURCES));
+    const seen = new Set(results.map(r => r.url));
+    for (const r of priority.results) {
+      if (!seen.has(r.url)) { seen.add(r.url); results.push(r); }
+    }
+  } catch { /* ignore — priority pass is a bonus, not a requirement */ }
+
   if (!results.length) return json({ results: [], provider });
 
   results = filterAndSortByFreshness(results, MAX_RESULT_AGE_DAYS);
   if (!results.length) return json({ results: [], provider, note: `All results were older than ${MAX_RESULT_AGE_DAYS} days.` });
+
+  // Float known-good sources to the top of what's left, freshness order
+  // preserved within each group.
+  results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
   if (env.OPENROUTER_API_KEY) {

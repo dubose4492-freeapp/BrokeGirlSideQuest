@@ -107,6 +107,7 @@
   .item-price { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 17px; color: #0d5c3c; background: var(--mint-soft); padding: 3px 9px; border: 2px solid var(--ink); letter-spacing: -0.5px; }
   .item-price.paid { color: var(--ink); background: var(--pink-soft); }
   .cat-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun-soft); color: #5c4400; white-space: nowrap; }
+  .trusted-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: #e6f7ec; color: #14532d; white-space: nowrap; display: inline-block; margin-top: 4px; }
   .req-badge { font-size: 13px; font-weight: 700; color: #4a3d68; }
   .item-meta { font-size: 12px; color: #4a3d68; display: flex; gap: 10px; flex-wrap: wrap; font-weight: 700; }
   .item-meta a { color: var(--lav); font-weight: 800; text-decoration: underline; }
@@ -310,6 +311,7 @@ function itemCard(item) {
     <div class="item-body">
       <p class="item-name">${item.title}</p>
       <div class="item-store">${item.store}</div>
+      ${item.trustedSource ? `<div class="trusted-badge">⭐ ${item.trustedSource}</div>` : ""}
       <div class="item-price-row">
         <span class="item-price ${item.isFree ? "" : "paid"}">${priceLabel(item, cat)}</span>
         <span class="cat-badge">${cat.label}</span>

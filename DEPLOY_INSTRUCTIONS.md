@@ -29,12 +29,20 @@ it finds per snippet; without it, the regex fallback does its own
 best-effort version (a known-chain scan for restaurants, a "Brand is
 giving away ... free" pattern for the other tabs).
 
+Both endpoints also now run a second, domain-scoped search pass against a
+short list of known-good freebie roundup sites (The Freebie Guy, Hey It's
+Free!, Free Stuff Times) alongside the normal whole-web search — nothing
+is restricted to just these sites, but anything found on them is merged
+in, floated to the top of the results, and tagged so the app shows a small
+"⭐ Trusted source" badge on those cards.
+
 Because `freebies.js` and `restaurant-deals.js` spend one extra search
-call per *offer* resolving a real "Claim" link, a full "run quest" scan
-now uses noticeably more of your Tavily/Brave (and OpenRouter, if
-configured) quota than before — and potentially more still now that a
-single roundup post can produce several offers instead of one. Worth
-keeping an eye on if you're on a free tier.
+call per *offer* resolving a real "Claim" link, plus one more search call
+per scan for the priority-source pass, a full "run quest" scan now uses
+noticeably more of your Tavily/Brave (and OpenRouter, if configured) quota
+than before — and potentially more still now that a single roundup post
+can produce several offers instead of one. Worth keeping an eye on if
+you're on a free tier.
 
 ## Files in this package
 ```
