@@ -2,9 +2,10 @@
 //
 // Runs two lookups in parallel and returns whichever price is actually lower:
 //   1. Kroger's official price (OAuth token -> nearest store -> product price)
-//   2. A web search across every major grocery chain (Tavily first, Brave as
-//      fallback if Tavily errors/hits its cap) + OpenRouter extraction, or
-//      regex extraction if OpenRouter isn't configured
+//   2. A web search across every major grocery chain (Tavily -> Serper ->
+//      Exa -> DuckDuckGo, each one tried only if the last errors or hits
+//      its cap) + OpenRouter extraction, or regex extraction if
+//      OpenRouter isn't configured
 //
 // The response is always { price, store, url } so the client can label the
 // card with wherever the winning price actually came from. Client never sees
@@ -13,6 +14,11 @@
 // Token and per-ZIP location ID are cached in module-level variables, which
 // persist across requests on a warm edge isolate (best-effort — not
 // guaranteed durable, but cuts down on repeat token/location calls in practice).
+//
+// Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
+// needed, last resort). Shared with freebies.js and restaurant-deals.js so
+// the provider chain lives in one place.
+import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
 let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
@@ -174,55 +180,18 @@ ${snippetText}`;
   return { price: parsed.price, store, chain, url: raw.url };
 }
 
-// ---------- Search providers: Tavily first, Brave as fallback ----------
-// `domains` is optional — pass GROCERY_DOMAIN_LIST to restrict to official
-// store sites, or omit/null to search the open web.
-async function tavilySearch(env, query, domains) {
-  const body = { api_key: env.TAVILY_API_KEY, query, max_results: 8, search_depth: "advanced" };
-  if (domains && domains.length) body.include_domains = domains;
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Tavily search failed (${res.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  return data.results || [];
-}
-
-async function braveSearch(env, query, domains) {
-  // Brave has no include_domains param — restrict via site: operators instead.
-  let q = query;
-  if (domains && domains.length) {
-    const siteFilter = domains.map(d => `site:${d}`).join(" OR ");
-    q = `${query} (${siteFilter})`;
-  }
-  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=8`, {
-    headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY }
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Brave search failed (${res.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  const results = (data.web && data.web.results) || [];
-  return results.map(r => ({ title: r.title, url: r.url, content: r.description || "" }));
-}
-
+// ---------- Search providers ----------
+// This file's call sites expect a plain results array back (not
+// { results, provider }) and already wrap every call in their own
+// try/catch, defaulting to [] on failure — so this wrapper just unwraps
+// the shared function's return shape. Note the shared chain now tries
+// DuckDuckGo as a no-key last resort, so grocery price lookups get real
+// web results even with zero search keys configured, instead of silently
+// skipping the web-search tier the way the old local version did.
+const GROCERY_SEARCH_OPTS = { maxResults: 8 };
 async function searchWithFallback(env, query, domains) {
-  if (!env.TAVILY_API_KEY && !env.BRAVE_API_KEY) return []; // neither configured — web side just skipped
-  if (env.TAVILY_API_KEY) {
-    try {
-      return await tavilySearch(env, query, domains);
-    } catch (tavilyErr) {
-      if (!env.BRAVE_API_KEY) throw tavilyErr;
-      return await braveSearch(env, query, domains); // let this one throw if it also fails
-    }
-  }
-  return await braveSearch(env, query, domains);
+  const { results } = await sharedSearchWithFallback(env, query, domains, GROCERY_SEARCH_OPTS);
+  return results;
 }
 
 // Two-tier search: try the curated official-chain domains first (so the

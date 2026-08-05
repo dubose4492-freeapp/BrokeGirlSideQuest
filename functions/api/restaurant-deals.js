@@ -11,8 +11,10 @@
 // extract one offer PER RESTAURANT mentioned in a qualifying snippet, not
 // just one card per URL.
 //
-// Search provider: tries Tavily first, and automatically falls back to
-// Brave Search if Tavily errors out or you've hit your Tavily cap.
+// Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
+// needed, last resort). Shared with freebies.js and grocery-price.js so
+// the provider chain lives in one place.
+import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
 
 const MAX_QUALIFYING_PURCHASE = 10; // dollars — "$10 minimum purchase at most"
 
@@ -221,8 +223,8 @@ function isExpired(expiryText) {
 
 // Freshness ceiling — anything with a known publish date older than this
 // gets dropped before it's even classified. This is enforced by us, not by
-// Tavily/Brave's own recency params, because Tavily's `days` filter only
-// actually applies when topic="news" — without it, "days" is silently
+// the search providers' own recency params, because Tavily's `days` filter
+// only actually applies when topic="news" — without it, "days" is silently
 // ignored, which is why old posts (e.g. a July 2nd listing) were slipping
 // through even with days:7 set.
 const MAX_RESULT_AGE_DAYS = 5;
@@ -440,63 +442,14 @@ ${snippetText}`;
   return items;
 }
 
-// ---------- Search providers: Tavily first, Brave as fallback ----------
-// includeDomains (optional) scopes a search to specific sites — used for
-// the priority-source pass below — without touching the general query.
-async function tavilySearch(env, query, includeDomains) {
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: env.TAVILY_API_KEY, query, max_results: 12,
-      search_depth: "advanced", include_raw_content: true, days: 7,
-      ...(includeDomains && includeDomains.length ? { include_domains: includeDomains } : {})
-      // no include_domains by default — searches the whole web
-    })
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Tavily search failed (${res.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  return (data.results || []).map(r => ({
-    title: r.title, url: r.url, content: r.content, publishedDate: r.published_date || null
-  }));
-}
-
-async function braveSearch(env, query, includeDomains) {
-  const siteFilter = includeDomains && includeDomains.length
-    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
-  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query + siteFilter)}&count=12&freshness=pw`, {
-    headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY }
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Brave search failed (${res.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  const results = (data.web && data.web.results) || [];
-  return results.map(r => ({
-    title: r.title, url: r.url, content: r.description || "", publishedDate: r.page_age || null
-  }));
-}
-
+// ---------- Search providers ----------
+// This endpoint wants a wider net (12 results) and recent-only results
+// (last 7 days, Tavily-only — the shared function ignores `days` for
+// providers that don't support it) — the shared function takes those as
+// options, so wrap it here to keep the four call sites below unchanged.
+const RESTAURANT_SEARCH_OPTS = { maxResults: 12, days: 7 };
 async function searchWithFallback(env, query, includeDomains) {
-  if (!env.TAVILY_API_KEY && !env.BRAVE_API_KEY) {
-    throw new Error("Search isn't configured on the server yet (missing TAVILY_API_KEY and BRAVE_API_KEY).");
-  }
-  if (env.TAVILY_API_KEY) {
-    try {
-      const results = await tavilySearch(env, query, includeDomains);
-      return { results, provider: "tavily" };
-    } catch (tavilyErr) {
-      if (!env.BRAVE_API_KEY) throw tavilyErr;
-      const results = await braveSearch(env, query, includeDomains); // let this one throw if it also fails
-      return { results, provider: "brave" };
-    }
-  }
-  const results = await braveSearch(env, query, includeDomains);
-  return { results, provider: "brave" };
+  return sharedSearchWithFallback(env, query, includeDomains, RESTAURANT_SEARCH_OPTS);
 }
 
 // For independent/local spots we don't have a domain mapped, spend one

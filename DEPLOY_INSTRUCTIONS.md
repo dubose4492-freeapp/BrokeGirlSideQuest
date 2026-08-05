@@ -39,10 +39,36 @@ in, floated to the top of the results, and tagged so the app shows a small
 Because `freebies.js` and `restaurant-deals.js` spend one extra search
 call per *offer* resolving a real "Claim" link, plus one more search call
 per scan for the priority-source pass, a full "run quest" scan now uses
-noticeably more of your Tavily/Brave (and OpenRouter, if configured) quota
-than before — and potentially more still now that a single roundup post
-can produce several offers instead of one. Worth keeping an eye on if
-you're on a free tier.
+noticeably more of your search quota than before — and potentially more
+still now that a single roundup post can produce several offers instead
+of one. Worth keeping an eye on if you're on a free tier.
+
+### Search now has a 4-deep fallback chain
+All three search-using endpoints (`freebies.js`, `restaurant-deals.js`,
+`grocery-price.js`) now share one provider chain:
+
+1. **Tavily** (`TAVILY_API_KEY`)
+2. **Serper.dev** (`SERPER_API_KEY`) — 2,500 queries, one-time free tier
+3. **Exa** (`EXA_API_KEY`) — $10 credit, one-time free tier
+4. **DuckDuckGo** — no key, no signup, effectively unlimited
+
+Brave was left out of the chain on purpose. Each remaining provider is
+only tried if every provider before it is either unconfigured (no secret
+set) or actually fails (errors, hits its cap, etc.) — this isn't
+round-robin, it always prefers Tavily first when available. Steps 1–3
+need a secret each; step 4 needs nothing and always runs as the final
+safety net, so **search now works even on a brand-new deploy with zero
+search secrets configured** — it just uses DuckDuckGo's HTML results
+until you add better-quality keys. That chain lives in one shared file,
+`functions/_shared/search-providers.js`, imported by all three endpoints
+so there's only one place to tune it.
+
+One caveat: DuckDuckGo has no official free web-search API, so that last
+step works by fetching and parsing DDG's plain HTML results page. It's
+the most fragile link in the chain — if DuckDuckGo changes their page
+markup, that step will start quietly returning fewer or zero results
+instead of erroring. It's meant as a "search still basically works"
+floor, not a long-term primary provider.
 
 ## Files in this package
 ```
@@ -50,6 +76,8 @@ wrangler.toml
 dist/
   index.html          ← your app (unchanged UI/logic otherwise)
 functions/
+  _shared/
+    search-providers.js  ← shared Tavily/Serper/Exa/DuckDuckGo chain
   api/
     search.js
     grocery-price.js
@@ -57,7 +85,9 @@ functions/
     freebies.js
 ```
 `functions/` must sit at the ROOT of your repo, as a sibling of `dist/` —
-not inside it. Wrangler looks for it there automatically.
+not inside it. Wrangler looks for it there automatically, `_shared/`
+included (the leading underscore just keeps Wrangler from treating it as
+a route, same trick as `_middleware.js`).
 
 ## One-time setup (if you haven't already)
 ```bash
@@ -87,6 +117,13 @@ wrangler login
    Each command will prompt you to paste the value — paste it and hit enter.
    You can skip the two KROGER_* ones if you're not using that feature yet;
    the grocery tab will just fall back to search-based pricing until they're set.
+
+   Optional — additional search fallbacks, only needed once Tavily
+   quota is a problem (DuckDuckGo already works with none of these set):
+   ```bash
+   npx wrangler pages secret put SERPER_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put EXA_API_KEY --project-name=brokegirlsidequest
+   ```
 
 4. Deploy:
    ```bash
@@ -120,11 +157,16 @@ Same command — it overwrites the existing value.
 - **Grocery tab shows "Kroger isn't configured on the server yet"** — the
   `KROGER_CLIENT_ID`/`KROGER_CLIENT_SECRET` secrets aren't set. It'll keep
   working via search-based pricing until you set them (step 3).
-- **"Search isn't configured on the server yet"** — `TAVILY_API_KEY` isn't
-  set. Nothing will load until you set it.
+- **Search results seem thin or low-quality with no errors** — if
+  `TAVILY_API_KEY` is unset/exhausted and `SERPER_API_KEY`/`EXA_API_KEY`
+  aren't set either, requests are quietly falling all the way through to
+  the DuckDuckGo HTML scrape — it works, but it's the weakest link in the
+  chain. Set one of the paid-tier keys to improve quality.
 - **CORS errors are gone** — that's the whole point of this setup. All
-  outbound calls to Tavily/Kroger now happen server-side in the Function,
-  so the browser never talks to those domains directly.
+  outbound calls to Tavily/Serper/Exa/Kroger now happen server-side
+  in the Function, so the browser never talks to those domains directly.
 - **Functions not picked up on deploy** — double check `functions/` is a
   sibling of `dist/` (same folder as `wrangler.toml`), not nested inside
-  `dist/`.
+  `dist/`, and that `functions/_shared/search-providers.js` came along
+  with it — `freebies.js`, `restaurant-deals.js`, and `grocery-price.js`
+  all import from it and will fail to build without it.

@@ -13,6 +13,11 @@
 // several different companies/orgs in one page — both classification paths
 // below extract one offer PER COMPANY/ORG mentioned in a qualifying
 // snippet, not just one card per URL.
+//
+// Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
+// needed, last resort). Shared with restaurant-deals.js and
+// grocery-price.js so the provider chain lives in one place.
+import { searchWithFallback } from "../_shared/search-providers.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -295,59 +300,6 @@ ${snippetText}`;
     });
   }
   return items;
-}
-
-// ---------- Search providers: Tavily first, Brave as fallback ----------
-// includeDomains (optional) scopes a search to specific sites — used for
-// the priority-source pass below — without touching the general query.
-async function tavilySearch(env, query, includeDomains) {
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: env.TAVILY_API_KEY, query, max_results: 10,
-      search_depth: "advanced", include_raw_content: true,
-      ...(includeDomains && includeDomains.length ? { include_domains: includeDomains } : {})
-    })
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Tavily search failed (${res.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  return (data.results || []).map(r => ({
-    title: r.title, url: r.url, content: r.content, publishedDate: r.published_date || null
-  }));
-}
-async function braveSearch(env, query, includeDomains) {
-  const siteFilter = includeDomains && includeDomains.length
-    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
-  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query + siteFilter)}&count=10`, {
-    headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY }
-  });
-  if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`Brave search failed (${res.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  const results = (data.web && data.web.results) || [];
-  return results.map(r => ({
-    title: r.title, url: r.url, content: r.description || "", publishedDate: r.page_age || null
-  }));
-}
-async function searchWithFallback(env, query, includeDomains) {
-  if (!env.TAVILY_API_KEY && !env.BRAVE_API_KEY) {
-    throw new Error("Search isn't configured on the server yet (missing TAVILY_API_KEY and BRAVE_API_KEY).");
-  }
-  if (env.TAVILY_API_KEY) {
-    try {
-      return { results: await tavilySearch(env, query, includeDomains), provider: "tavily" };
-    } catch (err) {
-      if (!env.BRAVE_API_KEY) throw err;
-      return { results: await braveSearch(env, query, includeDomains), provider: "brave" };
-    }
-  }
-  return { results: await braveSearch(env, query, includeDomains), provider: "brave" };
 }
 
 // Resolves the org's real homepage — separate from whatever blog/article
