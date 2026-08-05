@@ -213,19 +213,25 @@ const CAT_SVG = `<svg viewBox="0 0 38 42" xmlns="http://www.w3.org/2000/svg" sha
 
 const CATEGORIES = {
   dashboard: { label: "Dashboard" },
-  restaurant: { label: "Restaurant Deals", icon: "🍔", query: (loc, r) =>
-    `free food OR BOGO "buy one get one free" deal app reward loyalty sign up major fast food chain restaurant near ${loc} within ${r} miles` },
+  restaurant: { label: "Restaurant Deals", icon: "🍔" },
   grocery: { label: "Grocery", icon: "🛒", timeRange: "week", isPriced: true, groceryItems: GROCERY_ITEMS },
+  // Query text kept as plain natural phrasing rather than a heavy OR/quote
+  // chain — that style reads well on Tavily's semantic "advanced" search
+  // but over-narrows on Serper/DuckDuckGo's more literal keyword matching.
+  // The actual category-fit check now happens downstream (openRouterClassify's
+  // "qualifies: true only if genuinely about this category" / the regex
+  // fallback's CATEGORY_KEYWORDS gate in freebies.js), so the query itself
+  // just needs to point search at the right general topic.
   clothing: { label: "Clothing", icon: "👕", timeRange: "month", query: (loc) =>
-    `free clothing giveaway OR free t-shirt promotion OR free shoes promotion near ${loc} OR online` },
+    `free clothing shoes giveaways promotions near ${loc}` },
   toys: { label: "Toys", icon: "🧸", timeRange: "month", query: (loc) =>
-    `free toy promotion OR LEGO giveaway OR Hasbro promotion OR toy drive near ${loc}` },
+    `free toy giveaways promotions LEGO Hasbro toy drives near ${loc}` },
   accessories: { label: "Accessories", icon: "👜", timeRange: "month", query: (loc) =>
-    `free backpack OR free water bottle OR free tote bag OR free school supplies giveaway near ${loc}` },
+    `free backpacks water bottles tote bags school supplies giveaways near ${loc}` },
   events: { label: "Events", icon: "🎉", timeRange: "month", query: (loc, r) =>
     `free community events this week near ${loc} within ${r} miles` },
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc) =>
-    `food pantry OR church food box OR community fridge OR clothing closet OR soup kitchen near ${loc}` },
+    `food pantries community fridges clothing closets soup kitchens near ${loc}` },
   mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
     `free samples by mail 2026 baby beauty coffee pet seeds` }
 };
