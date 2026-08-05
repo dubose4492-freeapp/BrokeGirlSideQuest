@@ -4,8 +4,8 @@
 //   1. Kroger's official price (OAuth token -> nearest store -> product price)
 //   2. A web search across every major grocery chain (Tavily -> Serper ->
 //      Exa -> DuckDuckGo, each one tried only if the last errors or hits
-//      its cap) + OpenRouter extraction, or regex extraction if
-//      OpenRouter isn't configured
+//      its cap) + LLM extraction, or regex extraction if
+//      no LLM provider is configured
 //
 // The response is always { price, store, url } so the client can label the
 // card with wherever the winning price actually came from. Client never sees
@@ -19,6 +19,11 @@
 // needed, last resort). Shared with freebies.js and restaurant-deals.js so
 // the provider chain lives in one place.
 import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
+// LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
+// Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
+// extraction path instead of falling straight to the regex fallback).
+// Shared with freebies.js and restaurant-deals.js.
+import { chatWithFallback, anyLLMConfigured } from "../_shared/llm-providers.js";
 let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
@@ -138,7 +143,6 @@ async function extractLowestPriceLLM(env, item, results) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
     .join("\n\n");
-  const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
   const prompt = `You are finding the lowest real current price for "${item}" at a grocery store, from these search result snippets. Ignore prices for unrelated products, prices from unrelated categories, or vague/aggregated "prices range from X to Y" statements unless a specific store price is given.
 
 For the winning snippet, also identify the actual STORE the price is from — read this out of the text itself (e.g. "Walmart", "Publix", "Aldi"), not the website's domain name. If a specific location is mentioned (e.g. a street or city), include it (e.g. "Kroger - Main Street"). If no store name is clearly stated in the text, set store to null and the domain will be used instead.
@@ -153,19 +157,15 @@ or, if none of the snippets contain a specific usable price for this item:
 Snippets:
 ${snippetText}`;
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 200 })
-  });
-  if (!res.ok) throw new Error(`OpenRouter extraction failed (${res.status}).`);
-  const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content || "").trim().replace(/^```json\s*|```$/g, "");
+  let text;
+  try {
+    ({ text } = await chatWithFallback(env, prompt, { temperature: 0, maxTokens: 200 }));
+  } catch (err) {
+    throw new Error(`LLM price extraction failed: ${err.message}`);
+  }
+  const cleaned = text.replace(/^```json\s*|```$/g, "");
   let parsed;
-  try { parsed = JSON.parse(text); } catch { return null; }
+  try { parsed = JSON.parse(cleaned); } catch { return null; }
   if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
 
   const raw = results[parsed.index];
@@ -208,7 +208,7 @@ async function searchWithFallback(env, query, domains) {
 // those official pages had an extractable price.
 async function extractBest(env, item, results) {
   if (!results.length) return null;
-  if (env.OPENROUTER_API_KEY) {
+  if (anyLLMConfigured(env)) {
     try {
       const llmBest = await extractLowestPriceLLM(env, item, results);
       if (llmBest) return llmBest;

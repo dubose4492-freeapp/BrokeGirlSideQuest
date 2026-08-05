@@ -2,7 +2,7 @@
 //
 // Searches the OPEN WEB (no domain whitelist) for restaurant deals that are
 // either genuinely free, BOGO, or require a minimum purchase of $10 or less
-// to get a free item. Classifies with OpenRouter when configured (regex
+// to get a free item. Classifies with an LLM when configured (regex
 // fallback otherwise), rejects anything already expired, and dedupes
 // repeat listings of the same offer before returning.
 //
@@ -15,6 +15,11 @@
 // needed, last resort). Shared with freebies.js and grocery-price.js so
 // the provider chain lives in one place.
 import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
+// LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
+// Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
+// classification path instead of falling straight to the regex fallback).
+// Shared with freebies.js and grocery-price.js.
+import { chatWithFallback, anyLLMConfigured } from "../_shared/llm-providers.js";
 
 const MAX_QUALIFYING_PURCHASE = 10; // dollars — "$10 minimum purchase at most"
 
@@ -368,11 +373,10 @@ function regexClassify(results) {
 // object per snippet, so a roundup post naming several restaurants yields
 // one qualifying offer object per restaurant instead of collapsing the
 // whole post into a single card.
-async function openRouterClassify(env, results) {
+async function llmClassify(env, results) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
-  const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
   const today = new Date().toISOString().slice(0, 10);
   const prompt = `Today's date is ${today}. You are reviewing restaurant/food deal search results pulled from the open web. Some snippets describe just one deal; others are "roundup" posts listing deals at several different restaurants — extract EACH qualifying deal separately in that case, one per restaurant.
 
@@ -396,19 +400,15 @@ If a snippet is a roundup mentioning several restaurants' deals, include one obj
 Snippets:
 ${snippetText}`;
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 2000 })
-  });
-  if (!res.ok) throw new Error(`OpenRouter classification failed (${res.status}).`);
-  const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content || "").trim().replace(/^```json\s*|```$/g, "");
+  let text;
+  try {
+    ({ text } = await chatWithFallback(env, prompt, { temperature: 0, maxTokens: 2000 }));
+  } catch (err) {
+    throw new Error(`LLM classification failed: ${err.message}`);
+  }
+  const cleaned = text.replace(/^```json\s*|```$/g, "");
   let parsed;
-  try { parsed = JSON.parse(text); } catch { return null; }
+  try { parsed = JSON.parse(cleaned); } catch { return null; }
   if (!Array.isArray(parsed)) return null;
 
   const items = [];
@@ -519,9 +519,9 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
-  if (env.OPENROUTER_API_KEY) {
+  if (anyLLMConfigured(env)) {
     try {
-      classified = await openRouterClassify(env, results);
+      classified = await llmClassify(env, results);
     } catch (err) {
       // fall through to regex below
     }
@@ -537,7 +537,7 @@ export async function onRequestPost({ request, env }) {
     return item;
   }));
 
-  return json({ results: finalResults, usedLLM: !!env.OPENROUTER_API_KEY, provider });
+  return json({ results: finalResults, usedLLM: anyLLMConfigured(env), provider });
 }
 
 function json(obj, status = 200) {

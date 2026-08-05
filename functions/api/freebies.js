@@ -3,7 +3,7 @@
 // Same pattern as restaurant-deals.js and grocery-price.js, generalized to
 // every other tab (clothing, toys, accessories, events, community, mail):
 // search the OPEN WEB (no domain whitelist) using the query the client
-// already builds per category, classify each result with OpenRouter (regex
+// already builds per category, classify each result with an LLM (regex
 // fallback otherwise), then resolve a real "Claim" link — the actual
 // company/organization's own site — separate from whichever blog or
 // article the offer was found on. The client shows that source article as
@@ -18,6 +18,11 @@
 // needed, last resort). Shared with restaurant-deals.js and
 // grocery-price.js so the provider chain lives in one place.
 import { searchWithFallback } from "../_shared/search-providers.js";
+// LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
+// Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
+// classification path instead of falling straight to the regex fallback).
+// Shared with restaurant-deals.js and grocery-price.js.
+import { chatWithFallback, anyLLMConfigured } from "../_shared/llm-providers.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -174,9 +179,9 @@ function findMultipleOrgMentions(text) {
 }
 
 // Rough keyword gate used ONLY by the regex fallback (no LLM configured).
-// openRouterClassify already does real category judgment via its prompt
+// llmClassify already does real category judgment via its prompt
 // ("qualifies: true only if genuinely about this category") — this is a
-// cheaper stand-in for when OPENROUTER_API_KEY isn't set, so a roundup
+// cheaper stand-in for when no LLM provider is configured, so a roundup
 // post surfaced by e.g. the Clothing tab's query doesn't get every
 // company in it (Starbucks, Sephora, ...) blindly tagged "clothing" just
 // because that's the query that found it.
@@ -256,11 +261,10 @@ const CATEGORY_HINTS = {
 // object per snippet, so a roundup post naming several companies/orgs
 // yields one qualifying offer object per company/org instead of collapsing
 // the whole post into a single card.
-async function openRouterClassify(env, results, category) {
+async function llmClassify(env, results, category) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
-  const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
   const today = new Date().toISOString().slice(0, 10);
   const categoryHint = CATEGORY_HINTS[category] || "free offers";
 
@@ -281,19 +285,15 @@ If a snippet is a roundup mentioning several companies/orgs, include one object 
 Snippets:
 ${snippetText}`;
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 2000 })
-  });
-  if (!res.ok) throw new Error(`OpenRouter classification failed (${res.status}).`);
-  const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content || "").trim().replace(/^```json\s*|```$/g, "");
+  let text;
+  try {
+    ({ text } = await chatWithFallback(env, prompt, { temperature: 0, maxTokens: 2000 }));
+  } catch (err) {
+    throw new Error(`LLM classification failed: ${err.message}`);
+  }
+  const cleaned = text.replace(/^```json\s*|```$/g, "");
   let parsed;
-  try { parsed = JSON.parse(text); } catch { return null; }
+  try { parsed = JSON.parse(cleaned); } catch { return null; }
   if (!Array.isArray(parsed)) return null;
 
   const items = [];
@@ -381,9 +381,9 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
-  if (env.OPENROUTER_API_KEY) {
+  if (anyLLMConfigured(env)) {
     try {
-      classified = await openRouterClassify(env, results, category);
+      classified = await llmClassify(env, results, category);
     } catch (err) {
       // fall through to regex below
     }
@@ -401,7 +401,7 @@ export async function onRequestPost({ request, env }) {
     return item;
   }));
 
-  return json({ results: finalResults, usedLLM: !!env.OPENROUTER_API_KEY, provider });
+  return json({ results: finalResults, usedLLM: anyLLMConfigured(env), provider });
 }
 
 function json(obj, status = 200) {
