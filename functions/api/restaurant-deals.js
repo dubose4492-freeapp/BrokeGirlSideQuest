@@ -26,10 +26,59 @@ const KNOWN_CHAINS = [
   "cold stone", "sonic drive"
 ];
 
+// Chain name -> official domain, so a known chain's "Claim" link always
+// goes straight to their real site instead of whatever blog/article the
+// offer was found on. Independent/local spots don't have a fixed entry
+// here — those get resolved with a quick search instead (see
+// findOfficialSite below).
+const CHAIN_DOMAINS = {
+  "mcdonald": "mcdonalds.com", "chick-fil-a": "chick-fil-a.com", "chickfila": "chick-fil-a.com",
+  "wendy": "wendys.com", "taco bell": "tacobell.com", "chipotle": "chipotle.com",
+  "starbucks": "starbucks.com", "dunkin": "dunkindonuts.com", "popeyes": "popeyes.com",
+  "subway": "subway.com", "panera": "panerabread.com", "sonic": "sonicdrivein.com",
+  "arby": "arbys.com", "burger king": "bk.com", "kfc": "kfc.com",
+  "panda express": "pandaexpress.com", "wingstop": "wingstop.com", "culver": "culvers.com",
+  "dairy queen": "dairyqueen.com", "domino": "dominos.com", "pizza hut": "pizzahut.com",
+  "papa john": "papajohns.com", "little caesars": "littlecaesars.com", "zaxby": "zaxbys.com",
+  "bojangles": "bojangles.com", "ihop": "ihop.com", "denny": "dennys.com",
+  "cracker barrel": "crackerbarrel.com", "applebee": "applebees.com", "chili's": "chilis.com",
+  "chilis": "chilis.com", "olive garden": "olivegarden.com", "outback": "outback.com",
+  "buffalo wild wings": "buffalowildwings.com", "five guys": "fiveguys.com",
+  "in-n-out": "in-n-out.com", "in n out": "in-n-out.com", "whataburger": "whataburger.com",
+  "jack in the box": "jackinthebox.com", "del taco": "deltaco.com", "qdoba": "qdoba.com",
+  "jimmy john": "jimmyjohns.com", "firehouse subs": "firehousesubs.com",
+  "jersey mike": "jerseymikes.com", "raising cane": "raisingcanes.com",
+  "shake shack": "shakeshack.com", "carl's jr": "carlsjr.com", "carls jr": "carlsjr.com",
+  "hardee": "hardees.com", "krystal": "krystal.com", "checkers": "checkers.com",
+  "rally's": "rallys.com", "rallys": "rallys.com", "long john silver": "ljsilvers.com",
+  "captain d": "captainds.com", "boston market": "bostonmarket.com",
+  "moe's": "moes.com", "moes southwest": "moes.com", "el pollo loco": "elpolloloco.com",
+  "church's chicken": "churchschicken.com", "churchs chicken": "churchschicken.com",
+  "wingstreet": "pizzahut.com", "einstein bros": "einsteinbros.com",
+  "smoothie king": "smoothieking.com", "jamba juice": "jamba.com",
+  "auntie anne": "auntieannes.com", "cinnabon": "cinnabon.com",
+  "baskin robbins": "baskinrobbins.com", "cold stone": "coldstonecreamery.com"
+};
+const CHAIN_DOMAIN_LIST = Object.values(CHAIN_DOMAINS);
+const BLOCKED_CLAIM_DOMAINS = [
+  "facebook.com", "instagram.com", "tiktok.com", "twitter.com", "x.com", "reddit.com",
+  "yelp.com", "tripadvisor.com", "wikipedia.org", "pinterest.com", "youtube.com",
+  "linkedin.com", "doordash.com", "grubhub.com", "ubereats.com"
+];
+
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 function looksFree(text) { return /\bfree\b/i.test(text || ""); }
 function looksBogo(text) { return /\bbogo\b|buy\s*one[,]?\s*get\s*one/i.test(text || ""); }
 function isKnownChain(text) { const t = (text || "").toLowerCase(); return KNOWN_CHAINS.some(c => t.includes(c)); }
+// Finds a known chain's official domain mentioned in the page text (not
+// just the KNOWN_CHAINS name match used for the [LOCAL] tag).
+function findChainDomain(text) {
+  const t = (text || "").toLowerCase();
+  for (const [name, domain] of Object.entries(CHAIN_DOMAINS)) {
+    if (t.includes(name)) return domain;
+  }
+  return null;
+}
 
 function extractRequirementType(text) {
   const t = (text || "").toLowerCase();
@@ -181,6 +230,8 @@ function regexClassify(results) {
       if (isBogo) price = "BOGO Free";
       else if (qualifiesMinPurchase) price = `Free w/ $${minPurchase.toFixed(2)} purchase`;
 
+      const { claimUrl, blogUrl } = resolveClaimFromText(raw, combinedText);
+
       return {
         id: raw.url,
         title: (isLocal ? "[LOCAL] " : "") + (raw.title || "Untitled offer"),
@@ -191,10 +242,28 @@ function regexClassify(results) {
         isLocal,
         requirementType: extractRequirementType(combinedText),
         expires,
+        claimUrl,
+        blogUrl,
         category: "restaurant"
       };
     })
     .filter(Boolean);
+}
+
+// Cheap, no-search-call resolution: is the source page already the chain's
+// own official domain, or does the text name a known chain we have a
+// domain for? Leaves claimUrl null (to be resolved with a real search in
+// onRequestPost) only for independent/local spots we can't map directly.
+function resolveClaimFromText(raw, combinedText) {
+  const sourceDomain = hostname(raw.url);
+  if (CHAIN_DOMAIN_LIST.includes(sourceDomain)) {
+    return { claimUrl: raw.url, blogUrl: null };
+  }
+  const knownDomain = findChainDomain(combinedText);
+  if (knownDomain) {
+    return { claimUrl: `https://www.${knownDomain}`, blogUrl: raw.url };
+  }
+  return { claimUrl: null, blogUrl: raw.url };
 }
 
 // ---------- LLM classification ----------
@@ -244,6 +313,8 @@ ${snippetText}`;
       let price = null;
       if (p.requirementType === "bogo") price = "BOGO Free";
       else if (p.requirementType === "min_purchase" && p.minPurchase != null) price = `Free w/ $${Number(p.minPurchase).toFixed(2)} purchase`;
+      const combinedText = (p.title || raw.title || "") + " " + (raw.content || "");
+      const { claimUrl, blogUrl } = resolveClaimFromText(raw, combinedText);
       return {
         id: raw.url,
         title: (p.isLocal ? "[LOCAL] " : "") + (p.title || raw.title || "Untitled offer"),
@@ -254,6 +325,8 @@ ${snippetText}`;
         isLocal: !!p.isLocal,
         requirementType: p.requirementType || "unknown",
         expires: p.expires || null,
+        claimUrl,
+        blogUrl,
         category: "restaurant"
       };
     });
@@ -313,6 +386,23 @@ async function searchWithFallback(env, query) {
   return { results, provider: "brave" };
 }
 
+// For independent/local spots we don't have a domain mapped, spend one
+// extra search to find their real site — kept to the final, deduped list
+// so this doesn't multiply into a search per raw result.
+async function findOfficialSite(env, name) {
+  if (!name) return null;
+  try {
+    const { results } = await searchWithFallback(env, `${name} restaurant official website`);
+    const hit = (results || []).find(r => {
+      const h = hostname(r.url);
+      return h !== "Web" && !BLOCKED_CLAIM_DOMAINS.some(b => h.includes(b));
+    });
+    return hit ? hit.url : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function onRequestPost({ request, env }) {
   let body;
   try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
@@ -344,7 +434,17 @@ export async function onRequestPost({ request, env }) {
   }
   if (!classified) classified = regexClassify(results);
 
-  return json({ results: dedupeItems(classified), usedLLM: !!env.OPENROUTER_API_KEY, provider });
+  let finalResults = dedupeItems(classified);
+  finalResults = await Promise.all(finalResults.map(async item => {
+    if (item.claimUrl) return item; // already resolved to a known chain or its own domain
+    const name = item.title.replace(/^\[LOCAL\]\s*/, "");
+    const officialUrl = await findOfficialSite(env, name);
+    item.claimUrl = officialUrl || item.url;
+    item.blogUrl = officialUrl ? item.url : null;
+    return item;
+  }));
+
+  return json({ results: finalResults, usedLLM: !!env.OPENROUTER_API_KEY, provider });
 }
 
 function json(obj, status = 200) {

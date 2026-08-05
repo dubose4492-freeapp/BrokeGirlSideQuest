@@ -2,12 +2,29 @@
 
 ## What changed
 Your Tavily and Kroger credentials no longer live in the HTML file at all —
-they never reach the browser. Two Cloudflare Pages Functions hold them as
+they never reach the browser. Cloudflare Pages Functions hold them as
 encrypted secrets and proxy the requests server-side:
 
-- `functions/api/search.js`         → proxies to Tavily
+- `functions/api/search.js`         → generic proxy to Tavily (kept for
+  compatibility; no tab calls this directly anymore)
 - `functions/api/grocery-price.js`  → does the whole Kroger OAuth + store
   lookup + product price flow, and just returns a price to the browser
+- `functions/api/restaurant-deals.js` → searches the open web for
+  free/BOGO restaurant deals, classifies them, and resolves a real
+  "Claim" link (the chain's own site, or a found official site for
+  independent spots) separate from the source article
+- `functions/api/freebies.js`       → the same open-web-search + classify
+  + resolve-a-real-claim-link pipeline as restaurant-deals.js, generalized
+  to every other tab: clothing, toys, accessories, events, community, and
+  by-mail. Every tab now works exactly like grocery: "Claim" always points
+  at the actual company/org's own page, and if the offer was found on a
+  third-party blog or news article, that source shows up as a separate
+  "See Details" link.
+
+Because `freebies.js` and `restaurant-deals.js` spend one extra search
+call per result resolving a real "Claim" link, a full "run quest" scan now
+uses noticeably more of your Tavily/Brave (and OpenRouter, if configured)
+quota than before — worth keeping an eye on if you're on a free tier.
 
 ## Files in this package
 ```
@@ -18,6 +35,8 @@ functions/
   api/
     search.js
     grocery-price.js
+    restaurant-deals.js
+    freebies.js
 ```
 `functions/` must sit at the ROOT of your repo, as a sibling of `dist/` —
 not inside it. Wrangler looks for it there automatically.

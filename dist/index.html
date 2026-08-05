@@ -205,52 +205,14 @@
 // Nothing secret is embedded in this file anymore.
 // ============================================================
 
-// Retailer/official sites only — keeps grocery results to actual
-// store pages and flyers instead of blog "roundup" articles.
-const GROCERY_DOMAINS = [
-  "walmart.com", "kroger.com", "target.com", "aldi.us", "publix.com", "safeway.com",
-  "heb.com", "meijer.com", "wegmans.com", "sprouts.com", "harristeeter.com",
-  "foodlion.com", "winndixie.com", "giantfood.com", "stopandshop.com", "shoprite.com",
-  "instacart.com", "flipp.com", "albertsons.com", "vons.com", "smithsfoodanddrug.com"
-];
-// Official chain sites only — keeps restaurant results to the chains'
-// own promo pages instead of "10 best fast food deals" blog articles.
-const RESTAURANT_DOMAINS = [
-  "mcdonalds.com", "chick-fil-a.com", "tacobell.com", "chipotle.com", "starbucks.com",
-  "dunkindonuts.com", "popeyes.com", "subway.com", "panerabread.com", "sonicdrivein.com",
-  "arbys.com", "bk.com", "kfc.com", "pandaexpress.com", "wingstop.com", "culvers.com",
-  "dairyqueen.com", "dominos.com", "pizzahut.com", "papajohns.com", "littlecaesars.com",
-  "zaxbys.com", "bojangles.com", "ihop.com", "dennys.com", "crackerbarrel.com",
-  "applebees.com", "chilis.com", "olivegarden.com", "outback.com", "buffalowildwings.com",
-  "fiveguys.com", "in-n-out.com", "whataburger.com", "jackinthebox.com", "deltaco.com",
-  "qdoba.com", "jimmyjohns.com", "firehousesubs.com", "jerseymikes.com", "raisingcanes.com"
-];
-
 // Target grocery staples only — per spec, nothing else is priced/searched.
 const GROCERY_ITEMS = ["Bread", "Eggs", "Chicken", "Ground beef", "Cheese", "Butter", "Milk", "Adobo seasoning"];
-
-// Known big corporate fast-food/restaurant chains. Anything NOT matching one of these
-// is treated as an independent/mom-and-pop spot and tagged [LOCAL] per spec.
-const KNOWN_CHAINS = [
-  "mcdonald", "chick-fil-a", "chickfila", "wendy", "taco bell", "chipotle", "starbucks",
-  "dunkin", "popeyes", "subway", "panera", "sonic", "arby", "burger king", "kfc",
-  "panda express", "wingstop", "culver", "dairy queen", "domino", "pizza hut",
-  "papa john", "little caesars", "zaxby", "bojangles", "ihop", "denny", "cracker barrel",
-  "applebee", "chili's", "chilis", "olive garden", "outback", "buffalo wild wings",
-  "five guys", "in-n-out", "in n out", "whataburger", "jack in the box", "del taco",
-  "qdoba", "jimmy john", "firehouse subs", "jersey mike", "raising cane", "shake shack",
-  "carl's jr", "carls jr", "hardee", "krystal", "checkers", "rally's", "rallys",
-  "long john silver", "captain d", "boston market", "moe's", "moes southwest",
-  "el pollo loco", "church's chicken", "churchs chicken", "wingstreet", "einstein bros",
-  "smoothie king", "jamba juice", "auntie anne", "cinnabon", "baskin robbins",
-  "cold stone", "sonic drive"
-];
 
 const CAT_SVG = `<svg viewBox="0 0 38 42" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" role="img" aria-label="kawaii cat mascot"><rect x="10" y="0" width="1" height="1" fill="#2b1d3f"/><rect x="24" y="0" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="1" width="2" height="1" fill="#2b1d3f"/><rect x="24" y="1" width="2" height="1" fill="#2b1d3f"/><rect x="9" y="2" width="1" height="1" fill="#2b1d3f"/><rect x="10" y="2" width="1" height="1" fill="#f09e54"/><rect x="11" y="2" width="1" height="1" fill="#2b1d3f"/><rect x="23" y="2" width="1" height="1" fill="#2b1d3f"/><rect x="24" y="2" width="1" height="1" fill="#f09e54"/><rect x="25" y="2" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="3" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="3" width="1" height="1" fill="#f09e54"/><rect x="10" y="3" width="1" height="1" fill="#ffb0c0"/><rect x="11" y="3" width="1" height="1" fill="#2b1d3f"/><rect x="23" y="3" width="1" height="1" fill="#2b1d3f"/><rect x="24" y="3" width="1" height="1" fill="#ffb0c0"/><rect x="25" y="3" width="1" height="1" fill="#f09e54"/><rect x="26" y="3" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="4" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="4" width="1" height="1" fill="#f09e54"/><rect x="10" y="4" width="1" height="1" fill="#ffb0c0"/><rect x="11" y="4" width="1" height="1" fill="#f09e54"/><rect x="12" y="4" width="1" height="1" fill="#2b1d3f"/><rect x="16" y="4" width="1" height="1" fill="#cf742e"/><rect x="22" y="4" width="1" height="1" fill="#2b1d3f"/><rect x="23" y="4" width="1" height="1" fill="#f09e54"/><rect x="24" y="4" width="1" height="1" fill="#ffb0c0"/><rect x="25" y="4" width="1" height="1" fill="#f09e54"/><rect x="26" y="4" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="5" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="5" width="1" height="1" fill="#f09e54"/><rect x="9" y="5" width="3" height="1" fill="#ffb0c0"/><rect x="12" y="5" width="1" height="1" fill="#2b1d3f"/><rect x="16" y="5" width="1" height="1" fill="#cf742e"/><rect x="22" y="5" width="1" height="1" fill="#2b1d3f"/><rect x="23" y="5" width="3" height="1" fill="#ffb0c0"/><rect x="26" y="5" width="1" height="1" fill="#f09e54"/><rect x="27" y="5" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="6" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="6" width="2" height="1" fill="#f09e54"/><rect x="9" y="6" width="2" height="1" fill="#ffb0c0"/><rect x="11" y="6" width="1" height="1" fill="#cf742e"/><rect x="12" y="6" width="1" height="1" fill="#f09e54"/><rect x="13" y="6" width="4" height="1" fill="#2b1d3f"/><rect x="17" y="6" width="1" height="1" fill="#cf742e"/><rect x="18" y="6" width="3" height="1" fill="#2b1d3f"/><rect x="21" y="6" width="1" height="1" fill="#cf742e"/><rect x="22" y="6" width="1" height="1" fill="#f09e54"/><rect x="23" y="6" width="3" height="1" fill="#ffb0c0"/><rect x="26" y="6" width="2" height="1" fill="#f09e54"/><rect x="28" y="6" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="7" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="7" width="1" height="1" fill="#f09e54"/><rect x="8" y="7" width="3" height="1" fill="#ffb0c0"/><rect x="11" y="7" width="1" height="1" fill="#2b1d3f"/><rect x="12" y="7" width="1" height="1" fill="#cf742e"/><rect x="13" y="7" width="1" height="1" fill="#2b1d3f"/><rect x="14" y="7" width="3" height="1" fill="#f09e54"/><rect x="17" y="7" width="1" height="1" fill="#cf742e"/><rect x="18" y="7" width="3" height="1" fill="#f09e54"/><rect x="21" y="7" width="1" height="1" fill="#2b1d3f"/><rect x="22" y="7" width="1" height="1" fill="#cf742e"/><rect x="23" y="7" width="1" height="1" fill="#2b1d3f"/><rect x="24" y="7" width="3" height="1" fill="#ffb0c0"/><rect x="27" y="7" width="1" height="1" fill="#f09e54"/><rect x="28" y="7" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="8" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="8" width="2" height="1" fill="#f09e54"/><rect x="8" y="8" width="2" height="1" fill="#ffb0c0"/><rect x="10" y="8" width="1" height="1" fill="#2b1d3f"/><rect x="11" y="8" width="1" height="1" fill="#f09e54"/><rect x="12" y="8" width="1" height="1" fill="#cf742e"/><rect x="13" y="8" width="5" height="1" fill="#f09e54"/><rect x="18" y="8" width="1" height="1" fill="#cf742e"/><rect x="19" y="8" width="3" height="1" fill="#f09e54"/><rect x="22" y="8" width="1" height="1" fill="#cf742e"/><rect x="23" y="8" width="1" height="1" fill="#f09e54"/><rect x="24" y="8" width="1" height="1" fill="#2b1d3f"/><rect x="25" y="8" width="2" height="1" fill="#ffb0c0"/><rect x="27" y="8" width="2" height="1" fill="#f09e54"/><rect x="29" y="8" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="9" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="9" width="1" height="1" fill="#f09e54"/><rect x="7" y="9" width="1" height="1" fill="#ffb0c0"/><rect x="8" y="9" width="2" height="1" fill="#2b1d3f"/><rect x="10" y="9" width="3" height="1" fill="#f09e54"/><rect x="13" y="9" width="1" height="1" fill="#cf742e"/><rect x="14" y="9" width="4" height="1" fill="#f09e54"/><rect x="18" y="9" width="1" height="1" fill="#cf742e"/><rect x="19" y="9" width="4" height="1" fill="#f09e54"/><rect x="23" y="9" width="1" height="1" fill="#cf742e"/><rect x="24" y="9" width="1" height="1" fill="#f09e54"/><rect x="25" y="9" width="2" height="1" fill="#2b1d3f"/><rect x="27" y="9" width="1" height="1" fill="#ffb0c0"/><rect x="28" y="9" width="1" height="1" fill="#f09e54"/><rect x="29" y="9" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="10" width="4" height="1" fill="#2b1d3f"/><rect x="8" y="10" width="5" height="1" fill="#f09e54"/><rect x="13" y="10" width="1" height="1" fill="#cf742e"/><rect x="14" y="10" width="9" height="1" fill="#f09e54"/><rect x="23" y="10" width="1" height="1" fill="#cf742e"/><rect x="24" y="10" width="3" height="1" fill="#f09e54"/><rect x="27" y="10" width="4" height="1" fill="#2b1d3f"/><rect x="7" y="11" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="11" width="19" height="1" fill="#f09e54"/><rect x="27" y="11" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="12" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="12" width="1" height="1" fill="#f09e54"/><rect x="8" y="12" width="1" height="1" fill="#cf742e"/><rect x="9" y="12" width="15" height="1" fill="#f09e54"/><rect x="24" y="12" width="1" height="1" fill="#cf742e"/><rect x="25" y="12" width="3" height="1" fill="#f09e54"/><rect x="28" y="12" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="13" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="13" width="3" height="1" fill="#f09e54"/><rect x="9" y="13" width="1" height="1" fill="#cf742e"/><rect x="10" y="13" width="15" height="1" fill="#f09e54"/><rect x="25" y="13" width="1" height="1" fill="#cf742e"/><rect x="26" y="13" width="3" height="1" fill="#f09e54"/><rect x="29" y="13" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="14" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="14" width="3" height="1" fill="#f09e54"/><rect x="9" y="14" width="1" height="1" fill="#cf742e"/><rect x="10" y="14" width="15" height="1" fill="#f09e54"/><rect x="25" y="14" width="1" height="1" fill="#cf742e"/><rect x="26" y="14" width="3" height="1" fill="#f09e54"/><rect x="29" y="14" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="15" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="15" width="4" height="1" fill="#f09e54"/><rect x="10" y="15" width="1" height="1" fill="#cf742e"/><rect x="11" y="15" width="15" height="1" fill="#f09e54"/><rect x="26" y="15" width="1" height="1" fill="#cf742e"/><rect x="27" y="15" width="2" height="1" fill="#f09e54"/><rect x="29" y="15" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="16" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="16" width="4" height="1" fill="#f09e54"/><rect x="9" y="16" width="3" height="1" fill="#2b1d3f"/><rect x="12" y="16" width="11" height="1" fill="#f09e54"/><rect x="23" y="16" width="3" height="1" fill="#2b1d3f"/><rect x="26" y="16" width="1" height="1" fill="#cf742e"/><rect x="27" y="16" width="3" height="1" fill="#f09e54"/><rect x="30" y="16" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="17" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="17" width="2" height="1" fill="#f09e54"/><rect x="7" y="17" width="2" height="1" fill="#2b1d3f"/><rect x="9" y="17" width="1" height="1" fill="#9678c8"/><rect x="10" y="17" width="2" height="1" fill="#5a408c"/><rect x="12" y="17" width="2" height="1" fill="#2b1d3f"/><rect x="14" y="17" width="7" height="1" fill="#f09e54"/><rect x="21" y="17" width="2" height="1" fill="#2b1d3f"/><rect x="23" y="17" width="1" height="1" fill="#5a408c"/><rect x="24" y="17" width="1" height="1" fill="#9678c8"/><rect x="25" y="17" width="1" height="1" fill="#5a408c"/><rect x="26" y="17" width="2" height="1" fill="#2b1d3f"/><rect x="28" y="17" width="2" height="1" fill="#f09e54"/><rect x="30" y="17" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="18" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="18" width="2" height="1" fill="#f09e54"/><rect x="7" y="18" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="18" width="3" height="1" fill="#9678c8"/><rect x="11" y="18" width="2" height="1" fill="#5a408c"/><rect x="13" y="18" width="1" height="1" fill="#2b1d3f"/><rect x="14" y="18" width="7" height="1" fill="#f09e54"/><rect x="21" y="18" width="1" height="1" fill="#2b1d3f"/><rect x="22" y="18" width="1" height="1" fill="#5a408c"/><rect x="23" y="18" width="3" height="1" fill="#9678c8"/><rect x="26" y="18" width="1" height="1" fill="#5a408c"/><rect x="27" y="18" width="1" height="1" fill="#2b1d3f"/><rect x="28" y="18" width="2" height="1" fill="#f09e54"/><rect x="30" y="18" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="19" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="19" width="1" height="1" fill="#f09e54"/><rect x="6" y="19" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="19" width="2" height="1" fill="#5a408c"/><rect x="9" y="19" width="1" height="1" fill="#9678c8"/><rect x="10" y="19" width="4" height="1" fill="#5a408c"/><rect x="14" y="19" width="1" height="1" fill="#2b1d3f"/><rect x="15" y="19" width="5" height="1" fill="#fff4de"/><rect x="20" y="19" width="1" height="1" fill="#2b1d3f"/><rect x="21" y="19" width="3" height="1" fill="#5a408c"/><rect x="24" y="19" width="1" height="1" fill="#9678c8"/><rect x="25" y="19" width="3" height="1" fill="#5a408c"/><rect x="28" y="19" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="19" width="1" height="1" fill="#f09e54"/><rect x="30" y="19" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="20" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="20" width="1" height="1" fill="#f09e54"/><rect x="6" y="20" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="20" width="7" height="1" fill="#5a408c"/><rect x="14" y="20" width="7" height="1" fill="#2b1d3f"/><rect x="21" y="20" width="7" height="1" fill="#5a408c"/><rect x="28" y="20" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="20" width="1" height="1" fill="#f09e54"/><rect x="30" y="20" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="21" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="21" width="1" height="1" fill="#f09e54"/><rect x="6" y="21" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="21" width="7" height="1" fill="#5a408c"/><rect x="14" y="21" width="1" height="1" fill="#2b1d3f"/><rect x="15" y="21" width="5" height="1" fill="#fff4de"/><rect x="20" y="21" width="1" height="1" fill="#2b1d3f"/><rect x="21" y="21" width="7" height="1" fill="#5a408c"/><rect x="28" y="21" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="21" width="1" height="1" fill="#f09e54"/><rect x="30" y="21" width="1" height="1" fill="#2b1d3f"/><rect x="32" y="21" width="1" height="1" fill="#9aa0ac"/><rect x="5" y="22" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="22" width="1" height="1" fill="#f09e54"/><rect x="7" y="22" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="22" width="5" height="1" fill="#5a408c"/><rect x="13" y="22" width="1" height="1" fill="#2b1d3f"/><rect x="14" y="22" width="7" height="1" fill="#fff4de"/><rect x="21" y="22" width="1" height="1" fill="#2b1d3f"/><rect x="22" y="22" width="5" height="1" fill="#5a408c"/><rect x="27" y="22" width="1" height="1" fill="#2b1d3f"/><rect x="28" y="22" width="1" height="1" fill="#f09e54"/><rect x="29" y="22" width="1" height="1" fill="#2b1d3f"/><rect x="32" y="22" width="1" height="1" fill="#9aa0ac"/><rect x="5" y="23" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="23" width="1" height="1" fill="#f09e54"/><rect x="7" y="23" width="2" height="1" fill="#2b1d3f"/><rect x="9" y="23" width="3" height="1" fill="#5a408c"/><rect x="12" y="23" width="2" height="1" fill="#2b1d3f"/><rect x="14" y="23" width="7" height="1" fill="#fff4de"/><rect x="21" y="23" width="2" height="1" fill="#2b1d3f"/><rect x="23" y="23" width="3" height="1" fill="#5a408c"/><rect x="26" y="23" width="2" height="1" fill="#2b1d3f"/><rect x="28" y="23" width="1" height="1" fill="#f09e54"/><rect x="29" y="23" width="1" height="1" fill="#2b1d3f"/><rect x="32" y="23" width="1" height="1" fill="#9aa0ac"/><rect x="5" y="24" width="1" height="1" fill="#2b1d3f"/><rect x="6" y="24" width="3" height="1" fill="#f09e54"/><rect x="9" y="24" width="3" height="1" fill="#2b1d3f"/><rect x="12" y="24" width="11" height="1" fill="#fff4de"/><rect x="23" y="24" width="3" height="1" fill="#2b1d3f"/><rect x="26" y="24" width="3" height="1" fill="#f09e54"/><rect x="29" y="24" width="1" height="1" fill="#2b1d3f"/><rect x="32" y="24" width="1" height="1" fill="#9aa0ac"/><rect x="5" y="25" width="2" height="1" fill="#ffb0c0"/><rect x="7" y="25" width="2" height="1" fill="#f09e54"/><rect x="9" y="25" width="7" height="1" fill="#fff4de"/><rect x="16" y="25" width="3" height="1" fill="#ffb0c0"/><rect x="19" y="25" width="7" height="1" fill="#fff4de"/><rect x="26" y="25" width="2" height="1" fill="#f09e54"/><rect x="28" y="25" width="9" height="1" fill="#2b1d3f"/><rect x="4" y="26" width="4" height="1" fill="#ffb0c0"/><rect x="8" y="26" width="2" height="1" fill="#f09e54"/><rect x="10" y="26" width="7" height="1" fill="#fff4de"/><rect x="17" y="26" width="1" height="1" fill="#ffb0c0"/><rect x="18" y="26" width="7" height="1" fill="#fff4de"/><rect x="25" y="26" width="2" height="1" fill="#f09e54"/><rect x="27" y="26" width="1" height="1" fill="#ffb0c0"/><rect x="28" y="26" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="26" width="7" height="1" fill="#fdf6ec"/><rect x="36" y="26" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="27" width="4" height="1" fill="#ffb0c0"/><rect x="8" y="27" width="3" height="1" fill="#f09e54"/><rect x="11" y="27" width="2" height="1" fill="#fff4de"/><rect x="13" y="27" width="1" height="1" fill="#2b1d3f"/><rect x="14" y="27" width="3" height="1" fill="#fff4de"/><rect x="17" y="27" width="1" height="1" fill="#ffb0c0"/><rect x="18" y="27" width="1" height="1" fill="#fff4de"/><rect x="19" y="27" width="1" height="1" fill="#2b1d3f"/><rect x="20" y="27" width="4" height="1" fill="#fff4de"/><rect x="24" y="27" width="3" height="1" fill="#f09e54"/><rect x="27" y="27" width="1" height="1" fill="#ffb0c0"/><rect x="28" y="27" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="27" width="7" height="1" fill="#fdf6ec"/><rect x="36" y="27" width="1" height="1" fill="#2b1d3f"/><rect x="5" y="28" width="2" height="1" fill="#ffb0c0"/><rect x="8" y="28" width="2" height="1" fill="#2b1d3f"/><rect x="10" y="28" width="1" height="1" fill="#f09e54"/><rect x="11" y="28" width="1" height="1" fill="#3f5fae"/><rect x="12" y="28" width="2" height="1" fill="#fff4de"/><rect x="14" y="28" width="1" height="1" fill="#2b1d3f"/><rect x="15" y="28" width="3" height="1" fill="#fff4de"/><rect x="18" y="28" width="1" height="1" fill="#2b1d3f"/><rect x="19" y="28" width="4" height="1" fill="#fff4de"/><rect x="23" y="28" width="2" height="1" fill="#f09e54"/><rect x="25" y="28" width="2" height="1" fill="#2b1d3f"/><rect x="28" y="28" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="28" width="7" height="1" fill="#fdf6ec"/><rect x="36" y="28" width="1" height="1" fill="#2b1d3f"/><rect x="10" y="29" width="3" height="1" fill="#3f5fae"/><rect x="13" y="29" width="7" height="1" fill="#2b1d3f"/><rect x="20" y="29" width="1" height="1" fill="#3f5fae"/><rect x="21" y="29" width="3" height="1" fill="#f09e54"/><rect x="24" y="29" width="1" height="1" fill="#2b1d3f"/><rect x="28" y="29" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="29" width="7" height="1" fill="#fdf6ec"/><rect x="36" y="29" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="30" width="13" height="1" fill="#3f5fae"/><rect x="22" y="30" width="2" height="1" fill="#2b1d3f"/><rect x="28" y="30" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="30" width="7" height="1" fill="#fdf6ec"/><rect x="36" y="30" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="31" width="2" height="1" fill="#2b1d3f"/><rect x="10" y="31" width="1" height="1" fill="#3f5fae"/><rect x="11" y="31" width="1" height="1" fill="#2b1d3f"/><rect x="12" y="31" width="7" height="1" fill="#3f5fae"/><rect x="19" y="31" width="1" height="1" fill="#2b1d3f"/><rect x="20" y="31" width="3" height="1" fill="#3f5fae"/><rect x="28" y="31" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="31" width="7" height="1" fill="#fdf6ec"/><rect x="36" y="31" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="32" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="32" width="3" height="1" fill="#3f5fae"/><rect x="11" y="32" width="1" height="1" fill="#2b1d3f"/><rect x="12" y="32" width="7" height="1" fill="#3f5fae"/><rect x="19" y="32" width="1" height="1" fill="#2b1d3f"/><rect x="20" y="32" width="3" height="1" fill="#3f5fae"/><rect x="23" y="32" width="1" height="1" fill="#2b1d3f"/><rect x="28" y="32" width="9" height="1" fill="#96643c"/><rect x="7" y="33" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="33" width="3" height="1" fill="#3f5fae"/><rect x="11" y="33" width="9" height="1" fill="#2b1d3f"/><rect x="20" y="33" width="3" height="1" fill="#3f5fae"/><rect x="23" y="33" width="1" height="1" fill="#2b1d3f"/><rect x="28" y="33" width="2" height="1" fill="#96643c"/><rect x="30" y="33" width="1" height="1" fill="#3a2418"/><rect x="31" y="33" width="6" height="1" fill="#96643c"/><rect x="4" y="34" width="4" height="1" fill="#2b1d3f"/><rect x="8" y="34" width="7" height="1" fill="#3f5fae"/><rect x="15" y="34" width="1" height="1" fill="#ffd23f"/><rect x="16" y="34" width="7" height="1" fill="#3f5fae"/><rect x="23" y="34" width="1" height="1" fill="#2b1d3f"/><rect x="26" y="34" width="2" height="1" fill="#2b1d3f"/><rect x="28" y="34" width="1" height="1" fill="#96643c"/><rect x="29" y="34" width="3" height="1" fill="#3a2418"/><rect x="32" y="34" width="1" height="1" fill="#96643c"/><rect x="33" y="34" width="1" height="1" fill="#3a2418"/><rect x="34" y="34" width="3" height="1" fill="#96643c"/><rect x="3" y="35" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="35" width="4" height="1" fill="#f09e54"/><rect x="8" y="35" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="35" width="5" height="1" fill="#3f5fae"/><rect x="14" y="35" width="3" height="1" fill="#ffd23f"/><rect x="17" y="35" width="6" height="1" fill="#3f5fae"/><rect x="23" y="35" width="1" height="1" fill="#2b1d3f"/><rect x="25" y="35" width="1" height="1" fill="#2b1d3f"/><rect x="26" y="35" width="2" height="1" fill="#f09e54"/><rect x="28" y="35" width="1" height="1" fill="#2b1d3f"/><rect x="29" y="35" width="1" height="1" fill="#96643c"/><rect x="30" y="35" width="5" height="1" fill="#3a2418"/><rect x="35" y="35" width="2" height="1" fill="#96643c"/><rect x="3" y="36" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="36" width="4" height="1" fill="#f09e54"/><rect x="8" y="36" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="36" width="6" height="1" fill="#3f5fae"/><rect x="15" y="36" width="1" height="1" fill="#ffd23f"/><rect x="16" y="36" width="7" height="1" fill="#3f5fae"/><rect x="23" y="36" width="2" height="1" fill="#2b1d3f"/><rect x="25" y="36" width="4" height="1" fill="#f09e54"/><rect x="29" y="36" width="1" height="1" fill="#2b1d3f"/><rect x="30" y="36" width="4" height="1" fill="#3a2418"/><rect x="34" y="36" width="3" height="1" fill="#96643c"/><rect x="3" y="37" width="1" height="1" fill="#2b1d3f"/><rect x="4" y="37" width="4" height="1" fill="#f09e54"/><rect x="8" y="37" width="1" height="1" fill="#2b1d3f"/><rect x="9" y="37" width="14" height="1" fill="#3f5fae"/><rect x="23" y="37" width="2" height="1" fill="#2b1d3f"/><rect x="25" y="37" width="4" height="1" fill="#f09e54"/><rect x="29" y="37" width="1" height="1" fill="#2b1d3f"/><rect x="30" y="37" width="1" height="1" fill="#96643c"/><rect x="31" y="37" width="1" height="1" fill="#3a2418"/><rect x="32" y="37" width="5" height="1" fill="#96643c"/><rect x="4" y="38" width="4" height="1" fill="#2b1d3f"/><rect x="8" y="38" width="15" height="1" fill="#3f5fae"/><rect x="23" y="38" width="1" height="1" fill="#2b1d3f"/><rect x="25" y="38" width="1" height="1" fill="#2b1d3f"/><rect x="26" y="38" width="2" height="1" fill="#f09e54"/><rect x="28" y="38" width="1" height="1" fill="#2b1d3f"/><rect x="7" y="39" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="39" width="15" height="1" fill="#3f5fae"/><rect x="23" y="39" width="1" height="1" fill="#2b1d3f"/><rect x="26" y="39" width="2" height="1" fill="#2b1d3f"/><rect x="7" y="40" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="40" width="15" height="1" fill="#3f5fae"/><rect x="23" y="40" width="1" height="1" fill="#2b1d3f"/><rect x="8" y="41" width="15" height="1" fill="#2b1d3f"/></svg>`;
 
 const CATEGORIES = {
   dashboard: { label: "Dashboard" },
-  restaurant: { label: "Restaurant Deals", icon: "🍔", timeRange: "week", includeDomains: RESTAURANT_DOMAINS, searchDepth: "advanced", query: (loc, r) =>
+  restaurant: { label: "Restaurant Deals", icon: "🍔", query: (loc, r) =>
     `free food OR BOGO "buy one get one free" deal app reward loyalty sign up major fast food chain restaurant near ${loc} within ${r} miles` },
   grocery: { label: "Grocery", icon: "🛒", timeRange: "week", isPriced: true, groceryItems: GROCERY_ITEMS },
   clothing: { label: "Clothing", icon: "👕", timeRange: "month", query: (loc) =>
@@ -299,74 +261,10 @@ try {
   if (saved) state.results = { ...state.results, ...saved };
 } catch (e) {}
 
-// ---------- heuristic extraction: turns a raw search result into an item card ----------
-function extractPrice(text) {
-  const m = (text || "").match(/\$\s?\d+(\.\d{2})?/);
-  return m ? m[0].replace(/\s/, "") : null;
-}
-function looksFree(text) {
-  return /\bfree\b/i.test(text || "");
-}
-function looksBogo(text) {
-  return /\bbogo\b|buy\s*one[,]?\s*get\s*one/i.test(text || "");
-}
-function isKnownChain(text) {
-  const t = (text || "").toLowerCase();
-  return KNOWN_CHAINS.some(c => t.includes(c));
-}
-function extractRequirementType(text) {
-  const t = (text || "").toLowerCase();
-  if (looksBogo(t)) return "bogo";
-  if (/no purchase (necessary|required)/.test(t)) return "no_purchase";
-  if (/sign[\s-]?up|register|create an account/.test(t)) return "signup";
-  if (/loyalty|rewards (app|program|card)/.test(t)) return "loyalty";
-  if (/rebate|mail-in|mail in offer/.test(t)) return "rebate";
-  if (/giveaway|contest|sweepstakes|enter to win/.test(t)) return "giveaway";
-  return "unknown";
-}
-function extractExpiry(text) {
-  const m = (text || "").match(/\b(expires?|through|until|ends?)\b[^.]{0,25}/i);
-  return m ? m[0].replace(/^\w+/, w => w[0].toUpperCase() + w.slice(1)) : null;
-}
+// hostname() is still used by itemCard() to label the "See Details" link
+// with a readable source domain (e.g. "somefoodblog.com").
 function hostname(url) {
   try { return new URL(url).hostname.replace("www.", ""); } catch (e) { return "Web"; }
-}
-function toItem(raw, catKey) {
-  const price = extractPrice(raw.content);
-  const isFree = !price && looksFree(raw.content);
-  const isBogo = looksBogo(raw.content) || looksBogo(raw.title);
-
-  if (catKey === "restaurant") {
-    // Pricing cap: must be 100% free or BOGO free. Anything with a real
-    // price attached that isn't flagged BOGO falls outside the spec — drop it.
-    if (price && !isBogo) return null;
-    const combined = (raw.title || "") + " " + (raw.content || "");
-    const isLocal = !isKnownChain(combined);
-    return {
-      id: raw.url,
-      title: (isLocal ? "[LOCAL] " : "") + (raw.title || "Untitled offer"),
-      store: hostname(raw.url),
-      url: raw.url,
-      price: isBogo ? "BOGO Free" : price,
-      isFree: isFree || isBogo,
-      isLocal: isLocal,
-      requirementType: extractRequirementType(raw.content),
-      expires: extractExpiry(raw.content),
-      category: catKey
-    };
-  }
-
-  return {
-    id: raw.url,
-    title: raw.title || "Untitled offer",
-    store: hostname(raw.url),
-    url: raw.url,
-    price: price,
-    isFree: isFree,
-    requirementType: extractRequirementType(raw.content),
-    expires: extractExpiry(raw.content),
-    category: catKey
-  };
 }
 
 // ---------- rendering ----------
@@ -390,16 +288,16 @@ function priceLabel(item, cat) {
 
 function itemCard(item) {
   const cat = CATEGORIES[item.category];
-  const isGrocery = item.category === "grocery";
 
-  // Grocery: "Claim" always points at the actual grocer's page for the
-  // winning price — productUrl when we resolved one, otherwise falling
-  // back to the blog page so Claim is never a dead end. When the price
-  // came from a third-party page, the "See Details" line in the meta row
-  // gets the blog link appended right after it (one line, not a duplicate
-  // second line).
-  const claimUrl = isGrocery ? (item.productUrl || item.url) : item.url;
-  const detailLinkInline = (isGrocery && item.blogUrl)
+  // Every tab now follows the same pattern grocery started with: "Claim"
+  // always points at the actual company/org's own page — claimUrl
+  // (restaurant/clothing/toys/etc.) or productUrl (grocery's naming) when
+  // we resolved one, otherwise falling back to the original result link so
+  // Claim is never a dead end. When the offer came from a third-party page
+  // (blog, deal tracker, news article), that source shows up as a "See
+  // Details" link right in the meta row.
+  const claimUrl = item.claimUrl || item.productUrl || item.url;
+  const detailLinkInline = item.blogUrl
     ? `: <a href="${item.blogUrl}" target="_blank" rel="noopener">${hostname(item.blogUrl)}</a>`
     : "";
 
@@ -498,27 +396,6 @@ function showToast(msg) {
 }
 
 // ---------- scanning ----------
-async function searchCategory(key) {
-  const cat = CATEGORIES[key];
-  const query = cat.query(state.zip, state.radius);
-  const body = { query, max_results: 8, search_depth: cat.searchDepth || "basic" };
-  if (cat.timeRange) body.time_range = cat.timeRange;
-  if (cat.includeDomains) body.include_domains = cat.includeDomains;
-
-  const response = await fetch("/api/search", {
-    method: "POST",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new Error(`${cat.label} search failed (${response.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await response.json();
-  return (data.results || []).map(r => toItem(r, key)).filter(Boolean);
-}
-
 // ---------- Grocery pricing — fully server-side now. /functions/api/grocery-price.js
 // checks Kroger's official price AND a Tavily+OpenRouter web search in parallel,
 // then returns whichever is actually cheaper (with its real source labeled).
@@ -561,6 +438,25 @@ async function searchGroceryCategory() {
   return items;
 }
 
+// Every other tab (clothing, toys, accessories, events, community, mail)
+// goes through the same open-web-search + classify + resolve-a-real-claim-
+// link pipeline as grocery/restaurant, via /functions/api/freebies.js. The
+// client still builds the category-specific query text (see CATEGORIES
+// above); the server does the searching, classifying, and link resolution.
+async function searchFreebiesCategory(key) {
+  const cat = CATEGORIES[key];
+  const query = cat.query(state.zip, state.radius);
+  const response = await fetch("/api/freebies", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `${cat.label} search failed (${response.status}).`);
+  return data.results || [];
+}
+
 // Restaurant deals now go through a dedicated endpoint that classifies
 // free/BOGO offers server-side (with OpenRouter when configured, regex
 // fallback otherwise) — the response is already in final card-ready shape.
@@ -595,7 +491,7 @@ async function runFullScan() {
     try {
       state.results[key] = key === "grocery" ? await searchGroceryCategory()
         : key === "restaurant" ? await searchRestaurantCategory()
-        : await searchCategory(key);
+        : await searchFreebiesCategory(key);
     } catch (err) {
       state.error = (state.error ? state.error + " " : "") + err.message;
     }
