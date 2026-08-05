@@ -77,6 +77,19 @@
   .mascot-empty img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
   header h1 { font-family: 'Press Start 2P', monospace; font-size: 14px; margin: 0; line-height: 1.6; letter-spacing: 0.5px; text-shadow: 3px 3px 0 var(--pink); }
   header .sub { font-size: 13px; color: #CFC6F5; margin-top: 2px; font-weight: 700; }
+  .hero-tagline { font-size: 13px; color: #CFC6F5; margin: 6px 0 0; font-weight: 700; max-width: 380px; line-height: 1.5; }
+  .header-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+  .hud {
+    max-width: 1000px; margin: 16px auto 0; background: #150F29; border: 3px solid var(--lav);
+    padding: 12px 18px; display: flex; gap: 26px; flex-wrap: wrap; align-items: center;
+    box-shadow: inset 0 0 0 1px #00000055;
+  }
+  .hud-stat { display: flex; flex-direction: column; gap: 4px; min-width: 90px; }
+  .hud-label { font-family: 'Press Start 2P', monospace; font-size: 9px; color: var(--sky); letter-spacing: 1px; }
+  .hud-value { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 20px; color: #fff; }
+  .hud-progress { flex: 1; min-width: 170px; display: flex; flex-direction: column; gap: 6px; }
+  .hud-bar { height: 10px; background: #00000066; border: 2px solid #000; }
+  .hud-bar-fill { height: 100%; background: var(--sun); }
   .refresh-btn {
     background: var(--mint); color: #0B2A18; border: 3px solid var(--ink); font-weight: 800;
     padding: 12px 18px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;
@@ -91,7 +104,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 0%,100% { box-shadow: 5px 5px 0 var(--ink); } 50% { box-shadow: 5px 5px 0 var(--sun), 0 0 16px 2px #ffc93c77; } }
 
-  nav { background: var(--panel); border-bottom: 4px solid var(--ink); position: sticky; top: 90px; z-index: 9; overflow-x: auto; white-space: nowrap; }
+  nav { background: var(--panel); border-bottom: 4px solid var(--ink); position: sticky; top: 0; z-index: 9; overflow-x: auto; white-space: nowrap; }
   nav .inner { max-width: 1000px; margin: 0 auto; display: flex; }
   nav button {
     background: none; border: none; border-right: 2px dashed var(--lav-soft);
@@ -184,6 +197,38 @@
   .stat { background: var(--panel); border: 3px solid var(--ink); padding: 14px; text-align: center; box-shadow: 4px 4px 0 var(--pink); }
   .stat .num { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 30px; color: var(--ink); letter-spacing: -1px; }
   .stat .lbl { font-size: 12px; color: #4a3d68; margin-top: 6px; font-weight: 800; }
+
+  .quest-board-head {
+    font-family: 'Press Start 2P', monospace; font-size: 13px; margin: 4px 0 14px; letter-spacing: 1px;
+    display: flex; align-items: center; gap: 10px; color: var(--ink);
+  }
+  .quest-board-head .dash-line { flex: 1; border-bottom: 3px dotted var(--ink); height: 0; }
+  .quest-board { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
+  .quest-card {
+    background: var(--panel); border: 3px solid var(--ink); padding: 16px; box-shadow: 5px 5px 0 var(--pink);
+    cursor: pointer; transition: transform .1s, box-shadow .1s; display: flex; flex-direction: column; gap: 6px;
+  }
+  .quest-card:hover { transform: translate(-2px, -2px); box-shadow: 7px 7px 0 var(--pink); }
+  .quest-card-icon { font-size: 28px; }
+  .quest-card-title { font-weight: 800; font-size: 15px; }
+  .quest-card-desc { font-size: 12.5px; color: #4a3d68; font-weight: 700; flex: 1; }
+  .quest-card-badge {
+    align-self: flex-start; font-size: 12px; font-weight: 800; padding: 3px 10px;
+    border: 2px solid var(--ink); background: var(--sky-soft); color: #0b4d66;
+  }
+  .quest-card-badge.has-items { background: var(--mint-soft); color: #0d5c3c; }
+
+  .quest-complete {
+    display: flex; align-items: center; gap: 16px; width: 100%; box-sizing: border-box; flex-wrap: wrap;
+    background: var(--card-dark); color: #F4F0FF;
+    border: 3px solid var(--ink); padding: 14px 18px; box-shadow: 5px 5px 0 var(--sun); margin: 4px 0 18px;
+  }
+  .quest-complete-xp {
+    font-family: 'Press Start 2P', monospace; font-size: 13px; color: var(--mint);
+    background: #00000040; padding: 8px 10px; border: 2px solid var(--mint); flex: none;
+  }
+  .quest-complete-text { font-size: 14px; font-weight: 700; }
+  .quest-complete-text b { color: var(--sun); }
   .error-box { background: var(--coral-soft); color: #7a1414; border: 3px solid var(--coral); padding: 12px 14px; font-size: 14px; margin-bottom: 14px; font-weight: 700; }
   .warn-box { background: var(--sun-soft); color: #5c4400; border: 3px solid var(--sun); padding: 12px 14px; font-size: 14px; margin-bottom: 14px; font-weight: 700; }
   .toast {
@@ -221,16 +266,20 @@
       <div class="brand-text">
         <div class="hero-eyebrow" id="levelLabel">&gt; LV.1 SIDE QUEST</div>
         <h1>BrokeGirl<br>SideQuest</h1>
-        <div class="sub" id="lastScanLabel">no quest run yet</div>
+        <p class="hero-tagline">Escape debt. Build your empire. One free sample, one BOGO taco, one saved dollar at a time.</p>
       </div>
     </div>
-    <button class="refresh-btn" id="refreshBtn" onclick="runFullScan()">
-      <span id="refreshIcon">&#8635;</span> <span id="refreshLabel">run quest</span>
-    </button>
-    <button class="refresh-btn stop-btn" id="stopBtn" onclick="stopScan()" style="display:none;">
-      ⏹ <span>stop scan</span>
-    </button>
+    <div class="header-actions">
+      <button class="refresh-btn" id="refreshBtn" onclick="runFullScan()">
+        <span id="refreshIcon">&#8635;</span> <span id="refreshLabel">run quest</span>
+      </button>
+      <button class="refresh-btn stop-btn" id="stopBtn" onclick="stopScan()" style="display:none;">
+        ⏹ <span>stop scan</span>
+      </button>
+      <div class="sub" id="lastScanLabel">no quest run yet</div>
+    </div>
   </div>
+  <div class="hud" id="hudBar"></div>
 </header>
 
 <nav><div class="inner" id="navBar"></div></nav>
@@ -337,6 +386,19 @@ const CATEGORIES = {
   // by renderList()/runFullScan()'s category loops (both filter on
   // "dashboard"; add "tips" there too — see those two spots below).
   tips: { label: "Tips & Tricks", icon: "💡", static: true }
+};
+
+// Short blurb shown on each Quest Board card on the dashboard — purely
+// cosmetic flavor text, independent of the search query text above.
+const QUEST_DESC = {
+  restaurant: "Free & BOGO food nearby",
+  grocery: "Best price on staples this week",
+  clothing: "Freebies & markdowns",
+  toys: "Free stuff for the kids",
+  accessories: "Freebies for extras & school supplies",
+  events: "Free things happening near you",
+  community: "Local resources & events",
+  mail: "Free samples, no ZIP limit"
 };
 
 const REQ_TYPES = {
@@ -542,13 +604,67 @@ function renderList(key) {
   return filterBar + `<div class="grid">${body}</div>`;
 }
 
+// Rolls up everything the HUD bar and Quest Board need in one pass:
+// how many deals were found, a fun estimated dollar value of that loot
+// (real price for grocery items, a flat per-item value for freebies —
+// this is a gamified estimate, not a receipt), and how many of the 8
+// searchable categories have been scanned at least once this run.
+function computeStats() {
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips");
+  let totalFound = 0, estValue = 0, scannedCount = 0;
+  catKeys.forEach(k => {
+    const items = state.results[k] || [];
+    if (items.length || state.failedCategories.has(k)) scannedCount++;
+    totalFound += items.length;
+    items.forEach(it => {
+      const priceNum = it.price ? parseFloat(String(it.price).replace(/[^0-9.]/g, "")) : NaN;
+      estValue += !isNaN(priceNum) ? priceNum : 5; // flat estimate for free/unpriced finds
+    });
+  });
+  return { totalFound, estValue, scannedCount, totalCats: catKeys.length };
+}
+
+function renderHud() {
+  const s = computeStats();
+  const pct = s.totalCats ? Math.round((s.scannedCount / s.totalCats) * 100) : 0;
+  document.getElementById("hudBar").innerHTML = `
+    <div class="hud-stat"><span class="hud-label">SAVED TODAY</span><span class="hud-value">$${s.estValue.toFixed(2)}</span></div>
+    <div class="hud-stat"><span class="hud-label">DEALS FOUND</span><span class="hud-value">${s.totalFound}</span></div>
+    <div class="hud-stat"><span class="hud-label">💖 BOOKMARKED</span><span class="hud-value">${state.saved.size}</span></div>
+    <div class="hud-progress">
+      <span class="hud-label">CATEGORIES SCANNED &nbsp;${s.scannedCount} / ${s.totalCats}</span>
+      <div class="hud-bar"><div class="hud-bar-fill" style="width:${pct}%"></div></div>
+    </div>`;
+}
+
 function renderDashboard() {
-  const counts = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips")
-    .map(k => ({ label: CATEGORIES[k].icon + " " + CATEGORIES[k].label, count: (state.results[k] || []).length }));
-  return `<div class="dashboard-stats">${counts.map(c => `<div class="stat"><div class="num">${c.count}</div><div class="lbl">${c.label}</div></div>`).join("")}
-    <div class="stat"><div class="num">${state.saved.size}</div><div class="lbl">💖 Saved</div></div>
-  </div>
-  ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top to start today's live search for your area.</div>`}`;
+  const stats = computeStats();
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips");
+
+  const boardCards = catKeys.map(k => {
+    const cat = CATEGORIES[k];
+    const items = state.results[k] || [];
+    const badge = cat.isPriced
+      ? (items.length ? `Save $${items.reduce((sum, it) => sum + (parseFloat(String(it.price || "").replace(/[^0-9.]/g, "")) || 0), 0).toFixed(0)}` : "—")
+      : `+${items.length} found`;
+    return `<div class="quest-card" onclick="state.tab='${k}'; render();">
+      <div class="quest-card-icon">${cat.icon}</div>
+      <div class="quest-card-title">${cat.label}</div>
+      <div class="quest-card-desc">${QUEST_DESC[k] || ""}</div>
+      <div class="quest-card-badge ${items.length ? "has-items" : ""}">${badge}</div>
+    </div>`;
+  }).join("");
+
+  const questComplete = state.lastScan && stats.totalFound > 0 ? `<div class="quest-complete">
+      <div class="quest-complete-xp">+50 XP</div>
+      <div class="quest-complete-text"><b>Quest complete!</b><br>Found ${stats.totalFound} deals worth ~$${stats.estValue.toFixed(2)} today.</div>
+    </div>` : "";
+
+  return `
+    ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top to start today's live search for your area.</div>`}
+    <div class="quest-board-head">QUEST BOARD <span class="dash-line"></span></div>
+    <div class="quest-board">${boardCards}</div>
+    ${questComplete}`;
 }
 
 // Static content — no API call, just evergreen pointers to free resources
@@ -627,8 +743,19 @@ function renderTips() {
   </div>`;
 }
 
+// Header height is no longer fixed (tagline + HUD bar can wrap on narrow
+// screens), so the sticky nav's offset is measured live instead of
+// hard-coded — re-run after anything that could resize the header.
+function syncNavOffset() {
+  const header = document.querySelector("header");
+  const nav = document.querySelector("nav");
+  if (header && nav) nav.style.top = header.offsetHeight + "px";
+}
+window.addEventListener("resize", syncNavOffset);
+
 function render() {
   buildNav();
+  renderHud();
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
@@ -638,6 +765,7 @@ function render() {
   let statusHtml = "";
   if (state.error) statusHtml += `<div class="error-box">${state.error}</div>`;
   document.getElementById("statusArea").innerHTML = statusHtml;
+  syncNavOffset();
 }
 
 // ---------- interactions ----------
