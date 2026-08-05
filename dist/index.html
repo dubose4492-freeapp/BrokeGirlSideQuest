@@ -255,9 +255,64 @@
     text-align: center; font-family: 'Press Start 2P', monospace; font-size: 10px;
     color: var(--ink); background: var(--sun-soft); padding: 10px; border-top: 4px solid var(--ink);
   }
+
+  /* ---- splash / start screen ---- */
+  .splash-screen {
+    position: fixed; inset: 0; z-index: 9999;
+    background: var(--card-dark);
+    background-image: linear-gradient(180deg, var(--panel-glow) 0%, var(--card-dark) 60%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 30px 20px; gap: 34px; overflow: hidden;
+  }
+  .splash-screen.hide { display: none; }
+  .splash-stars { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  .splash-star {
+    position: absolute; background: #fff; border-radius: 50%;
+    animation-name: twinkle; animation-timing-function: ease-in-out; animation-iteration-count: infinite;
+  }
+  @keyframes twinkle { 0%, 100% { opacity: .15; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1.2); } }
+  .splash-title {
+    font-family: 'Press Start 2P', monospace; position: relative; z-index: 1; line-height: 1.9;
+  }
+  .splash-title div { font-size: clamp(16px, 5.4vw, 26px); text-shadow: 3px 3px 0 #00000055; }
+  .splash-title .l1, .splash-title .l2 { color: var(--pink); }
+  .splash-title .l3 { color: var(--mint); }
+  .start-btn {
+    position: relative; z-index: 1; font-family: 'Press Start 2P', monospace; font-size: clamp(15px, 4vw, 20px);
+    color: #fff; background: transparent; border: 3px solid var(--pink); padding: 18px 46px; cursor: pointer;
+    box-shadow: 0 0 10px var(--pink), 0 0 22px var(--pink), inset 0 0 10px var(--pink);
+    letter-spacing: 3px; transition: transform .08s;
+  }
+  .start-btn:hover { transform: scale(1.04); }
+  .start-btn:active { transform: scale(0.96); }
+  .splash-hearts { position: relative; z-index: 1; display: flex; gap: 10px; font-size: clamp(20px, 5vw, 28px); }
+  .splash-hearts span { display: inline-block; animation: heartbeat 1.6s ease-in-out infinite; }
+  .splash-hearts span:nth-child(2) { animation-delay: .12s; }
+  .splash-hearts span:nth-child(3) { animation-delay: .24s; }
+  .splash-hearts span:nth-child(4) { animation-delay: .36s; }
+  .splash-hearts span:nth-child(5) { animation-delay: .48s; }
+  @keyframes heartbeat { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+  .splash-slang {
+    position: relative; z-index: 1; font-family: 'Baloo 2', sans-serif; font-weight: 800;
+    color: var(--sun); font-size: clamp(13px, 3.6vw, 16px); letter-spacing: .3px; max-width: 300px;
+  }
 </style>
 </head>
 <body>
+
+<div class="splash-screen" id="splashScreen">
+  <div class="splash-stars" id="splashStars"></div>
+  <div class="splash-title">
+    <div class="l1">BROKE GIRL</div>
+    <div class="l2">SIDE QUEST:</div>
+    <div class="l3">LEVEL UP!</div>
+  </div>
+  <button class="start-btn" id="startBtn" onclick="startApp()">START</button>
+  <div class="splash-hearts" aria-hidden="true">
+    <span>❤️</span><span>❤️</span><span>❤️</span><span>❤️</span><span>❤️</span>
+  </div>
+  <p class="splash-slang">getting free stuff is literally main character energy 💅✨</p>
+</div>
 
 <header>
   <div class="row">
@@ -1153,6 +1208,29 @@ function updateScanButton() {
     label.textContent = `scan ${cat.label.toLowerCase()}`;
   }
 }
+
+// ---- splash / start screen ----
+function generateSplashStars(count = 45) {
+  const container = document.getElementById("splashStars");
+  if (!container) return;
+  let html = "";
+  for (let i = 0; i < count; i++) {
+    const top = (Math.random() * 100).toFixed(2);
+    const left = (Math.random() * 100).toFixed(2);
+    const size = (1.5 + Math.random() * 3).toFixed(1);
+    const delay = (Math.random() * 2.6).toFixed(2);
+    const duration = (1.8 + Math.random() * 2.2).toFixed(2);
+    html += `<div class="splash-star" style="top:${top}%; left:${left}%; width:${size}px; height:${size}px; animation-delay:${delay}s; animation-duration:${duration}s;"></div>`;
+  }
+  container.innerHTML = html;
+}
+
+function startApp() {
+  const splash = document.getElementById("splashScreen");
+  if (splash) splash.classList.add("hide");
+}
+
+generateSplashStars();
 
 refreshGeminiPromptBox();
 render();
