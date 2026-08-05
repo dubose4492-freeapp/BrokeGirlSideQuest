@@ -367,8 +367,8 @@ function buildNav() {
 }
 
 function priceLabel(item, cat) {
-  if (item.isFree) return "FREE";
   if (item.price) return item.price;
+  if (item.isFree) return "FREE";
   return cat.isPriced ? "See price" : "FREE / Varies";
 }
 
@@ -503,74 +503,25 @@ async function searchCategory(key) {
   return (data.results || []).map(r => toItem(r, key)).filter(Boolean);
 }
 
-// ---------- Kroger API (free, real store pricing) — now handled entirely
-// server-side by /functions/api/grocery-price.js. Client just asks for a
-// price by item + ZIP; no credentials or tokens ever reach the browser.
-function krogerConfigured() {
-  return !!state.krogerZip;
-}
-
-async function searchKrogerItem(itemName) {
-  const params = new URLSearchParams({ item: itemName, zip: state.krogerZip, radius: state.radius });
+// ---------- Grocery pricing — fully server-side now. /functions/api/grocery-price.js
+// checks Kroger's official price AND a Tavily+OpenRouter web search in parallel,
+// then returns whichever is actually cheaper (with its real source labeled).
+async function searchGroceryItem(itemName) {
+  const params = new URLSearchParams({
+    item: itemName,
+    zip: state.krogerZip,
+    location: state.location,
+    radius: state.radius
+  });
   const response = await fetch(`/api/grocery-price?${params}`);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Kroger lookup failed (${response.status}) for ${itemName}.`);
-  if (!data.price) return null; // let caller fall back to search-based pricing
-  return {
-    id: "grocery-kroger-" + itemName.replace(/\s+/g, "-").toLowerCase(),
-    title: itemName,
-    store: "Kroger (official price)",
-    url: "https://www.kroger.com/search?query=" + encodeURIComponent(itemName),
-    price: `$${data.price.toFixed(2)}`,
-    isFree: false,
-    requirementType: "unknown",
-    expires: null,
-    category: "grocery"
-  };
-}
-
-
-// the single cheapest priced result (store + price) for each item — per spec,
-// only these 8 items are ever searched or priced.
-async function searchGroceryItem(itemName) {
-  if (krogerConfigured()) {
-    try {
-      const krogerResult = await searchKrogerItem(itemName);
-      if (krogerResult) return krogerResult;
-    } catch (err) {
-      state.error = (state.error ? state.error + " " : "") + `Kroger (${itemName}): ${err.message} — used search fallback.`;
-    }
-  }
-  return searchGroceryItemViaSearch(itemName);
-}
-
-async function searchGroceryItemViaSearch(itemName) {
-  const query = `cheapest price ${itemName} grocery store sale this week near ${state.location} within ${state.radius} miles`;
-  const body = { query, max_results: 8, search_depth: "advanced", time_range: "week", include_domains: GROCERY_DOMAINS };
-  const response = await fetch("/api/search", {
-    method: "POST",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) {
-    const errBody = await response.text();
-    throw new Error(`Grocery: ${itemName} search failed (${response.status}). ${errBody.slice(0, 150)}`);
-  }
-  const data = await response.json();
-  const priced = (data.results || [])
-    .map(r => ({ raw: r, price: extractPrice(r.content) }))
-    .filter(x => x.price)
-    .map(x => ({ ...x, num: parseFloat(x.price.replace("$", "")) }))
-    .sort((a, b) => a.num - b.num);
-
-  const best = priced[0];
+  if (!response.ok) throw new Error(data.error || `Grocery lookup failed (${response.status}) for ${itemName}.`);
   return {
     id: "grocery-" + itemName.replace(/\s+/g, "-").toLowerCase(),
     title: itemName,
-    store: best ? hostname(best.raw.url) : "No price found nearby",
-    url: best ? best.raw.url : "#",
-    price: best ? best.price : null,
+    store: data.store || "No price found nearby",
+    url: data.url || "#",
+    price: data.price ? `$${data.price.toFixed(2)}` : null,
     isFree: false,
     requirementType: "unknown",
     expires: null,
@@ -587,6 +538,21 @@ async function searchGroceryCategory() {
     }
   }
   return items;
+}
+
+// Restaurant deals now go through a dedicated endpoint that classifies
+// free/BOGO offers server-side (with OpenRouter when configured, regex
+// fallback otherwise) — the response is already in final card-ready shape.
+async function searchRestaurantCategory() {
+  const response = await fetch("/api/restaurant-deals", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ location: state.location, radius: state.radius })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
+  return data.results || [];
 }
 
 async function runFullScan() {
@@ -606,7 +572,9 @@ async function runFullScan() {
     label.textContent = `Scanning ${CATEGORIES[key].label} (${i + 1}/${categoryKeys.length})`;
     state.results[key] = []; // clear before this category's fetch so failures never show stale data
     try {
-      state.results[key] = key === "grocery" ? await searchGroceryCategory() : await searchCategory(key);
+      state.results[key] = key === "grocery" ? await searchGroceryCategory()
+        : key === "restaurant" ? await searchRestaurantCategory()
+        : await searchCategory(key);
     } catch (err) {
       state.error = (state.error ? state.error + " " : "") + err.message;
     }
