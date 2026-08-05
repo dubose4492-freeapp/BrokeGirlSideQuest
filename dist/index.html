@@ -374,6 +374,17 @@ function priceLabel(item, cat) {
 
 function itemCard(item) {
   const cat = CATEGORIES[item.category];
+  const isGrocery = item.category === "grocery";
+
+  // Grocery: "Claim" always points at the actual store's product/site page
+  // (productUrl when we resolved one, else fall back to item.url). A
+  // separate "See Blog" button only shows up when the winning price came
+  // from a third-party page (blog/deal tracker) — i.e. blogUrl is set.
+  const claimUrl = isGrocery ? (item.productUrl || item.url) : item.url;
+  const blogBtn = (isGrocery && item.blogUrl)
+    ? `<button onclick="window.open('${item.blogUrl}', '_blank', 'noopener')">📰 See Blog</button>`
+    : "";
+
   return `<div class="item-card">
     <div class="item-media">${cat.icon || "🎁"}</div>
     <div class="item-body">
@@ -391,8 +402,9 @@ function itemCard(item) {
     <div class="item-actions">
       <button onclick="toggleSave('${item.id.replace(/'/g, "\\'")}')" class="${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
       <button onclick="openDirections('${(item.store + " " + state.location).replace(/'/g, "\\'")}')">📍 Directions</button>
-      <button onclick="window.open('${item.url}', '_blank', 'noopener')">🔗 Claim</button>
-      <button onclick="shareItem('${item.title.replace(/'/g, "\\'")}', '${item.url}')">📤 Share</button>
+      <button onclick="window.open('${claimUrl}', '_blank', 'noopener')">🔗 Claim</button>
+      ${blogBtn}
+      <button onclick="shareItem('${item.title.replace(/'/g, "\\'")}', '${claimUrl}')">📤 Share</button>
     </div>
   </div>`;
 }
@@ -521,6 +533,11 @@ async function searchGroceryItem(itemName) {
     title: itemName,
     store: data.store || "No price found nearby",
     url: data.url || "#",
+    // productUrl -> the actual grocery store's page for the item (used by "Claim").
+    // blogUrl -> set only when the winning price came from a third-party page
+    // (blog/deal tracker); when present we show a separate "See Blog" link.
+    productUrl: data.productUrl || null,
+    blogUrl: data.blogUrl || null,
     price: data.price ? `$${data.price.toFixed(2)}` : null,
     isFree: false,
     requirementType: "unknown",
