@@ -129,6 +129,16 @@
   .search-field { flex: 1; min-width: 130px; }
   .search-field label { font-size: 12px; font-weight: 800; display: block; margin-bottom: 6px; }
   .search-field input { width: 100%; padding: 10px; border: 3px solid var(--ink); font-size: 14px; font-family: 'Baloo 2', sans-serif; background: var(--bg); }
+  .gemini-promo {
+    background: linear-gradient(135deg, var(--sun-soft), var(--pink-soft));
+    border: 3px solid var(--ink); padding: 16px; margin-bottom: 16px;
+    box-shadow: 5px 5px 0 var(--lav);
+  }
+  .gemini-promo-head { font-family: 'Press Start 2P', monospace; font-size: 13px; margin-bottom: 10px; line-height: 1.6; }
+  .gemini-promo p { margin: 0 0 10px; font-size: 13.5px; }
+  .gemini-promo-grid { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  .gemini-promo-grid > div { flex: 1; min-width: 220px; display: flex; flex-direction: column; }
+  .gemini-promo-step { font-weight: 800; margin: 0 0 6px !important; }
   .ai-info {
     background: var(--panel); border: 3px solid var(--ink); padding: 10px 14px;
     margin-bottom: 16px; box-shadow: 4px 4px 0 var(--pink); font-size: 13.5px;
@@ -141,6 +151,19 @@
   .ai-info-steps { margin: 0 0 8px; padding-left: 22px; }
   .ai-info-steps li { margin-bottom: 6px; }
   .ai-info-fineprint { font-size: 12px; opacity: .75; }
+  .gemini-promo-note { margin: 10px 4px 16px; opacity: .8; }
+  .gemini-btn-shot { display: block; margin: 8px 0; image-rendering: auto; border: 2px solid var(--ink); background: #fff; padding: 6px 10px; }
+  .ai-info-prompt {
+    display: block; width: 100%; box-sizing: border-box; font-family: 'Space Mono', monospace; font-size: 12.5px;
+    border: 2px solid var(--ink); background: var(--bg); padding: 10px; margin: 0 0 10px; resize: vertical;
+    color: var(--ink); vertical-align: top;
+  }
+  .copy-prompt-btn {
+    display: block; background: var(--mint); color: var(--ink); border: 3px solid var(--ink); font-weight: 800;
+    padding: 8px 14px; cursor: pointer; font-size: 13px; margin: 0; align-self: flex-start;
+    box-shadow: 3px 3px 0 var(--ink); font-family: 'Baloo 2', sans-serif;
+  }
+  .copy-prompt-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--ink); }
   .dashboard-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px,1fr)); gap: 12px; margin-bottom: 18px; }
   .stat { background: var(--panel); border: 3px solid var(--ink); padding: 14px; text-align: center; box-shadow: 4px 4px 0 var(--pink); }
   .stat .num { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 30px; color: var(--ink); letter-spacing: -1px; }
@@ -185,13 +208,34 @@
   <div class="search-bar">
     <div class="search-field">
       <label for="zipInput">ZIP Code</label>
-      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); localStorage.setItem('dff_zip', state.zip)" />
+      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); localStorage.setItem('dff_zip', state.zip); refreshGeminiPromptBox()" />
     </div>
     <div class="search-field">
       <label for="radiusInput">Radius (mi)</label>
-      <input id="radiusInput" type="number" min="1" max="100" placeholder="100" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); localStorage.setItem('dff_radius', String(v))" />
+      <input id="radiusInput" type="number" min="1" max="100" placeholder="100" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); localStorage.setItem('dff_radius', String(v)); refreshGeminiPromptBox()" />
     </div>
   </div>
+  <div class="gemini-promo">
+    <div class="gemini-promo-head">✨ Get even more results with Gemini</div>
+    <p>Using <b>Google Chrome</b> on a computer? Chrome has a free <b>Ask Gemini</b>
+    button built right in — no extension or install needed. It only takes two taps:</p>
+    <div class="gemini-promo-grid">
+      <div>
+        <p class="gemini-promo-step"><b>1.</b> Click Chrome's Ask Gemini button (usually top-right, near the address bar):</p>
+        <img class="gemini-btn-shot" src="data:image/png;base64,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" alt="Chrome's built-in Ask Gemini button" width="167" height="47" />
+      </div>
+      <div>
+        <p class="gemini-promo-step"><b>2.</b> Copy this prompt and paste it into Gemini:</p>
+        <textarea id="geminiPromptBox" class="ai-info-prompt" rows="4" readonly onclick="this.select()">Set a ZIP code above, then this box will fill in with your prompt.</textarea>
+        <button class="copy-prompt-btn" onclick="copyGeminiPrompt()">📋 Copy Prompt</button>
+      </div>
+    </div>
+  </div>
+  <p class="ai-info-fineprint gemini-promo-note">The <b>Ask Gemini button</b> shown
+  above only works on a computer (laptop or desktop) in Google Chrome — not on a
+  phone or tablet. On a phone, you can still tap <b>Copy Prompt</b> and paste it
+  straight into Google or the Gemini app in your phone's browser — it's completely
+  optional either way, but it's the fastest way to double up on your search.</p>
   <details class="ai-info">
     <summary>🔎 How this app looks for deals for you</summary>
     <div class="ai-info-body">
@@ -199,20 +243,8 @@
       search helpers to look for deals — not just one. If one helper is busy, it
       just asks the next one instead. You don't have to do anything — this already
       happens every time, all by itself.</p>
-      <p><b>Want one more helper?</b> There is an extra, free helper called
-      <b>Gemini</b> (made by Google) that you can turn on if you want. This part is
-      optional — the app works great without it too.</p>
-      <p style="margin-left:4px;">If you turn it on:</p>
-      <ol class="ai-info-steps">
-        <li>A small side panel opens next to this app in your web browser.</li>
-        <li>Every time you press <b>Run Quest</b>, Gemini automatically starts
-        searching too — you don't type anything yourself.</li>
-        <li>Gemini's answer shows up right there in that side panel for you to read.</li>
-      </ol>
-      <p><a href="#" onclick="alert('Ask whoever gave you this app for the gemini-sidebar-extension.zip file and the instructions inside it — turning it on takes a few clicks in Chrome. Someone tech-savvy can help you set it up in under 5 minutes.'); return false;">Tap here for how to turn it on</a></p>
-      <p class="ai-info-fineprint">This extra Gemini helper only works on a computer
-      (like a laptop or desktop) using the Google Chrome browser — it does not work
-      on a phone or tablet. It's completely optional.</p>
+      <p>Want to add Gemini on top of that too? See the <b>"Get even more results
+      with Gemini"</b> box above the search fields — it walks you through it.</p>
     </div>
   </details>
   <div id="statusArea"></div>
@@ -446,6 +478,27 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove("show"), 1800);
 }
 
+// Keeps the "Copy Prompt" textarea in sync with the current ZIP/radius.
+// Called on load and any time those fields change.
+function refreshGeminiPromptBox() {
+  const box = document.getElementById("geminiPromptBox");
+  if (!box) return;
+  box.value = state.zip
+    ? buildAiPrompt()
+    : "Set a ZIP code above, then this box will fill in with your prompt.";
+}
+
+function copyGeminiPrompt() {
+  if (!state.zip) {
+    showToast("Add your ZIP code first");
+    return;
+  }
+  refreshGeminiPromptBox();
+  const box = document.getElementById("geminiPromptBox");
+  box.select();
+  navigator.clipboard.writeText(box.value).then(() => showToast("Prompt copied — paste it into Gemini"));
+}
+
 // ---------- scanning ----------
 // ---------- scan failure tracking ----------
 // Shared across searchGroceryCategory (which can fail per-item, inside its
@@ -536,11 +589,9 @@ async function searchRestaurantCategory() {
   return data.results || [];
 }
 
-// Builds one combined plain-text prompt covering every tab's search, for
-// the optional Gemini-sidebar browser extension to hand to Gemini. Not
-// used by anything in this file directly — it's dispatched as a DOM event
-// below (see dailyFreeFinderRun) which a content script picks up if the
-// extension is installed; if it isn't, this is inert.
+// Builds one combined plain-text prompt covering every tab's search, meant
+// to be pasted into Chrome's built-in Ask Gemini panel by hand (see the
+// "How this app looks for deals" card and copyGeminiPrompt() below).
 function buildAiPrompt() {
   const lines = [
     `Find today's real, currently-active deals for someone in ${state.zip || "[ZIP not set]"} ` +
@@ -569,12 +620,6 @@ function buildAiPrompt() {
 
 async function runFullScan() {
   if (state.scanning) return;
-
-  // Fire-and-forget: hands the same search list to the optional Gemini
-  // sidebar extension, if installed, so it can run in parallel with the
-  // fetches below. Harmless no-op with zero listeners if the extension
-  // isn't installed.
-  window.dispatchEvent(new CustomEvent("dailyFreeFinderRun", { detail: { prompt: buildAiPrompt() } }));
 
   state.scanning = true;
   state.error = null;
@@ -617,6 +662,7 @@ async function runFullScan() {
   render();
 }
 
+refreshGeminiPromptBox();
 render();
 </script>
 </body>
