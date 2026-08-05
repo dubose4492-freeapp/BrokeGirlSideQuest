@@ -109,6 +109,8 @@
   .cat-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun-soft); color: #5c4400; white-space: nowrap; }
   .req-badge { font-size: 13px; font-weight: 700; color: #4a3d68; }
   .item-meta { font-size: 12px; color: #4a3d68; display: flex; gap: 10px; flex-wrap: wrap; font-weight: 700; }
+  .item-detail-link { font-size: 12px; color: #4a3d68; font-weight: 700; }
+  .item-detail-link a { color: var(--lav); font-weight: 800; text-decoration: underline; }
   .item-actions { display: flex; border-top: 3px solid var(--ink); }
   .item-actions button {
     flex: 1; background: var(--lav-soft); border: none; padding: 11px 4px; font-size: 12px; font-weight: 800;
@@ -376,13 +378,14 @@ function itemCard(item) {
   const cat = CATEGORIES[item.category];
   const isGrocery = item.category === "grocery";
 
-  // Grocery: "Claim" always points at the actual store's product/site page
-  // (productUrl when we resolved one, else fall back to item.url). A
-  // separate "See Blog" button only shows up when the winning price came
-  // from a third-party page (blog/deal tracker) — i.e. blogUrl is set.
+  // Grocery: "Claim" always points at the actual grocer's page for the
+  // winning price — productUrl when we resolved one, otherwise falling
+  // back to the blog page so Claim is never a dead end. When the price
+  // came from a third-party page, a "See Detail" hyperlink to that source
+  // sits under the meta row (only shown when blogUrl is actually set).
   const claimUrl = isGrocery ? (item.productUrl || item.url) : item.url;
-  const blogBtn = (isGrocery && item.blogUrl)
-    ? `<button onclick="window.open('${item.blogUrl}', '_blank', 'noopener')">📰 See Blog</button>`
+  const detailLink = (isGrocery && item.blogUrl)
+    ? `<div class="item-detail-link">See Detail: <a href="${item.blogUrl}" target="_blank" rel="noopener">${hostname(item.blogUrl)}</a></div>`
     : "";
 
   return `<div class="item-card">
@@ -398,12 +401,12 @@ function itemCard(item) {
         <span>${REQ_TYPES[item.requirementType]}</span>
         ${item.expires ? `<span>${item.expires}</span>` : ""}
       </div>
+      ${detailLink}
     </div>
     <div class="item-actions">
       <button onclick="toggleSave('${item.id.replace(/'/g, "\\'")}')" class="${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
       <button onclick="openDirections('${(item.store + " " + state.location).replace(/'/g, "\\'")}')">📍 Directions</button>
       <button onclick="window.open('${claimUrl}', '_blank', 'noopener')">🔗 Claim</button>
-      ${blogBtn}
       <button onclick="shareItem('${item.title.replace(/'/g, "\\'")}', '${claimUrl}')">📤 Share</button>
     </div>
   </div>`;

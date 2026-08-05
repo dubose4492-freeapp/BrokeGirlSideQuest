@@ -88,7 +88,7 @@ async function getKrogerPrice(env, item, zip, radius) {
 
   const best = priced[0];
   if (!best) return null;
-  return { price: best, store: "Kroger (official price)", url: "https://www.kroger.com", productUrl: "https://www.kroger.com", blogUrl: null };
+  return { price: best, store: "Kroger", url: "https://www.kroger.com", productUrl: "https://www.kroger.com", blogUrl: null };
 }
 
 // ---------- Web search side (every major chain) ----------
@@ -102,8 +102,14 @@ function extractLowestPriceRegex(results) {
     for (const m of matches) {
       const val = parseFloat(m.replace(/[$\s]/g, ""));
       if (!isNaN(val) && val > 0 && (!best || val < best.price)) {
-        const chain = findChainName(combinedText) || DOMAIN_TO_CHAIN[hostname(r.url)] || null;
-        best = { price: val, store: chain || hostname(r.url), chain, url: r.url };
+        // Trust the domain first when the page IS one of our official chain
+        // sites — page text can mention a competitor ("cheaper than Aldi")
+        // which would otherwise mislabel the card with a store the link
+        // doesn't actually go to. Only fall back to text-sniffing the chain
+        // name when the domain itself isn't a known chain (blogs, etc).
+        const domainChain = DOMAIN_TO_CHAIN[hostname(r.url)];
+        const chain = domainChain || findChainName(combinedText) || null;
+        best = { price: val, store: domainChain || chain || hostname(r.url), chain, url: r.url };
       }
     }
   }
@@ -156,9 +162,14 @@ ${snippetText}`;
   if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
 
   const raw = results[parsed.index];
-  const chain = findChainName((parsed.store || "") + " " + (raw.content || "") + " " + (raw.title || ""))
-    || DOMAIN_TO_CHAIN[hostname(raw.url)]
-    || null;
+  const domainChain = DOMAIN_TO_CHAIN[hostname(raw.url)];
+  if (domainChain) {
+    // Official chain site — trust the domain over whatever store name the
+    // model pulled from the text, so the label always matches the link
+    // (a Walmart page mentioning "cheaper than Aldi" should say Walmart).
+    return { price: parsed.price, store: domainChain, chain: domainChain, url: raw.url };
+  }
+  const chain = findChainName((parsed.store || "") + " " + (raw.content || "") + " " + (raw.title || "")) || null;
   const store = (parsed.store && String(parsed.store).trim()) || chain || hostname(raw.url);
   return { price: parsed.price, store, chain, url: raw.url };
 }
@@ -261,9 +272,11 @@ async function getWebSearchPrice(env, item, location, radius) {
   if (!best) best = extractLowestPriceRegex(results);
   if (!best) return null;
 
-  const isOfficial = !!DOMAIN_TO_CHAIN[hostname(best.url)];
-  if (isOfficial) {
-    return { price: best.price, store: best.store, url: best.url, productUrl: best.url, blogUrl: null };
+  const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
+  if (domainChain) {
+    // Belt-and-suspenders: always label with the domain we're actually
+    // linking to, so "Claim" and the card's store name can never disagree.
+    return { price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null };
   }
 
   // Price came from a third-party page (blog, deal tracker, etc.) — try to
