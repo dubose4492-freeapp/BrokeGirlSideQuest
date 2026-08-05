@@ -137,11 +137,12 @@ function regexClassify(results, category) {
       const expires = extractExpiry(raw.content);
       if (isExpired(expires)) return null;
 
+      const orgName = raw.title || hostname(raw.url);
       return {
         id: raw.url,
         title: raw.title || "Untitled offer",
-        orgName: raw.title || hostname(raw.url),
-        store: hostname(raw.url),
+        orgName,
+        store: orgName,
         url: raw.url,
         isFree: true,
         isLocal: /\blocal\b|\bcommunity\b/i.test(combinedText),
@@ -204,11 +205,12 @@ ${snippetText}`;
     .filter(p => p && p.qualifies && results[p.index])
     .map(p => {
       const raw = results[p.index];
+      const orgName = p.orgName || raw.title || hostname(raw.url);
       return {
         id: raw.url,
         title: p.title || raw.title || "Untitled offer",
-        orgName: p.orgName || null,
-        store: hostname(raw.url),
+        orgName,
+        store: orgName,
         url: raw.url,
         isFree: true,
         isLocal: !!p.isLocal,

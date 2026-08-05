@@ -60,6 +60,44 @@ const CHAIN_DOMAINS = {
   "baskin robbins": "baskinrobbins.com", "cold stone": "coldstonecreamery.com"
 };
 const CHAIN_DOMAIN_LIST = Object.values(CHAIN_DOMAINS);
+
+// Chain key -> proper display name, so the "store" shown on the card is the
+// actual restaurant name ("McDonald's") instead of whatever domain the
+// deal happened to be posted on ("somefoodblog.com").
+const CHAIN_DISPLAY_NAMES = {
+  "mcdonald": "McDonald's", "chick-fil-a": "Chick-fil-A", "chickfila": "Chick-fil-A",
+  "wendy": "Wendy's", "taco bell": "Taco Bell", "chipotle": "Chipotle",
+  "starbucks": "Starbucks", "dunkin": "Dunkin'", "popeyes": "Popeyes",
+  "subway": "Subway", "panera": "Panera Bread", "sonic": "Sonic Drive-In",
+  "arby": "Arby's", "burger king": "Burger King", "kfc": "KFC",
+  "panda express": "Panda Express", "wingstop": "Wingstop", "culver": "Culver's",
+  "dairy queen": "Dairy Queen", "domino": "Domino's", "pizza hut": "Pizza Hut",
+  "papa john": "Papa John's", "little caesars": "Little Caesars", "zaxby": "Zaxby's",
+  "bojangles": "Bojangles", "ihop": "IHOP", "denny": "Denny's",
+  "cracker barrel": "Cracker Barrel", "applebee": "Applebee's", "chili's": "Chili's",
+  "chilis": "Chili's", "olive garden": "Olive Garden", "outback": "Outback Steakhouse",
+  "buffalo wild wings": "Buffalo Wild Wings", "five guys": "Five Guys",
+  "in-n-out": "In-N-Out Burger", "in n out": "In-N-Out Burger", "whataburger": "Whataburger",
+  "jack in the box": "Jack in the Box", "del taco": "Del Taco", "qdoba": "Qdoba",
+  "jimmy john": "Jimmy John's", "firehouse subs": "Firehouse Subs",
+  "jersey mike": "Jersey Mike's", "raising cane": "Raising Cane's",
+  "shake shack": "Shake Shack", "carl's jr": "Carl's Jr.", "carls jr": "Carl's Jr.",
+  "hardee": "Hardee's", "krystal": "Krystal", "checkers": "Checkers",
+  "rally's": "Rally's", "rallys": "Rally's", "long john silver": "Long John Silver's",
+  "captain d": "Captain D's", "boston market": "Boston Market",
+  "moe's": "Moe's Southwest Grill", "moes southwest": "Moe's Southwest Grill",
+  "el pollo loco": "El Pollo Loco", "church's chicken": "Church's Chicken",
+  "churchs chicken": "Church's Chicken", "wingstreet": "WingStreet",
+  "einstein bros": "Einstein Bros. Bagels", "smoothie king": "Smoothie King",
+  "jamba juice": "Jamba", "auntie anne": "Auntie Anne's", "cinnabon": "Cinnabon",
+  "baskin robbins": "Baskin-Robbins", "cold stone": "Cold Stone Creamery"
+};
+// Reverse map (domain -> chain key) so a result already hosted on the
+// chain's own site (e.g. an official mcdonalds.com press page) resolves to
+// the display name too, not just results found on third-party blogs.
+const DOMAIN_TO_CHAIN_KEY = Object.fromEntries(
+  Object.entries(CHAIN_DOMAINS).map(([key, domain]) => [domain, key])
+);
 const BLOCKED_CLAIM_DOMAINS = [
   "facebook.com", "instagram.com", "tiktok.com", "twitter.com", "x.com", "reddit.com",
   "yelp.com", "tripadvisor.com", "wikipedia.org", "pinterest.com", "youtube.com",
@@ -78,6 +116,23 @@ function findChainDomain(text) {
     if (t.includes(name)) return domain;
   }
   return null;
+}
+
+// Resolves the display name to show under the deal: a known chain's proper
+// name ("McDonald's") when we can detect one — either because the article
+// itself is hosted on the chain's own domain, or because the chain is
+// named in the offer text — otherwise falls back to the source page's
+// hostname (best available signal for an independent/local spot).
+function resolveStoreName(raw, combinedText) {
+  const sourceDomain = hostname(raw.url);
+  const domainChainKey = DOMAIN_TO_CHAIN_KEY[sourceDomain];
+  if (domainChainKey) return CHAIN_DISPLAY_NAMES[domainChainKey];
+
+  const t = (combinedText || "").toLowerCase();
+  for (const [key, display] of Object.entries(CHAIN_DISPLAY_NAMES)) {
+    if (t.includes(key)) return display;
+  }
+  return sourceDomain;
 }
 
 function extractRequirementType(text) {
@@ -235,7 +290,7 @@ function regexClassify(results) {
       return {
         id: raw.url,
         title: (isLocal ? "[LOCAL] " : "") + (raw.title || "Untitled offer"),
-        store: hostname(raw.url),
+        store: resolveStoreName(raw, combinedText),
         url: raw.url,
         price,
         isFree: true,
@@ -318,7 +373,7 @@ ${snippetText}`;
       return {
         id: raw.url,
         title: (p.isLocal ? "[LOCAL] " : "") + (p.title || raw.title || "Untitled offer"),
-        store: hostname(raw.url),
+        store: resolveStoreName(raw, combinedText),
         url: raw.url,
         price,
         isFree: true,

@@ -236,8 +236,12 @@ const REQ_TYPES = {
   rebate: "Rebate / Mail-In",
   giveaway: "Giveaway / Contest",
   bogo: "BOGO Free",
+  min_purchase: "Min. Purchase",
   unknown: "See Details"
 };
+// Any requirementType not covered above (current or future) falls back to
+// the "unknown" label instead of printing literal "undefined".
+function reqTypeLabel(key) { return REQ_TYPES[key] || REQ_TYPES.unknown; }
 
 let state = {
   tab: "dashboard",
@@ -311,7 +315,7 @@ function itemCard(item) {
         <span class="cat-badge">${cat.label}</span>
       </div>
       <div class="item-meta">
-        <span>${REQ_TYPES[item.requirementType]}${detailLinkInline}</span>
+        <span>${reqTypeLabel(item.requirementType)}${detailLinkInline}</span>
         ${item.expires ? `<span>${item.expires}</span>` : ""}
       </div>
     </div>
@@ -333,7 +337,7 @@ function renderList(key) {
   const filterBar = `<div class="filter-bar">
     ${["all", "no_purchase", "signup", "loyalty", "rebate", "giveaway"].map(f => `
       <button class="filter-chip ${activeFilter === f ? "active" : ""}" onclick="setFilter('${key}','${f}')">
-        ${f === "all" ? "All" : REQ_TYPES[f]}
+        ${f === "all" ? "All" : reqTypeLabel(f)}
       </button>`).join("")}
   </div>`;
 
