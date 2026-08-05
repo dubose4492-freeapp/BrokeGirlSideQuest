@@ -17,14 +17,22 @@ let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
 
-// Chains explicitly named in the search query so results aren't limited to
-// whichever store happens to rank first organically.
-const GROCERY_CHAINS = [
-  "Walmart", "Kroger", "Publix", "Aldi", "Food Lion", "Save A Lot", "Target",
-  "Costco", "Sam's Club", "Winn-Dixie", "Meijer", "Trader Joe's", "Whole Foods",
-  "IGA", "Piggly Wiggly", "H-E-B", "Safeway", "Giant Eagle", "Harris Teeter",
-  "Sprouts", "Ingles", "Food City", "Dollar General Market"
-];
+// Chains explicitly named in the search query, mapped to their real domain
+// so results are restricted to the stores' own websites — not blogs or
+// deal-tracker sites that merely mention a price.
+const GROCERY_CHAIN_DOMAINS = {
+  "Walmart": "walmart.com", "Kroger": "kroger.com", "Publix": "publix.com",
+  "Aldi": "aldi.us", "Food Lion": "foodlion.com", "Save A Lot": "save-a-lot.com",
+  "Target": "target.com", "Costco": "costco.com", "Sam's Club": "samsclub.com",
+  "Winn-Dixie": "winndixie.com", "Meijer": "meijer.com", "Trader Joe's": "traderjoes.com",
+  "Whole Foods": "wholefoodsmarket.com", "IGA": "iga.com", "Piggly Wiggly": "pigglywiggly.com",
+  "H-E-B": "heb.com", "Safeway": "safeway.com", "Giant Eagle": "gianteagle.com",
+  "Harris Teeter": "harristeeter.com", "Sprouts": "sprouts.com", "Ingles": "ingles-markets.com",
+  "Food City": "foodcity.com", "Dollar General Market": "dollargeneral.com"
+};
+const GROCERY_CHAINS = Object.keys(GROCERY_CHAIN_DOMAINS);
+const GROCERY_DOMAIN_LIST = Object.values(GROCERY_CHAIN_DOMAINS);
+const DOMAIN_TO_CHAIN = Object.fromEntries(Object.entries(GROCERY_CHAIN_DOMAINS).map(([chain, domain]) => [domain, chain]));
 
 async function getToken(env) {
   if (cachedToken && Date.now() < cachedTokenExpiry) return cachedToken;
@@ -94,7 +102,7 @@ function extractLowestPriceRegex(results) {
     for (const m of matches) {
       const val = parseFloat(m.replace(/[$\s]/g, ""));
       if (!isNaN(val) && val > 0 && (!best || val < best.price)) {
-        best = { price: val, store: findChainName(combinedText) || hostname(r.url), url: r.url };
+        best = { price: val, store: findChainName(combinedText) || DOMAIN_TO_CHAIN[hostname(r.url)] || hostname(r.url), url: r.url };
       }
     }
   }
@@ -147,18 +155,23 @@ ${snippetText}`;
   if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
 
   const raw = results[parsed.index];
-  const store = (parsed.store && String(parsed.store).trim()) || findChainName((raw.content || "") + " " + (raw.title || "")) || hostname(raw.url);
+  const store = (parsed.store && String(parsed.store).trim())
+    || findChainName((raw.content || "") + " " + (raw.title || ""))
+    || DOMAIN_TO_CHAIN[hostname(raw.url)]
+    || hostname(raw.url);
   return { price: parsed.price, store, url: raw.url };
 }
 
 // ---------- Search providers: Tavily first, Brave as fallback ----------
-async function tavilySearch(env, query) {
+// `domains` is optional — pass GROCERY_DOMAIN_LIST to restrict to official
+// store sites, or omit/null to search the open web.
+async function tavilySearch(env, query, domains) {
+  const body = { api_key: env.TAVILY_API_KEY, query, max_results: 8, search_depth: "advanced" };
+  if (domains && domains.length) body.include_domains = domains;
   const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: env.TAVILY_API_KEY, query, max_results: 8, search_depth: "advanced"
-    })
+    body: JSON.stringify(body)
   });
   if (!res.ok) {
     const errBody = await res.text();
@@ -168,8 +181,14 @@ async function tavilySearch(env, query) {
   return data.results || [];
 }
 
-async function braveSearch(env, query) {
-  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`, {
+async function braveSearch(env, query, domains) {
+  // Brave has no include_domains param — restrict via site: operators instead.
+  let q = query;
+  if (domains && domains.length) {
+    const siteFilter = domains.map(d => `site:${d}`).join(" OR ");
+    q = `${query} (${siteFilter})`;
+  }
+  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=8`, {
     headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY }
   });
   if (!res.ok) {
@@ -181,35 +200,62 @@ async function braveSearch(env, query) {
   return results.map(r => ({ title: r.title, url: r.url, content: r.description || "" }));
 }
 
-async function searchWithFallback(env, query) {
+async function searchWithFallback(env, query, domains) {
   if (!env.TAVILY_API_KEY && !env.BRAVE_API_KEY) return []; // neither configured — web side just skipped
   if (env.TAVILY_API_KEY) {
     try {
-      return await tavilySearch(env, query);
+      return await tavilySearch(env, query, domains);
     } catch (tavilyErr) {
       if (!env.BRAVE_API_KEY) throw tavilyErr;
-      return await braveSearch(env, query); // let this one throw if it also fails
+      return await braveSearch(env, query, domains); // let this one throw if it also fails
     }
   }
-  return await braveSearch(env, query);
+  return await braveSearch(env, query, domains);
+}
+
+// Two-tier search: try the curated official-chain domains first (so the
+// link is the actual grocery store's page whenever possible); if that
+// comes back empty, fall back to the open web so we still catch stores
+// outside our curated list, deal blogs, etc.
+async function searchGroceryWeb(env, query) {
+  try {
+    const restricted = await searchWithFallback(env, query, GROCERY_DOMAIN_LIST);
+    if (restricted.length) return restricted;
+  } catch (err) {
+    // fall through to open web below
+  }
+  return searchWithFallback(env, query, null);
+}
+
+// If the winning result isn't from one of the official chain domains, tag
+// the store label so it's clear the price came from a third-party page
+// (e.g. a deal-tracking blog) rather than the store's own site.
+function tagIfThirdParty(store, url) {
+  const host = hostname(url);
+  if (DOMAIN_TO_CHAIN[host]) return store;
+  return `${store} (via ${host})`;
 }
 
 async function getWebSearchPrice(env, item, location, radius) {
   const chainList = GROCERY_CHAINS.join(", ");
   const query = `${item} price at ${chainList} grocery store near ${location} within ${radius} miles`;
 
-  const results = await searchWithFallback(env, query);
+  const results = await searchGroceryWeb(env, query);
   if (!results.length) return null;
 
+  let best = null;
   if (env.OPENROUTER_API_KEY) {
     try {
-      const llmResult = await extractLowestPriceLLM(env, item, results);
-      if (llmResult) return llmResult;
+      best = await extractLowestPriceLLM(env, item, results);
     } catch (err) {
       // fall through to regex below
     }
   }
-  return extractLowestPriceRegex(results);
+  if (!best) best = extractLowestPriceRegex(results);
+  if (!best) return null;
+
+  best.store = tagIfThirdParty(best.store, best.url);
+  return best;
 }
 
 // ---------- Entry point ----------
