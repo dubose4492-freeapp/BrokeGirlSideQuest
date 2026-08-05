@@ -21,9 +21,26 @@
 // and for the official-chain-domain pass in grocery-price.js.
 // `options` (optional): { maxResults, days }
 //   - maxResults: how many results to request (provider default ~10)
-//   - days: Tavily-only — restrict to results from the last N days
+//   - days: restrict to results from the last N days. Every provider now
+//     honors this in whatever form it natively supports (Tavily: exact
+//     `days`; Serper/DuckDuckGo: nearest Google-style day/week/month/year
+//     bucket; Exa: exact `startPublishedDate` cutoff) — it's no longer
+//     Tavily-only, so a fallback hop doesn't silently drop the recency
+//     requirement the way it used to.
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
+
+// Google (and DuckDuckGo, which mirrors the same bucket values) only
+// support coarse day/week/month/year recency buckets, not an exact N-day
+// cutoff like Tavily/Exa do — this rounds a `days` value UP to the
+// smallest bucket that still covers it, so results are never older than
+// requested, just possibly a bit fresher than strictly necessary.
+function daysToGoogleBucket(days) {
+  if (days <= 1) return "d";
+  if (days <= 7) return "w";
+  if (days <= 31) return "m";
+  return "y";
+}
 
 export async function tavilySearch(env, query, includeDomains, options = {}) {
   const { maxResults = 10, days } = options;
@@ -55,13 +72,17 @@ export async function tavilySearch(env, query, includeDomains, options = {}) {
 // *total*, not monthly, so it's positioned as a third-string fallback
 // rather than something to lean on daily.
 export async function serperSearch(env, query, includeDomains, options = {}) {
-  const { maxResults = 10 } = options;
+  const { maxResults = 10, days } = options;
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const res = await fetch("https://google.serper.dev/search", {
     method: "POST",
     headers: { "X-API-KEY": env.SERPER_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ q: query + siteFilter, num: maxResults })
+    body: JSON.stringify({
+      q: query + siteFilter,
+      num: maxResults,
+      ...(days ? { tbs: `qdr:${daysToGoogleBucket(days)}` } : {})
+    })
   });
   if (!res.ok) {
     const errBody = await res.text();
@@ -78,7 +99,7 @@ export async function serperSearch(env, query, includeDomains, options = {}) {
 // page text directly (contents.text) so we don't need a second fetch per
 // result the way a plain links-only search would require.
 export async function exaSearch(env, query, includeDomains, options = {}) {
-  const { maxResults = 10 } = options;
+  const { maxResults = 10, days } = options;
   const res = await fetch("https://api.exa.ai/search", {
     method: "POST",
     headers: { "x-api-key": env.EXA_API_KEY, "Content-Type": "application/json" },
@@ -87,7 +108,8 @@ export async function exaSearch(env, query, includeDomains, options = {}) {
       numResults: maxResults,
       type: "auto",
       contents: { text: { maxCharacters: 1000 } },
-      ...(includeDomains && includeDomains.length ? { includeDomains } : {})
+      ...(includeDomains && includeDomains.length ? { includeDomains } : {}),
+      ...(days ? { startPublishedDate: new Date(Date.now() - days * 86400000).toISOString() } : {})
     })
   });
   if (!res.ok) {
@@ -112,10 +134,11 @@ export async function exaSearch(env, query, includeDomains, options = {}) {
 // script — DDG (like most sites) is more likely to block an obvious
 // bot User-Agent than a standard Chrome one.
 export async function duckduckgoSearch(env, query, includeDomains, options = {}) {
-  const { maxResults = 10 } = options;
+  const { maxResults = 10, days } = options;
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
-  const res = await fetch(`${DDG_HTML_URL}?q=${encodeURIComponent(query + siteFilter)}`, {
+  const dfParam = days ? `&df=${daysToGoogleBucket(days)}` : "";
+  const res = await fetch(`${DDG_HTML_URL}?q=${encodeURIComponent(query + siteFilter)}${dfParam}`, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
