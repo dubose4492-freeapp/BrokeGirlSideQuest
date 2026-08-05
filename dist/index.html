@@ -222,16 +222,16 @@ const CATEGORIES = {
   // "qualifies: true only if genuinely about this category" / the regex
   // fallback's CATEGORY_KEYWORDS gate in freebies.js), so the query itself
   // just needs to point search at the right general topic.
-  clothing: { label: "Clothing", icon: "👕", timeRange: "month", query: (loc) =>
-    `free clothing shoes giveaways promotions near ${loc}` },
-  toys: { label: "Toys", icon: "🧸", timeRange: "month", query: (loc) =>
-    `free toy giveaways promotions LEGO Hasbro toy drives near ${loc}` },
-  accessories: { label: "Accessories", icon: "👜", timeRange: "month", query: (loc) =>
-    `free backpacks water bottles tote bags school supplies giveaways near ${loc}` },
+  clothing: { label: "Clothing", icon: "👕", timeRange: "month", query: (loc, r) =>
+    `free clothing shoes giveaways promotions near ${loc} within ${r} miles` },
+  toys: { label: "Toys", icon: "🧸", timeRange: "month", query: (loc, r) =>
+    `free toy giveaways promotions LEGO Hasbro toy drives near ${loc} within ${r} miles` },
+  accessories: { label: "Accessories", icon: "👜", timeRange: "month", query: (loc, r) =>
+    `free backpacks water bottles tote bags school supplies giveaways near ${loc} within ${r} miles` },
   events: { label: "Events", icon: "🎉", timeRange: "month", query: (loc, r) =>
     `free community events this week near ${loc} within ${r} miles` },
-  community: { label: "Community", icon: "📦", timeRange: null, query: (loc) =>
-    `food pantries community fridges clothing closets soup kitchens near ${loc}` },
+  community: { label: "Community", icon: "📦", timeRange: null, query: (loc, r) =>
+    `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
     `free samples by mail 2026 baby beauty coffee pet seeds` }
 };
