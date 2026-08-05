@@ -476,7 +476,14 @@ export async function onRequestPost({ request, env }) {
   const { location, radius } = body;
   if (!location) return json({ error: "location is required." }, 400);
 
-  const query = `free food OR BOGO "buy one get one free" OR "free with $${MAX_QUALIFYING_PURCHASE} purchase" OR "free with any purchase" deal app reward loyalty restaurant fast food near ${location} within ${radius} miles`;
+  // Kept deliberately simple/natural rather than a boolean OR/quote
+  // expression — that style works great on Tavily's semantic "advanced"
+  // search but reads far more literally on Serper/Exa (plain-ish keyword
+  // search), where it was over-narrowing results instead of broadening
+  // them. The actual qualifying rules (free / BOGO / <= $MAX_QUALIFYING_PURCHASE
+  // minimum purchase) are already enforced downstream by the classifier,
+  // so the query itself just needs to point search at the right topic.
+  const query = `free food deals BOGO restaurants fast food near ${location} within ${radius} miles this week`;
 
   let results, provider;
   try {
