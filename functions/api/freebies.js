@@ -173,11 +173,31 @@ function findMultipleOrgMentions(text) {
   return found;
 }
 
+// Rough keyword gate used ONLY by the regex fallback (no LLM configured).
+// openRouterClassify already does real category judgment via its prompt
+// ("qualifies: true only if genuinely about this category") — this is a
+// cheaper stand-in for when OPENROUTER_API_KEY isn't set, so a roundup
+// post surfaced by e.g. the Clothing tab's query doesn't get every
+// company in it (Starbucks, Sephora, ...) blindly tagged "clothing" just
+// because that's the query that found it.
+const CATEGORY_KEYWORDS = {
+  clothing: /\b(cloth(?:ing|es)?|apparel|shoes?|sneakers?|jacket|jeans|shirt|dress(?:es)?|outfit|footwear)\b/i,
+  toys: /\b(toys?|games?|action figures?|dolls?|lego|playset)\b/i,
+  accessories: /\b(backpacks?|tote bags?|water bottles?|school suppl(?:y|ies)|accessor(?:y|ies)|bags?|sunglasses|jewelry)\b/i,
+  mail: /\b(sample|by mail|mail-?in|free sample)\b/i
+};
+function matchesCategory(text, category) {
+  if (ALWAYS_QUALIFIES.has(category)) return true; // events/community already scoped by their query
+  const re = CATEGORY_KEYWORDS[category];
+  return re ? re.test(text) : true; // no keyword list defined — don't gate it
+}
+
 function regexClassify(results, category) {
   const items = [];
   for (const raw of results) {
     const combinedText = (raw.content || "") + " " + (raw.title || "");
     if (!ALWAYS_QUALIFIES.has(category) && !looksFree(combinedText)) continue;
+    if (!matchesCategory(combinedText, category)) continue;
 
     const expires = extractExpiry(raw.content);
     if (isExpired(expires)) continue;
