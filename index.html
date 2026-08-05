@@ -186,22 +186,11 @@
 // (see reply for why real product photos aren't available free)
 // ============================================================
 // ============================================================
-// EMBEDDED API KEY — paste your Tavily key between the quotes below.
-// This lets less-technical users skip the Preferences setup step.
-// SECURITY NOTE: anyone who opens/views this HTML file's source can
-// see this key. Fine for sharing with family/friends you trust; do
-// NOT post this file publicly or send it to strangers.
+// API keys now live server-side as Cloudflare Pages secrets
+// (TAVILY_API_KEY, KROGER_CLIENT_ID, KROGER_CLIENT_SECRET) — see
+// /functions/api/search.js and /functions/api/grocery-price.js.
+// Nothing secret is embedded in this file anymore.
 // ============================================================
-const EMBEDDED_API_KEY = "PASTE_YOUR_TAVILY_KEY_HERE";
-
-// Kroger Developer API (free, developer.kroger.com) — returns real store
-// price/aisle data instead of search-snippet guesses, for Kroger-family
-// stores (Kroger, Ralphs, Fry's, Smith's, King Soopers, Fred Meyer, etc).
-// Register a free app to get these two values. Uses OAuth client_credentials.
-// NOTE: like the Tavily key above, anyone who views this file's source can
-// see these — fine for family/friends, don't post the file publicly.
-const EMBEDDED_KROGER_CLIENT_ID = "PASTE_YOUR_KROGER_CLIENT_ID_HERE";
-const EMBEDDED_KROGER_CLIENT_SECRET = "PASTE_YOUR_KROGER_CLIENT_SECRET_HERE";
 
 // Retailer/official sites only — keeps grocery results to actual
 // store pages and flyers instead of blog "roundup" articles.
@@ -280,12 +269,7 @@ let state = {
   tab: "dashboard",
   location: localStorage.getItem("dff_location") || "your area",
   radius: localStorage.getItem("dff_radius") || "100",
-  apiKey: localStorage.getItem("dff_tavily_key") || EMBEDDED_API_KEY,
   krogerZip: localStorage.getItem("dff_kroger_zip") || "",
-  krogerToken: null,
-  krogerTokenExpiry: 0,
-  krogerLocationId: localStorage.getItem("dff_kroger_location_id") || null,
-  krogerLocationZip: localStorage.getItem("dff_kroger_location_zip") || null,
   results: {},
   filters: {}, // per-category active requirement-type filter
   saved: new Set(JSON.parse(localStorage.getItem("dff_saved") || "[]")),
@@ -449,9 +433,6 @@ function renderDashboard() {
 
 function renderPrefs() {
   return `<div class="item-card prefs" style="padding:16px">
-    <label>Tavily API key</label>
-    <input id="keyInput" type="password" value="${state.apiKey}" onchange="state.apiKey=this.value; localStorage.setItem('dff_tavily_key', this.value)" placeholder="tvly-..." />
-    <div class="hint">Get a free key (1,000 searches/month, no card) at <a href="https://app.tavily.com" target="_blank" rel="noopener">app.tavily.com</a>. Saved only in this browser — or pre-fill it for everyone by editing EMBEDDED_API_KEY near the top of this file's code.</div>
     <label>Location (city, ZIP, or address)</label>
     <input id="locInput" value="${state.location}" onchange="state.location=this.value; localStorage.setItem('dff_location', this.value)" />
     <label>Search radius (miles, max 100)</label>
@@ -471,7 +452,6 @@ function render() {
   else content.innerHTML = renderList(state.tab);
 
   let statusHtml = "";
-  if (!state.apiKey || state.apiKey === "PASTE_YOUR_TAVILY_KEY_HERE") statusHtml += `<div class="warn-box">Add your free Tavily API key in the Preferences tab before refreshing.</div>`;
   if (state.error) statusHtml += `<div class="error-box">${state.error}</div>`;
   document.getElementById("statusArea").innerHTML = statusHtml;
 }
@@ -505,11 +485,11 @@ function showToast(msg) {
 async function searchCategory(key) {
   const cat = CATEGORIES[key];
   const query = cat.query(state.location, state.radius);
-  const body = { api_key: state.apiKey, query, max_results: 8, search_depth: cat.searchDepth || "basic" };
+  const body = { query, max_results: 8, search_depth: cat.searchDepth || "basic" };
   if (cat.timeRange) body.time_range = cat.timeRange;
   if (cat.includeDomains) body.include_domains = cat.includeDomains;
 
-  const response = await fetch("https://api.tavily.com/search", {
+  const response = await fetch("/api/search", {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json" },
@@ -523,72 +503,25 @@ async function searchCategory(key) {
   return (data.results || []).map(r => toItem(r, key));
 }
 
-// ---------- Kroger API (free, real store pricing) ----------
+// ---------- Kroger API (free, real store pricing) — now handled entirely
+// server-side by /functions/api/grocery-price.js. Client just asks for a
+// price by item + ZIP; no credentials or tokens ever reach the browser.
 function krogerConfigured() {
-  return EMBEDDED_KROGER_CLIENT_ID && EMBEDDED_KROGER_CLIENT_ID !== "PASTE_YOUR_KROGER_CLIENT_ID_HERE" &&
-         EMBEDDED_KROGER_CLIENT_SECRET && EMBEDDED_KROGER_CLIENT_SECRET !== "PASTE_YOUR_KROGER_CLIENT_SECRET_HERE" &&
-         state.krogerZip;
-}
-
-async function getKrogerToken() {
-  if (state.krogerToken && Date.now() < state.krogerTokenExpiry) return state.krogerToken;
-  const creds = btoa(`${EMBEDDED_KROGER_CLIENT_ID}:${EMBEDDED_KROGER_CLIENT_SECRET}`);
-  const response = await fetch("https://api.kroger.com/v1/connect/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Authorization": `Basic ${creds}`
-    },
-    body: "grant_type=client_credentials&scope=product.compact"
-  });
-  if (!response.ok) throw new Error(`Kroger auth failed (${response.status}). Check your Client ID/Secret.`);
-  const data = await response.json();
-  state.krogerToken = data.access_token;
-  state.krogerTokenExpiry = Date.now() + (data.expires_in - 60) * 1000; // refresh 1 min early
-  return state.krogerToken;
-}
-
-async function getKrogerLocationId() {
-  if (state.krogerLocationId && state.krogerLocationZip === state.krogerZip) return state.krogerLocationId;
-  const token = await getKrogerToken();
-  const url = `https://api.kroger.com/v1/locations?filter.zipCode.near=${encodeURIComponent(state.krogerZip)}&filter.radiusInMiles=${Math.min(100, parseInt(state.radius) || 100)}&filter.limit=1`;
-  const response = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Kroger store lookup failed (${response.status}).`);
-  const data = await response.json();
-  const loc = (data.data || [])[0];
-  if (!loc) throw new Error("No Kroger-family store found near that ZIP within radius.");
-  state.krogerLocationId = loc.locationId;
-  state.krogerLocationZip = state.krogerZip;
-  localStorage.setItem("dff_kroger_location_id", state.krogerLocationId);
-  localStorage.setItem("dff_kroger_location_zip", state.krogerZip);
-  return state.krogerLocationId;
+  return !!state.krogerZip;
 }
 
 async function searchKrogerItem(itemName) {
-  const token = await getKrogerToken();
-  const locationId = await getKrogerLocationId();
-  const url = `https://api.kroger.com/v1/products?filter.term=${encodeURIComponent(itemName)}&filter.locationId=${locationId}&filter.limit=5`;
-  const response = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Kroger product search failed (${response.status}) for ${itemName}.`);
+  const params = new URLSearchParams({ item: itemName, zip: state.krogerZip, radius: state.radius });
+  const response = await fetch(`/api/grocery-price?${params}`);
   const data = await response.json();
-  const priced = (data.data || [])
-    .map(p => {
-      const priceInfo = p.items && p.items[0] && p.items[0].price;
-      if (!priceInfo) return null;
-      const price = (priceInfo.promo && priceInfo.promo > 0) ? priceInfo.promo : priceInfo.regular;
-      return price ? { product: p, price } : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.price - b.price);
-
-  const best = priced[0];
-  if (!best) return null; // let caller fall back to search-based pricing
+  if (!response.ok) throw new Error(data.error || `Kroger lookup failed (${response.status}) for ${itemName}.`);
+  if (!data.price) return null; // let caller fall back to search-based pricing
   return {
     id: "grocery-kroger-" + itemName.replace(/\s+/g, "-").toLowerCase(),
     title: itemName,
     store: "Kroger (official price)",
     url: "https://www.kroger.com/search?query=" + encodeURIComponent(itemName),
-    price: `$${best.price.toFixed(2)}`,
+    price: `$${data.price.toFixed(2)}`,
     isFree: false,
     requirementType: "unknown",
     expires: null,
@@ -613,8 +546,8 @@ async function searchGroceryItem(itemName) {
 
 async function searchGroceryItemViaSearch(itemName) {
   const query = `cheapest price ${itemName} grocery store sale this week near ${state.location} within ${state.radius} miles`;
-  const body = { api_key: state.apiKey, query, max_results: 8, search_depth: "advanced", time_range: "week", include_domains: GROCERY_DOMAINS };
-  const response = await fetch("https://api.tavily.com/search", {
+  const body = { query, max_results: 8, search_depth: "advanced", time_range: "week", include_domains: GROCERY_DOMAINS };
+  const response = await fetch("/api/search", {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json" },
@@ -658,7 +591,6 @@ async function searchGroceryCategory() {
 
 async function runFullScan() {
   if (state.scanning) return;
-  if (!state.apiKey || state.apiKey === "PASTE_YOUR_TAVILY_KEY_HERE") { state.tab = "prefs"; render(); return; }
 
   state.scanning = true;
   state.error = null;
