@@ -88,7 +88,7 @@ async function getKrogerPrice(env, item, zip, radius) {
 
   const best = priced[0];
   if (!best) return null;
-  return { price: best, store: "Kroger (official price)", url: "https://www.kroger.com" };
+  return { price: best, store: "Kroger (official price)", url: "https://www.kroger.com", productUrl: "https://www.kroger.com", blogUrl: null };
 }
 
 // ---------- Web search side (every major chain) ----------
@@ -102,7 +102,8 @@ function extractLowestPriceRegex(results) {
     for (const m of matches) {
       const val = parseFloat(m.replace(/[$\s]/g, ""));
       if (!isNaN(val) && val > 0 && (!best || val < best.price)) {
-        best = { price: val, store: findChainName(combinedText) || DOMAIN_TO_CHAIN[hostname(r.url)] || hostname(r.url), url: r.url };
+        const chain = findChainName(combinedText) || DOMAIN_TO_CHAIN[hostname(r.url)] || null;
+        best = { price: val, store: chain || hostname(r.url), chain, url: r.url };
       }
     }
   }
@@ -155,11 +156,11 @@ ${snippetText}`;
   if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
 
   const raw = results[parsed.index];
-  const store = (parsed.store && String(parsed.store).trim())
-    || findChainName((raw.content || "") + " " + (raw.title || ""))
+  const chain = findChainName((parsed.store || "") + " " + (raw.content || "") + " " + (raw.title || ""))
     || DOMAIN_TO_CHAIN[hostname(raw.url)]
-    || hostname(raw.url);
-  return { price: parsed.price, store, url: raw.url };
+    || null;
+  const store = (parsed.store && String(parsed.store).trim()) || chain || hostname(raw.url);
+  return { price: parsed.price, store, chain, url: raw.url };
 }
 
 // ---------- Search providers: Tavily first, Brave as fallback ----------
@@ -227,13 +228,19 @@ async function searchGroceryWeb(env, query) {
   return searchWithFallback(env, query, null);
 }
 
-// If the winning result isn't from one of the official chain domains, tag
-// the store label so it's clear the price came from a third-party page
-// (e.g. a deal-tracking blog) rather than the store's own site.
-function tagIfThirdParty(store, url) {
-  const host = hostname(url);
-  if (DOMAIN_TO_CHAIN[host]) return store;
-  return `${store} (via ${host})`;
+// If the winning result isn't from one of the official chain domains, try
+// a second, targeted search restricted to that chain's own site to find
+// the actual product page — so we can offer both a blog link (where the
+// price was found) and a direct link to the store's page for the item.
+async function findOfficialProductPage(env, item, chain) {
+  const domain = GROCERY_CHAIN_DOMAINS[chain];
+  if (!domain) return null;
+  try {
+    const results = await searchWithFallback(env, `${item} site:${domain}`, [domain]);
+    return results.length ? results[0].url : null;
+  } catch (err) {
+    return null;
+  }
 }
 
 async function getWebSearchPrice(env, item, location, radius) {
@@ -254,8 +261,21 @@ async function getWebSearchPrice(env, item, location, radius) {
   if (!best) best = extractLowestPriceRegex(results);
   if (!best) return null;
 
-  best.store = tagIfThirdParty(best.store, best.url);
-  return best;
+  const isOfficial = !!DOMAIN_TO_CHAIN[hostname(best.url)];
+  if (isOfficial) {
+    return { price: best.price, store: best.store, url: best.url, productUrl: best.url, blogUrl: null };
+  }
+
+  // Price came from a third-party page (blog, deal tracker, etc.) — try to
+  // resolve an actual product page on the identified chain's own site too.
+  const productUrl = best.chain ? await findOfficialProductPage(env, item, best.chain) : null;
+  return {
+    price: best.price,
+    store: best.store,
+    url: productUrl || best.url, // primary link — prefer the real store page when we found one
+    productUrl,
+    blogUrl: best.url
+  };
 }
 
 // ---------- Entry point ----------
@@ -284,7 +304,7 @@ export async function onRequestGet({ request, env }) {
   if (kroger && web) winner = web.price < kroger.price ? web : kroger;
   else winner = kroger || web || null;
 
-  return json(winner || { price: null, store: null, url: null });
+  return json(winner || { price: null, store: null, url: null, productUrl: null, blogUrl: null });
 }
 
 function json(obj, status = 200) {
