@@ -500,7 +500,7 @@ async function searchCategory(key) {
     throw new Error(`${cat.label} search failed (${response.status}). ${errBody.slice(0, 150)}`);
   }
   const data = await response.json();
-  return (data.results || []).map(r => toItem(r, key));
+  return (data.results || []).map(r => toItem(r, key)).filter(Boolean);
 }
 
 // ---------- Kroger API (free, real store pricing) — now handled entirely
