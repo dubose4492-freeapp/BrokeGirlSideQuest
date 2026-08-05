@@ -114,6 +114,17 @@
   nav button.active { color: var(--ink); background: var(--sun-soft); box-shadow: inset 0 -4px 0 var(--pink); }
   main { max-width: 1000px; margin: 0 auto; padding: 18px; }
 
+  .section-scan-row { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+  .scan-section-btn {
+    background: var(--mint); color: #0B2A18; border: 3px solid var(--ink); font-weight: 800;
+    padding: 9px 14px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 7px;
+    font-family: 'Press Start 2P', monospace; box-shadow: 4px 4px 0 var(--ink);
+    transition: transform .08s, box-shadow .08s;
+  }
+  .scan-section-btn:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--ink); }
+  .scan-section-btn:disabled { opacity: 0.6; cursor: default; }
+  .scan-section-btn .spin { display: inline-block; animation: spin .8s steps(8) infinite; }
+
   .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
   .filter-chip {
     background: var(--panel); border: 2px solid var(--ink); border-radius: 20px; padding: 6px 12px;
@@ -354,7 +365,7 @@
 // ============================================================
 
 // Target grocery staples only — per spec, nothing else is priced/searched.
-const GROCERY_ITEMS = ["Bread", "Eggs", "Chicken", "Ground beef", "Cheese", "Butter", "Milk", "Adobo seasoning"];
+const GROCERY_ITEMS = ["Bread", "Eggs", "Chicken", "Ground beef", "Cheese", "Butter", "Milk", "Adobo seasoning", "Diapers", "Formula", "Baby food"];
 
 const CAT_SVG = `<img src="/images/mascot.jpg" alt="kawaii cat mascot">`;
 
@@ -427,6 +438,7 @@ let state = {
   saved: new Set(JSON.parse(localStorage.getItem("dff_saved") || "[]")),
   lastScan: localStorage.getItem("dff_last_scan") || null,
   scanning: false,
+  scanningKey: null, // set to a category key while a single-section scan (not the full "Run Quest") is in flight
   error: null,
   failedCategories: new Set() // which tabs failed on the last run — used to
                                // show the "this quest line failed" empty
@@ -592,16 +604,24 @@ function renderList(key) {
       </button>`).join("")}
   </div>`;
 
+  const scanningThis = state.scanning && state.scanningKey === key;
+  const scanRow = `<div class="section-scan-row">
+    <button class="scan-section-btn" onclick="scanSingleCategory('${key}')" ${state.scanning ? "disabled" : ""}>
+      <span class="${scanningThis ? "spin" : ""}">&#8635;</span> ${scanningThis ? "scanning…" : "scan this section"}
+    </button>
+  </div>`;
+
   const failed = state.failedCategories.has(key);
   let body;
   if (filtered.length === 0) {
-    if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit Run Quest again.</div>`;
-    else if (!state.lastScan) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top to pull today's loot.</div>`;
+    if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit "scan this section" again.</div>`;
+    else if (!state.lastScan && !scanningThis) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG}</div>Tap <b>Run Quest</b> up top for everything, or use <b>scan this section</b> above to just pull this one.</div>`;
+    else if (scanningThis) body = `<div class="empty-state">Scanning ${cat.label}…</div>`;
     else body = `<div class="empty-state">No results match this filter.</div>`;
   } else {
     body = filtered.map(itemCard).join("");
   }
-  return filterBar + `<div class="grid">${body}</div>`;
+  return scanRow + filterBar + `<div class="grid">${body}</div>`;
 }
 
 // Rolls up everything the HUD bar and Quest Board need in one pass:
@@ -739,6 +759,53 @@ function renderTips() {
       <h3>📞 Call your local government office</h3>
       <p>Your county clerk, county extension office, or city hall can point you to free local resources that never make it onto the internet — utility assistance, rental/eviction help, free tax prep, job training, and more.</p>
       <p class="tip-note">Not sure which office to call? Dial 211 first — they'll route you to the right local department.</p>
+    </div>
+    <div class="tip-card">
+      <h3>📺 Free streaming services</h3>
+      <p>No subscription needed — these are ad-supported but completely free, no library card or trial required:</p>
+      <ul>
+        <li><a href="https://tubitv.com" target="_blank" rel="noopener">Tubi</a> — huge free movie &amp; TV library</li>
+        <li><a href="https://pluto.tv" target="_blank" rel="noopener">Pluto TV</a> — free live channels + on-demand</li>
+        <li><a href="https://therokuchannel.roku.com" target="_blank" rel="noopener">The Roku Channel</a> — free movies &amp; shows (no Roku device needed, works in browser)</li>
+        <li><a href="https://www.xumo.com" target="_blank" rel="noopener">Xumo Play</a> — free live TV &amp; on-demand</li>
+        <li><a href="https://www.crackle.com" target="_blank" rel="noopener">Crackle</a> — free movies &amp; originals</li>
+        <li><a href="https://www.peacocktv.com" target="_blank" rel="noopener">Peacock</a> — has a limited free tier alongside its paid plans</li>
+      </ul>
+      <p class="tip-note">Also check your library card and any T-Mobile/Verizon/AT&amp;T plan perks below — carriers sometimes bundle a paid streaming service in for free.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🎮 Free gaming services</h3>
+      <p>Ways to grab full games and play without paying:</p>
+      <ul>
+        <li><a href="https://store.epicgames.com/en-US/free-games" target="_blank" rel="noopener">Epic Games Store</a> — a free full PC game every week, yours to keep</li>
+        <li><a href="https://www.gog.com" target="_blank" rel="noopener">GOG</a> — regular free giveaways &amp; a permanently free games section</li>
+        <li><a href="https://itch.io" target="_blank" rel="noopener">itch.io</a> — thousands of free indie games</li>
+        <li><a href="https://store.steampowered.com/genre/Free%20to%20Play/" target="_blank" rel="noopener">Steam Free-to-Play</a> — filter the store by free-to-play</li>
+        <li><a href="https://www.xbox.com/en-us/xbox-game-pass/cloud-gaming" target="_blank" rel="noopener">Xbox Cloud Gaming</a> &amp; <a href="https://www.amazon.com/luna" target="_blank" rel="noopener">Amazon Luna</a> — check for free trial periods to stream games with no console</li>
+      </ul>
+      <p class="tip-note">Amazon Prime members also get Prime Gaming — free monthly game claims and in-game loot, included if you already have Prime.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🍔 Food delivery apps &amp; BOGO deals</h3>
+      <p>These delivery apps regularly run free-delivery, BOGO, and % off promos — worth having a few installed to compare:</p>
+      <ul>
+        <li><a href="https://www.doordash.com" target="_blank" rel="noopener">DoorDash</a> — check the "Deals" tab for BOGO &amp; $0 delivery fee offers</li>
+        <li><a href="https://www.ubereats.com" target="_blank" rel="noopener">Uber Eats</a> — frequent promo codes and restaurant-funded BOGO deals</li>
+        <li><a href="https://www.grubhub.com" target="_blank" rel="noopener">Grubhub</a> — "Perks" tab plus Grubhub+ trial windows</li>
+        <li>Individual restaurant apps (Chipotle, Wendy's, Taco Bell, Panera, etc.) — often cheaper than delivery-app pricing and run their own rewards/BOGO deals</li>
+      </ul>
+      <p class="tip-note">Comparing 2–3 apps for the same order can turn up very different delivery fees and promo codes — worth a quick check before ordering.</p>
+    </div>
+    <div class="tip-card">
+      <h3>📱 Carrier freebies</h3>
+      <p>If you already have a phone plan, check whether your carrier has a rewards program — it's free perks for being a customer, no extra cost:</p>
+      <ul>
+        <li><b>T-Mobile Tuesdays</b> (T-Life app) — new freebies every Tuesday: free food/drink items, gas discounts, sweepstakes entries, and retail discounts, free just for having an eligible T-Mobile, Metro, or Sprint plan</li>
+        <li><b>Verizon</b> — newer loyalty program offers perks like free coffee, food items, and bill credits for postpaid customers</li>
+        <li><b>AT&amp;T Reward Center</b> — check for bill credits or gift cards tied to your plan or recent purchases</li>
+        <li><b>Boost Mobile / Metro by T-Mobile</b> — budget carriers that also run their own customer perk promos</li>
+      </ul>
+      <p class="tip-note">Download your carrier's app and check weekly — most of these deals expire and refresh on a set schedule.</p>
     </div>
   </div>`;
 }
@@ -1006,6 +1073,48 @@ function stopScan() {
   state.stopRequested = true;
   if (currentAbortController) currentAbortController.abort();
   document.getElementById("refreshLabel").textContent = "stopping…";
+}
+
+// Scans just ONE tab instead of the full 8-category "Run Quest" loop —
+// same per-category fetch logic as runFullScan, just a single call. Meant
+// for conserving search/OpenRouter quota when someone only cares about
+// (and is currently looking at) one tab. Blocked while any other scan
+// (full or single) is already in flight, since they'd share the same
+// currentAbortController/state.results slot.
+async function scanSingleCategory(key) {
+  if (state.scanning || key === "dashboard" || key === "tips") return;
+
+  state.scanning = true;
+  state.scanningKey = key;
+  state.stopRequested = false;
+  currentAbortController = new AbortController();
+  state.failedCategories.delete(key);
+  const btn = document.getElementById("refreshBtn");
+  if (btn) btn.disabled = true;
+  state.results[key] = []; // clear before this fetch so a failure never shows stale data
+  render();
+
+  try {
+    state.results[key] = key === "grocery" ? await searchGroceryCategory(currentAbortController.signal)
+      : key === "restaurant" ? await searchRestaurantCategory(currentAbortController.signal)
+      : await searchFreebiesCategory(key, currentAbortController.signal);
+    state.error = null;
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      recordFailure(key, err.message);
+      state.error = `Couldn't load ${CATEGORIES[key].label}. ${err.message}`;
+    }
+  }
+
+  state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
+  localStorage.setItem("dff_last_scan", state.lastScan);
+  localStorage.setItem("dff_results", JSON.stringify(state.results));
+
+  state.scanning = false;
+  state.scanningKey = null;
+  currentAbortController = null;
+  if (btn) btn.disabled = false;
+  render();
 }
 
 refreshGeminiPromptBox();

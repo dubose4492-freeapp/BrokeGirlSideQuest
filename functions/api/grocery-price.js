@@ -34,7 +34,8 @@ const GROCERY_CHAIN_DOMAINS = {
   "Whole Foods": "wholefoodsmarket.com", "IGA": "iga.com", "Piggly Wiggly": "pigglywiggly.com",
   "H-E-B": "heb.com", "Safeway": "safeway.com", "Giant Eagle": "gianteagle.com",
   "Harris Teeter": "harristeeter.com", "Sprouts": "sprouts.com", "Ingles": "ingles-markets.com",
-  "Food City": "foodcity.com", "Dollar General Market": "dollargeneral.com"
+  "Food City": "foodcity.com", "Dollar General Market": "dollargeneral.com",
+  "Dollar Tree": "dollartree.com"
 };
 const GROCERY_CHAINS = Object.keys(GROCERY_CHAIN_DOMAINS);
 const GROCERY_DOMAIN_LIST = Object.values(GROCERY_CHAIN_DOMAINS);
