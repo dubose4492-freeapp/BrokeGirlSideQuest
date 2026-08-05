@@ -2,13 +2,13 @@
 //
 // Runs two lookups in parallel and returns whichever price is actually lower:
 //   1. Kroger's official price (OAuth token -> nearest store -> product price)
-//   2. Tavily web search + OpenRouter extraction (or regex fallback) for the
-//      lowest real price mentioned at any nearby store
+//   2. A web search across every major grocery chain (Tavily first, Brave as
+//      fallback if Tavily errors/hits its cap) + OpenRouter extraction, or
+//      regex extraction if OpenRouter isn't configured
 //
 // The response is always { price, store, url } so the client can label the
 // card with wherever the winning price actually came from. Client never sees
-// the Kroger Client ID/Secret, the raw access token, the Tavily key, or the
-// OpenRouter key.
+// the Kroger Client ID/Secret, the raw access token, or any search/LLM keys.
 //
 // Token and per-ZIP location ID are cached in module-level variables, which
 // persist across requests on a warm edge isolate (best-effort — not
@@ -16,6 +16,15 @@
 let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
+
+// Chains explicitly named in the search query so results aren't limited to
+// whichever store happens to rank first organically.
+const GROCERY_CHAINS = [
+  "Walmart", "Kroger", "Publix", "Aldi", "Food Lion", "Save A Lot", "Target",
+  "Costco", "Sam's Club", "Winn-Dixie", "Meijer", "Trader Joe's", "Whole Foods",
+  "IGA", "Piggly Wiggly", "H-E-B", "Safeway", "Giant Eagle", "Harris Teeter",
+  "Sprouts", "Ingles", "Food City", "Dollar General Market"
+];
 
 async function getToken(env) {
   if (cachedToken && Date.now() < cachedTokenExpiry) return cachedToken;
@@ -49,7 +58,7 @@ async function getLocationId(env, zip, radius) {
   return loc.locationId;
 }
 
-// ---------- Kroger side (unchanged logic, just wrapped to return the shared shape) ----------
+// ---------- Kroger side ----------
 async function getKrogerPrice(env, item, zip, radius) {
   if (!env.KROGER_CLIENT_ID || !env.KROGER_CLIENT_SECRET) return null; // not configured — skip, don't fail the whole request
 
@@ -74,7 +83,7 @@ async function getKrogerPrice(env, item, zip, radius) {
   return { price: best, store: "Kroger (official price)", url: "https://www.kroger.com" };
 }
 
-// ---------- Web search side (Tavily -> OpenRouter extraction, regex fallback) ----------
+// ---------- Web search side (every major chain) ----------
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
 function extractLowestPriceRegex(results) {
@@ -120,27 +129,61 @@ ${snippetText}`;
   const data = await res.json();
   const text = (data.choices?.[0]?.message?.content || "").trim().replace(/^```json\s*|```$/g, "");
   let parsed;
-  try { parsed = JSON.parse(text); } catch { return null; } // caller falls back to regex
+  try { parsed = JSON.parse(text); } catch { return null; }
   if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
 
   const raw = results[parsed.index];
   return { price: parsed.price, store: hostname(raw.url), url: raw.url };
 }
 
-async function getWebSearchPrice(env, item, location, radius) {
-  if (!env.TAVILY_API_KEY) return null; // not configured — skip, don't fail the whole request
-
-  const query = `${item} price grocery store near ${location} within ${radius} miles`;
-  const tavilyRes = await fetch("https://api.tavily.com/search", {
+// ---------- Search providers: Tavily first, Brave as fallback ----------
+async function tavilySearch(env, query) {
+  const res = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      api_key: env.TAVILY_API_KEY, query, max_results: 6, search_depth: "advanced"
+      api_key: env.TAVILY_API_KEY, query, max_results: 8, search_depth: "advanced"
     })
   });
-  if (!tavilyRes.ok) throw new Error(`Grocery web search failed (${tavilyRes.status}) for ${item}.`);
-  const tavilyData = await tavilyRes.json();
-  const results = tavilyData.results || [];
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Tavily search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  return data.results || [];
+}
+
+async function braveSearch(env, query) {
+  const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=8`, {
+    headers: { Accept: "application/json", "X-Subscription-Token": env.BRAVE_API_KEY }
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Brave search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = (data.web && data.web.results) || [];
+  return results.map(r => ({ title: r.title, url: r.url, content: r.description || "" }));
+}
+
+async function searchWithFallback(env, query) {
+  if (!env.TAVILY_API_KEY && !env.BRAVE_API_KEY) return []; // neither configured — web side just skipped
+  if (env.TAVILY_API_KEY) {
+    try {
+      return await tavilySearch(env, query);
+    } catch (tavilyErr) {
+      if (!env.BRAVE_API_KEY) throw tavilyErr;
+      return await braveSearch(env, query); // let this one throw if it also fails
+    }
+  }
+  return await braveSearch(env, query);
+}
+
+async function getWebSearchPrice(env, item, location, radius) {
+  const chainList = GROCERY_CHAINS.join(", ");
+  const query = `${item} price at ${chainList} grocery store near ${location} within ${radius} miles`;
+
+  const results = await searchWithFallback(env, query);
   if (!results.length) return null;
 
   if (env.OPENROUTER_API_KEY) {
@@ -172,8 +215,6 @@ export async function onRequestGet({ request, env }) {
   const kroger = krogerResult.status === "fulfilled" ? krogerResult.value : null;
   const web = webResult.status === "fulfilled" ? webResult.value : null;
 
-  // Surface an error only if BOTH sides genuinely failed (threw) — if one
-  // side just came back empty, still return whatever the other side found.
   if (!kroger && !web && krogerResult.status === "rejected" && webResult.status === "rejected") {
     return json({ error: `${krogerResult.reason.message} / ${webResult.reason.message}` }, 502);
   }
