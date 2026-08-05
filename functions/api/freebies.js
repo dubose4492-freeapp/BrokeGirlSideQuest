@@ -333,7 +333,11 @@ export async function onRequestPost({ request, env }) {
     results = general.results;
     provider = general.provider;
   } catch (err) {
-    return json({ error: err.message }, 502);
+    // Log the real, detailed reason server-side (visible via `wrangler
+    // pages deployment tail`) — never forward raw provider error text
+    // (rate limits, account/billing messages, etc.) to the browser.
+    console.error("freebies search failed:", err.message);
+    return json({ error: err.publicMessage || "Search is temporarily unavailable. Please try again in a few minutes." }, 502);
   }
 
   // Best-effort extra pass scoped to the known-good freebie sites, merged

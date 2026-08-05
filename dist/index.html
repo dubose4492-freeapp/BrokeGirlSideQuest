@@ -256,7 +256,11 @@ let state = {
   saved: new Set(JSON.parse(localStorage.getItem("dff_saved") || "[]")),
   lastScan: localStorage.getItem("dff_last_scan") || null,
   scanning: false,
-  error: null
+  error: null,
+  failedCategories: new Set() // which tabs failed on the last run — used to
+                               // show the "this quest line failed" empty
+                               // state, instead of the old brittle trick of
+                               // substring-matching the error text
 };
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
@@ -343,7 +347,7 @@ function renderList(key) {
       </button>`).join("")}
   </div>`;
 
-  const failed = state.error && state.error.includes(cat.label);
+  const failed = state.failedCategories.has(key);
   let body;
   if (filtered.length === 0) {
     if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit Run Quest again.</div>`;
@@ -402,6 +406,17 @@ function showToast(msg) {
 }
 
 // ---------- scanning ----------
+// ---------- scan failure tracking ----------
+// Shared across searchGroceryCategory (which can fail per-item, inside its
+// own loop) and runFullScan (which fails per-tab) so both funnel into the
+// same dedup logic — several tabs failing for the same underlying reason
+// (e.g. a search provider outage) surface as ONE message, not one per tab.
+let scanFailureMessages = new Set();
+function recordFailure(key, message) {
+  state.failedCategories.add(key);
+  scanFailureMessages.add(message);
+}
+
 // ---------- Grocery pricing — fully server-side now. /functions/api/grocery-price.js
 // checks Kroger's official price AND a Tavily+OpenRouter web search in parallel,
 // then returns whichever is actually cheaper (with its real source labeled).
@@ -438,7 +453,7 @@ async function searchGroceryCategory() {
     try {
       items.push(await searchGroceryItem(itemName));
     } catch (err) {
-      state.error = (state.error ? state.error + " " : "") + err.message;
+      recordFailure("grocery", err.message);
     }
   }
   return items;
@@ -483,6 +498,8 @@ async function runFullScan() {
 
   state.scanning = true;
   state.error = null;
+  state.failedCategories = new Set();
+  scanFailureMessages = new Set();
   const btn = document.getElementById("refreshBtn");
   const icon = document.getElementById("refreshIcon");
   const label = document.getElementById("refreshLabel");
@@ -499,9 +516,14 @@ async function runFullScan() {
         : key === "restaurant" ? await searchRestaurantCategory()
         : await searchFreebiesCategory(key);
     } catch (err) {
-      state.error = (state.error ? state.error + " " : "") + err.message;
+      recordFailure(key, err.message);
     }
     render();
+  }
+
+  if (state.failedCategories.size) {
+    const labels = [...state.failedCategories].map(k => CATEGORIES[k].label).join(", ");
+    state.error = `Couldn't load: ${labels}. ${[...scanFailureMessages].join(" ")}`;
   }
 
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });

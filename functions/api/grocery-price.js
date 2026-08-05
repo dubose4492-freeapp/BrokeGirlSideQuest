@@ -298,7 +298,12 @@ export async function onRequestGet({ request, env }) {
   const web = webResult.status === "fulfilled" ? webResult.value : null;
 
   if (!kroger && !web && krogerResult.status === "rejected" && webResult.status === "rejected") {
-    return json({ error: `${krogerResult.reason.message} / ${webResult.reason.message}` }, 502);
+    // Log the real, detailed reasons server-side (visible via `wrangler
+    // pages deployment tail`) — never forward raw upstream error text
+    // (Kroger OAuth details, provider rate-limit messages, etc.) to the
+    // browser.
+    console.error("grocery-price lookup failed:", krogerResult.reason.message, "/", webResult.reason.message);
+    return json({ error: "Price lookup is temporarily unavailable. Please try again in a few minutes." }, 502);
   }
 
   let winner = null;

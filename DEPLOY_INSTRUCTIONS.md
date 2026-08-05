@@ -70,6 +70,34 @@ markup, that step will start quietly returning fewer or zero results
 instead of erroring. It's meant as a "search still basically works"
 floor, not a long-term primary provider.
 
+### Errors are no longer shown to users verbatim
+Previously, if every provider in the chain failed, the raw upstream error
+text (e.g. Tavily's own "This request exceeds your plan's set usage
+limit..." message, including their support email) got forwarded straight
+into the app's error banner — and since a full scan hits several tabs in
+a row, one Tavily outage meant that exact message repeated once per tab,
+wall-of-text style.
+
+Two fixes:
+- **Server-side**, `searchWithFallback()` now throws an Error with two
+  separate fields: `.message` (a full technical summary of every provider
+  tried and why each failed — server-side only, visible via `wrangler
+  pages deployment tail`) and `.publicMessage` (a generic, safe sentence
+  with no provider names or account details). All three `onRequestPost`/
+  `onRequestGet` handlers now log `.message` and respond to the browser
+  with `.publicMessage` only.
+- **Client-side**, `index.html` now dedupes failure messages across tabs
+  (a Set, not string concatenation) and tracks which tabs failed in
+  `state.failedCategories` instead of guessing from the error text. A
+  failed scan now shows one line like "Couldn't load: Restaurant Deals,
+  Clothing, Toys. Search is temporarily unavailable. Please try again in
+  a few minutes." instead of the same paragraph repeated per tab.
+
+This also means: if you see that generic "Search is temporarily
+unavailable" message in the app, the real reason (which provider failed
+and why) is in your Cloudflare Pages Function logs, not in what your
+users see.
+
 ## Files in this package
 ```
 wrangler.toml

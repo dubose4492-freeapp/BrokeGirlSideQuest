@@ -108,14 +108,18 @@ export async function exaSearch(env, query, includeDomains, options = {}) {
 // DuckDuckGo changes their markup this quietly returns fewer/zero results
 // rather than throwing — which is why it's the last resort, not the
 // default, even though it's the only one that never runs out of quota.
+// Headers are set to look like an ordinary browser request rather than a
+// script — DDG (like most sites) is more likely to block an obvious
+// bot User-Agent than a standard Chrome one.
 export async function duckduckgoSearch(env, query, includeDomains, options = {}) {
   const { maxResults = 10 } = options;
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const res = await fetch(`${DDG_HTML_URL}?q=${encodeURIComponent(query + siteFilter)}`, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; DailyFreeFinder/1.0; +https://pages.dev)",
-      Accept: "text/html"
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9"
     }
   });
   if (!res.ok) {
@@ -169,6 +173,19 @@ function stripTags(s) {
 // DuckDuckGo is always attempted last regardless of what's configured —
 // it's the one provider with zero setup cost, so it's the app's real
 // floor rather than an opt-in extra.
+//
+// If every provider fails, the thrown Error carries two things instead of
+// just one provider's raw message:
+//   - err.message        — a short summary of ALL providers tried and why
+//                           each failed (for server-side logs only, via
+//                           `wrangler pages deployment tail` — never send
+//                           this to the browser, it can contain account/
+//                           billing details from the upstream provider)
+//   - err.publicMessage  — a generic, safe-to-display sentence for the
+//                           end user, with no provider names or raw
+//                           upstream text in it
+// Callers in onRequestPost handlers should log err.message server-side and
+// respond to the client with err.publicMessage.
 export async function searchWithFallback(env, query, includeDomains, options = {}) {
   const providers = [
     { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
@@ -176,13 +193,13 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     { name: "exa", key: env.EXA_API_KEY, fn: exaSearch }
   ].filter(p => p.key);
 
-  let lastErr = null;
+  const failures = [];
   for (const p of providers) {
     try {
       const results = await p.fn(env, query, includeDomains, options);
       return { results, provider: p.name };
     } catch (err) {
-      lastErr = err; // try the next provider
+      failures.push(`${p.name}: ${err.message}`);
     }
   }
 
@@ -192,6 +209,9 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     const results = await duckduckgoSearch(env, query, includeDomains, options);
     return { results, provider: "duckduckgo" };
   } catch (ddgErr) {
-    throw lastErr || ddgErr;
+    failures.push(`duckduckgo: ${ddgErr.message}`);
+    const err = new Error(`All search providers failed — ${failures.join(" | ")}`);
+    err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+    throw err;
   }
 }
