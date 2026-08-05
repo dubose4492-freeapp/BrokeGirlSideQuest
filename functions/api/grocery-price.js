@@ -89,15 +89,27 @@ function hostname(url) { try { return new URL(url).hostname.replace("www.", "");
 function extractLowestPriceRegex(results) {
   let best = null;
   for (const r of results) {
-    const matches = ((r.content || "") + " " + (r.title || "")).match(/\$\s?\d+(\.\d{2})?/g) || [];
+    const combinedText = (r.content || "") + " " + (r.title || "");
+    const matches = combinedText.match(/\$\s?\d+(\.\d{2})?/g) || [];
     for (const m of matches) {
       const val = parseFloat(m.replace(/[$\s]/g, ""));
       if (!isNaN(val) && val > 0 && (!best || val < best.price)) {
-        best = { price: val, store: hostname(r.url), url: r.url };
+        best = { price: val, store: findChainName(combinedText) || hostname(r.url), url: r.url };
       }
     }
   }
   return best;
+}
+
+// Looks for any known grocery chain name actually mentioned in the page
+// text, so the store label reflects the real store ("Walmart") instead of
+// just the hosting domain ("offers.com").
+function findChainName(text) {
+  const t = (text || "").toLowerCase();
+  for (const chain of GROCERY_CHAINS) {
+    if (t.includes(chain.toLowerCase())) return chain;
+  }
+  return null;
 }
 
 async function extractLowestPriceLLM(env, item, results) {
@@ -107,8 +119,10 @@ async function extractLowestPriceLLM(env, item, results) {
   const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
   const prompt = `You are finding the lowest real current price for "${item}" at a grocery store, from these search result snippets. Ignore prices for unrelated products, prices from unrelated categories, or vague/aggregated "prices range from X to Y" statements unless a specific store price is given.
 
+For the winning snippet, also identify the actual STORE the price is from — read this out of the text itself (e.g. "Walmart", "Publix", "Aldi"), not the website's domain name. If a specific location is mentioned (e.g. a street or city), include it (e.g. "Kroger - Main Street"). If no store name is clearly stated in the text, set store to null and the domain will be used instead.
+
 Return ONLY strict JSON, no other text, in this shape:
-{"found": true, "price": 3.29, "index": 2}
+{"found": true, "price": 3.29, "index": 2, "store": "Walmart"}
 or, if none of the snippets contain a specific usable price for this item:
 {"found": false}
 
@@ -133,7 +147,8 @@ ${snippetText}`;
   if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
 
   const raw = results[parsed.index];
-  return { price: parsed.price, store: hostname(raw.url), url: raw.url };
+  const store = (parsed.store && String(parsed.store).trim()) || findChainName((raw.content || "") + " " + (raw.title || "")) || hostname(raw.url);
+  return { price: parsed.price, store, url: raw.url };
 }
 
 // ---------- Search providers: Tavily first, Brave as fallback ----------
