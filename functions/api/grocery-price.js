@@ -226,17 +226,27 @@ async function searchWithFallback(env, query, domains) {
 }
 
 // Two-tier search: try the curated official-chain domains first (so the
-// link is the actual grocery store's page whenever possible); if that
-// comes back empty, fall back to the open web so we still catch stores
-// outside our curated list, deal blogs, etc.
-async function searchGroceryWeb(env, query) {
-  try {
-    const restricted = await searchWithFallback(env, query, GROCERY_DOMAIN_LIST);
-    if (restricted.length) return restricted;
-  } catch (err) {
-    // fall through to open web below
+// link is the actual grocery store's page whenever possible), THEN try to
+// extract a price from those results. Only if that fails to yield a usable
+// price do we fall back to the open web — retail sites often render prices
+// via JS, so a domain-restricted crawl can come back with real pages but
+// zero extractable price text, while blogs/deal-trackers on the open web
+// are frequently where a specific number actually shows up in crawlable
+// text. Falling back only on a truly empty result set (the old behavior)
+// meant tier 2 almost never ran, since tier 1 nearly always returns
+// *something* — it just silently defaulted to Kroger whenever none of
+// those official pages had an extractable price.
+async function extractBest(env, item, results) {
+  if (!results.length) return null;
+  if (env.OPENROUTER_API_KEY) {
+    try {
+      const llmBest = await extractLowestPriceLLM(env, item, results);
+      if (llmBest) return llmBest;
+    } catch (err) {
+      // fall through to regex
+    }
   }
-  return searchWithFallback(env, query, null);
+  return extractLowestPriceRegex(results);
 }
 
 // If the winning result isn't from one of the official chain domains, try
@@ -258,18 +268,27 @@ async function getWebSearchPrice(env, item, location, radius) {
   const chainList = GROCERY_CHAINS.join(", ");
   const query = `${item} price at ${chainList} grocery store near ${location} within ${radius} miles`;
 
-  const results = await searchGroceryWeb(env, query);
-  if (!results.length) return null;
-
-  let best = null;
-  if (env.OPENROUTER_API_KEY) {
-    try {
-      best = await extractLowestPriceLLM(env, item, results);
-    } catch (err) {
-      // fall through to regex below
-    }
+  // Tier 1 — official chain domains only.
+  let officialResults = [];
+  try {
+    officialResults = await searchWithFallback(env, query, GROCERY_DOMAIN_LIST);
+  } catch (err) {
+    officialResults = []; // fall through to tier 2 below
   }
-  if (!best) best = extractLowestPriceRegex(results);
+  let best = await extractBest(env, item, officialResults);
+
+  // Tier 2 — the actual open web, tried whenever tier 1 didn't produce a
+  // usable price (empty results OR results with no extractable price).
+  if (!best) {
+    let openResults = [];
+    try {
+      openResults = await searchWithFallback(env, query, null);
+    } catch (err) {
+      openResults = [];
+    }
+    best = await extractBest(env, item, openResults);
+  }
+
   if (!best) return null;
 
   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
