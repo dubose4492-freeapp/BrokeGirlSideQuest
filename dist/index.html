@@ -9,20 +9,22 @@
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Baloo+2:wght@500;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    /* ---- pastel 8-bit palette ---- */
-    --ink: #2b1d3f;            /* near-black plum, all borders/text */
-    --bg: #fdf1ff;             /* pastel lilac page background */
-    --panel: #fffdf9;          /* card white-cream */
-    --pink: #ff8fc7;
-    --pink-soft: #ffe1f2;
-    --lav: #a68bff;
-    --lav-soft: #ece3ff;
-    --mint: #6ee7b7;
-    --mint-soft: #d7fbec;
-    --sky: #7cc4ff;
-    --sky-soft: #dcefff;
-    --sun: #ffd23f;
-    --sun-soft: #fff2cc;
+    /* ---- arcade quest-board palette ---- */
+    --ink: #1B1330;            /* near-black plum, all borders/text */
+    --bg: #FBF7EE;             /* warm cream page background */
+    --panel: #FFFFFF;          /* card white */
+    --card-dark: #221A3D;      /* hero / HUD panel background */
+    --panel-glow: #2E2158;     /* hero gradient top */
+    --pink: #FF4D9D;
+    --pink-soft: #FFE1F0;
+    --lav: #3BCBFF;            /* repurposed as the HUD cyan accent */
+    --lav-soft: #E1F7FF;
+    --mint: #4FE38C;
+    --mint-soft: #DFF7EB;
+    --sky: #3BCBFF;
+    --sky-soft: #E1F7FF;
+    --sun: #FFC93C;
+    --sun-soft: #FFF3D6;
     --coral: #ff6b6b;
     --coral-soft: #ffe1e1;
   }
@@ -31,11 +33,8 @@
   body {
     margin: 0; font-family: 'Baloo 2', system-ui, sans-serif; color: var(--ink); font-size: 16px; line-height: 1.5;
     background: var(--bg);
-    background-image:
-      radial-gradient(var(--lav-soft) 2px, transparent 2px),
-      radial-gradient(var(--pink-soft) 2px, transparent 2px);
-    background-size: 28px 28px;
-    background-position: 0 0, 14px 14px;
+    background-image: radial-gradient(#e9dfff 2px, transparent 2px);
+    background-size: 26px 26px;
   }
   .pixel-font { font-family: 'Press Start 2P', monospace; }
 
@@ -50,34 +49,49 @@
   }
 
   header {
-    background: var(--lav); color: var(--ink); padding: 14px 18px 18px;
+    background: var(--card-dark);
+    background-image:
+      linear-gradient(180deg, var(--panel-glow) 0%, var(--card-dark) 55%),
+      radial-gradient(2px 2px at 12% 30%, #ffffff55 1px, transparent 1px),
+      radial-gradient(2px 2px at 40% 75%, #ffffff33 1px, transparent 1px),
+      radial-gradient(1.5px 1.5px at 65% 20%, #ffffff44 1px, transparent 1px),
+      radial-gradient(1.5px 1.5px at 85% 65%, #ffffff33 1px, transparent 1px);
+    color: #F4F0FF; padding: 16px 18px 20px;
     position: sticky; top: 0; z-index: 10;
     border-bottom: 4px solid var(--ink);
+    box-shadow: 0 6px 0 var(--pink);
   }
-  header .row { display: flex; align-items: center; justify-content: space-between; max-width: 1000px; margin: 0 auto; flex-wrap: wrap; gap: 10px; }
-  header .brand { display: flex; align-items: center; gap: 10px; }
+  header .row { display: flex; align-items: center; justify-content: space-between; max-width: 1000px; margin: 0 auto; flex-wrap: wrap; gap: 14px; }
+  header .brand { display: flex; align-items: center; gap: 14px; }
+  header .brand-text { display: flex; flex-direction: column; gap: 6px; }
+  .hero-eyebrow {
+    font-family: 'Press Start 2P', monospace; font-size: 9px; letter-spacing: 1px; color: var(--sun);
+  }
   header .coin {
-    width: 52px; height: 58px; background: var(--sun-soft); border: 3px solid var(--ink);
+    width: 60px; height: 66px; background: #F4F0FF; border: 3px solid var(--ink);
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 3px 3px 0 var(--ink); flex: none; padding: 4px;
+    box-shadow: 4px 4px 0 var(--lav); flex: none; padding: 5px;
   }
   header .coin img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
   .mascot-empty { width: 90px; height: 100px; margin: 0 auto 10px; }
   .mascot-empty img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
-  header h1 { font-family: 'Press Start 2P', monospace; font-size: 13px; margin: 0; line-height: 1.6; letter-spacing: 0.5px; text-shadow: 2px 2px 0 var(--panel); }
-  header .sub { font-size: 13px; color: #1f1030; margin-top: 4px; font-weight: 800; }
+  header h1 { font-family: 'Press Start 2P', monospace; font-size: 14px; margin: 0; line-height: 1.6; letter-spacing: 0.5px; text-shadow: 3px 3px 0 var(--pink); }
+  header .sub { font-size: 13px; color: #CFC6F5; margin-top: 2px; font-weight: 700; }
   .refresh-btn {
-    background: var(--sun); color: var(--ink); border: 3px solid var(--ink); font-weight: 800;
-    padding: 11px 18px; cursor: pointer; font-size: 15px; display: flex; align-items: center; gap: 8px;
-    box-shadow: 4px 4px 0 var(--ink); transition: transform .08s, box-shadow .08s;
+    background: var(--mint); color: #0B2A18; border: 3px solid var(--ink); font-weight: 800;
+    padding: 12px 18px; cursor: pointer; font-size: 14px; display: flex; align-items: center; gap: 8px;
+    font-family: 'Press Start 2P', monospace;
+    box-shadow: 5px 5px 0 var(--ink); transition: transform .08s, box-shadow .08s;
+    animation: pulse 2.2s ease-in-out infinite;
   }
-  .refresh-btn:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--ink); }
-  .refresh-btn:disabled { opacity: 0.7; cursor: default; }
-  .stop-btn { background: var(--coral); }
+  .refresh-btn:active { transform: translate(3px, 3px); box-shadow: 2px 2px 0 var(--ink); }
+  .refresh-btn:disabled { opacity: 0.7; cursor: default; animation: none; }
+  .stop-btn { background: var(--coral); color: var(--ink); animation: none; }
   .spin { display: inline-block; animation: spin .8s steps(8) infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { box-shadow: 5px 5px 0 var(--ink); } 50% { box-shadow: 5px 5px 0 var(--sun), 0 0 16px 2px #ffc93c77; } }
 
-  nav { background: var(--panel); border-bottom: 4px solid var(--ink); position: sticky; top: 74px; z-index: 9; overflow-x: auto; white-space: nowrap; }
+  nav { background: var(--panel); border-bottom: 4px solid var(--ink); position: sticky; top: 90px; z-index: 9; overflow-x: auto; white-space: nowrap; }
   nav .inner { max-width: 1000px; margin: 0 auto; display: flex; }
   nav button {
     background: none; border: none; border-right: 2px dashed var(--lav-soft);
@@ -204,7 +218,8 @@
   <div class="row">
     <div class="brand">
       <div class="coin"><img src="/images/mascot.jpg" alt="kawaii cat mascot" loading="eager"></div>
-      <div>
+      <div class="brand-text">
+        <div class="hero-eyebrow" id="levelLabel">&gt; LV.1 SIDE QUEST</div>
         <h1>BrokeGirl<br>SideQuest</h1>
         <div class="sub" id="lastScanLabel">no quest run yet</div>
       </div>
@@ -356,6 +371,13 @@ let state = {
                                // state, instead of the old brittle trick of
                                // substring-matching the error text
 };
+// Level = number of times this browser has ever loaded the page. Bumped
+// once per load (not per scan/render), then written back so next visit
+// starts one higher.
+const visitLevel = (parseInt(localStorage.getItem("dff_level") || "0", 10) || 0) + 1;
+localStorage.setItem("dff_level", String(visitLevel));
+document.getElementById("levelLabel").textContent = `> LV.${visitLevel} SIDE QUEST`;
+
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
 Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips") state.results[k] = []; });
