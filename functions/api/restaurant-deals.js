@@ -21,6 +21,18 @@ const RESTAURANT_DOMAINS = [
   "fiveguys.com", "in-n-out.com", "whataburger.com", "jackinthebox.com", "deltaco.com",
   "qdoba.com", "jimmyjohns.com", "firehousesubs.com", "jerseymikes.com", "raisingcanes.com"
 ];
+
+// NEW: sites whose whole business is tracking current weekly deals —
+// these get re-crawled and republished far more often than a chain's
+// own static promo page, which is the main fix for "stale data".
+const DEAL_TRACKER_DOMAINS = [
+  "thekrazycouponlady.com", "hip2save.com", "clark.com", "brad-e.com",
+  "chewboom.com", "totalfoodservice.com", "livingrichwithcoupons.com",
+  "collegefashionista.com", "offers.com", "restaurantnews.com",
+  "thrillist.com", "eatthis.com", "delish.com", "allrecipes.com",
+  "reddit.com" // r/fastfood, r/frugal etc. often have the freshest crowd-sourced reports
+];
+
 const KNOWN_CHAINS = [
   "mcdonald", "chick-fil-a", "chickfila", "wendy", "taco bell", "chipotle", "starbucks",
   "dunkin", "popeyes", "subway", "panera", "sonic", "arby", "burger king", "kfc",
@@ -59,6 +71,33 @@ function extractPrice(text) {
   return m ? m[0].replace(/\s/, "") : null;
 }
 
+// NEW: best-effort parse of an expiry string into a real Date so we can
+// reject offers that have already lapsed, instead of just flagging that
+// *some* date was mentioned.
+function parseExpiryDate(text) {
+  if (!text) return null;
+  // common written formats: "expires 8/15", "through August 15, 2026", "ends 08-15-2026"
+  const cleaned = text.replace(/^(expires?|through|until|ends?)\b/i, "").trim();
+  const parsed = new Date(cleaned);
+  if (!isNaN(parsed.getTime())) return parsed;
+  // fallback: month-day only, assume current year (or next year if that date already passed this year)
+  const md = cleaned.match(/([A-Za-z]{3,9})\s+(\d{1,2})/);
+  if (md) {
+    const now = new Date();
+    const guess = new Date(`${md[1]} ${md[2]}, ${now.getFullYear()}`);
+    if (!isNaN(guess.getTime())) {
+      if (guess < now) guess.setFullYear(now.getFullYear() + 1);
+      return guess;
+    }
+  }
+  return null;
+}
+function isExpired(expiryText) {
+  const d = parseExpiryDate(expiryText);
+  if (!d) return false; // unknown expiry — don't punish it, just can't confirm freshness
+  return d.getTime() < Date.now();
+}
+
 // Regex fallback — same logic the client used to run itself.
 function regexClassify(results) {
   return results
@@ -66,6 +105,8 @@ function regexClassify(results) {
       const price = extractPrice(raw.content);
       const isBogo = looksBogo(raw.content) || looksBogo(raw.title);
       if (price && !isBogo) return null; // pricing cap: free or BOGO only
+      const expires = extractExpiry(raw.content);
+      if (isExpired(expires)) return null; // NEW: drop lapsed offers
       const combined = (raw.title || "") + " " + (raw.content || "");
       const isLocal = !isKnownChain(combined);
       return {
@@ -77,7 +118,7 @@ function regexClassify(results) {
         isFree: true,
         isLocal,
         requirementType: extractRequirementType(raw.content),
-        expires: extractExpiry(raw.content),
+        expires,
         category: "restaurant"
       };
     })
@@ -88,11 +129,12 @@ function regexClassify(results) {
 // far cheaper and more consistent than one call per result.
 async function openRouterClassify(env, results) {
   const snippetText = results
-    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
+    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\nPublished: ${r.published_date || "unknown"}\n${(r.content || "").slice(0, 500)}`)
     .join("\n\n");
   const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
-  const prompt = `You are reviewing restaurant deal search results. For EACH snippet below, decide:
-- qualifies: true only if it is a genuinely FREE item or a BOGO ("buy one get one") free offer. A discount, a percentage off, a priced combo, or a regular menu mention does NOT qualify.
+  const today = new Date().toISOString().slice(0, 10);
+  const prompt = `Today's date is ${today}. You are reviewing restaurant deal search results. For EACH snippet below, decide:
+- qualifies: true only if it is a genuinely FREE item or a BOGO ("buy one get one") free offer, AND the offer is still current (not expired as of today). A discount, a percentage off, a priced combo, a regular menu mention, or an offer whose stated end date is before today does NOT qualify.
 - title: a short clean description of the actual offer (e.g. "Free medium fries with app download").
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "unknown".
 - isLocal: true if this is an independent/local restaurant, false if it's a well-known national/regional chain.
@@ -152,8 +194,11 @@ export async function onRequestPost({ request, env }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        api_key: env.TAVILY_API_KEY, query, max_results: 8,
-        search_depth: "advanced", include_domains: RESTAURANT_DOMAINS, time_range: "week"
+        api_key: env.TAVILY_API_KEY, query, max_results: 10,
+        search_depth: "advanced",
+        include_domains: [...RESTAURANT_DOMAINS, ...DEAL_TRACKER_DOMAINS],
+        include_raw_content: true, // more text for the LLM to judge staleness/expiry from
+        days: 7 // NEW: tighter, more literal freshness window than time_range buckets
       })
     });
   } catch (err) {

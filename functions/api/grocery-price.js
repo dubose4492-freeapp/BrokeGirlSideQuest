@@ -1,6 +1,14 @@
-// GET /api/grocery-price?item=Eggs&zip=37083&radius=100
-// Does the full Kroger flow server-side: OAuth token -> nearest store -> product price.
-// Client never sees the Kroger Client ID/Secret or the raw access token.
+// GET /api/grocery-price?item=Eggs&zip=37083&location=Lafayette%2C%20TN&radius=100
+//
+// Runs two lookups in parallel and returns whichever price is actually lower:
+//   1. Kroger's official price (OAuth token -> nearest store -> product price)
+//   2. Tavily web search + OpenRouter extraction (or regex fallback) for the
+//      lowest real price mentioned at any nearby store
+//
+// The response is always { price, store, url } so the client can label the
+// card with wherever the winning price actually came from. Client never sees
+// the Kroger Client ID/Secret, the raw access token, the Tavily key, or the
+// OpenRouter key.
 //
 // Token and per-ZIP location ID are cached in module-level variables, which
 // persist across requests on a warm edge isolate (best-effort — not
@@ -41,39 +49,140 @@ async function getLocationId(env, zip, radius) {
   return loc.locationId;
 }
 
+// ---------- Kroger side (unchanged logic, just wrapped to return the shared shape) ----------
+async function getKrogerPrice(env, item, zip, radius) {
+  if (!env.KROGER_CLIENT_ID || !env.KROGER_CLIENT_SECRET) return null; // not configured — skip, don't fail the whole request
+
+  const token = await getToken(env);
+  const locationId = await getLocationId(env, zip, radius);
+  const url = `https://api.kroger.com/v1/products?filter.term=${encodeURIComponent(item)}&filter.locationId=${locationId}&filter.limit=5`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Kroger product search failed (${res.status}) for ${item}.`);
+  const data = await res.json();
+
+  const priced = (data.data || [])
+    .map(p => {
+      const priceInfo = p.items && p.items[0] && p.items[0].price;
+      if (!priceInfo) return null;
+      return (priceInfo.promo && priceInfo.promo > 0) ? priceInfo.promo : priceInfo.regular;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a - b);
+
+  const best = priced[0];
+  if (!best) return null;
+  return { price: best, store: "Kroger (official price)", url: "https://www.kroger.com" };
+}
+
+// ---------- Web search side (Tavily -> OpenRouter extraction, regex fallback) ----------
+function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
+
+function extractLowestPriceRegex(results) {
+  let best = null;
+  for (const r of results) {
+    const matches = ((r.content || "") + " " + (r.title || "")).match(/\$\s?\d+(\.\d{2})?/g) || [];
+    for (const m of matches) {
+      const val = parseFloat(m.replace(/[$\s]/g, ""));
+      if (!isNaN(val) && val > 0 && (!best || val < best.price)) {
+        best = { price: val, store: hostname(r.url), url: r.url };
+      }
+    }
+  }
+  return best;
+}
+
+async function extractLowestPriceLLM(env, item, results) {
+  const snippetText = results
+    .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
+    .join("\n\n");
+  const model = env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct";
+  const prompt = `You are finding the lowest real current price for "${item}" at a grocery store, from these search result snippets. Ignore prices for unrelated products, prices from unrelated categories, or vague/aggregated "prices range from X to Y" statements unless a specific store price is given.
+
+Return ONLY strict JSON, no other text, in this shape:
+{"found": true, "price": 3.29, "index": 2}
+or, if none of the snippets contain a specific usable price for this item:
+{"found": false}
+
+"index" must be the snippet number the price came from.
+
+Snippets:
+${snippetText}`;
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0, max_tokens: 200 })
+  });
+  if (!res.ok) throw new Error(`OpenRouter extraction failed (${res.status}).`);
+  const data = await res.json();
+  const text = (data.choices?.[0]?.message?.content || "").trim().replace(/^```json\s*|```$/g, "");
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return null; } // caller falls back to regex
+  if (!parsed || !parsed.found || typeof parsed.price !== "number" || !results[parsed.index]) return null;
+
+  const raw = results[parsed.index];
+  return { price: parsed.price, store: hostname(raw.url), url: raw.url };
+}
+
+async function getWebSearchPrice(env, item, location, radius) {
+  if (!env.TAVILY_API_KEY) return null; // not configured — skip, don't fail the whole request
+
+  const query = `${item} price grocery store near ${location} within ${radius} miles`;
+  const tavilyRes = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: env.TAVILY_API_KEY, query, max_results: 6, search_depth: "advanced"
+    })
+  });
+  if (!tavilyRes.ok) throw new Error(`Grocery web search failed (${tavilyRes.status}) for ${item}.`);
+  const tavilyData = await tavilyRes.json();
+  const results = tavilyData.results || [];
+  if (!results.length) return null;
+
+  if (env.OPENROUTER_API_KEY) {
+    try {
+      const llmResult = await extractLowestPriceLLM(env, item, results);
+      if (llmResult) return llmResult;
+    } catch (err) {
+      // fall through to regex below
+    }
+  }
+  return extractLowestPriceRegex(results);
+}
+
+// ---------- Entry point ----------
 export async function onRequestGet({ request, env }) {
   const { searchParams } = new URL(request.url);
   const item = searchParams.get("item");
   const zip = searchParams.get("zip");
+  const location = searchParams.get("location") || zip;
   const radius = Math.min(100, Math.max(1, parseInt(searchParams.get("radius") || "100", 10)));
 
   if (!item || !zip) return json({ error: "item and zip query params are required." }, 400);
-  if (!env.KROGER_CLIENT_ID || !env.KROGER_CLIENT_SECRET) {
-    return json({ error: "Kroger isn't configured on the server yet (missing KROGER_CLIENT_ID/SECRET secrets)." }, 500);
+
+  const [krogerResult, webResult] = await Promise.allSettled([
+    getKrogerPrice(env, item, zip, radius),
+    getWebSearchPrice(env, item, location, radius)
+  ]);
+
+  const kroger = krogerResult.status === "fulfilled" ? krogerResult.value : null;
+  const web = webResult.status === "fulfilled" ? webResult.value : null;
+
+  // Surface an error only if BOTH sides genuinely failed (threw) — if one
+  // side just came back empty, still return whatever the other side found.
+  if (!kroger && !web && krogerResult.status === "rejected" && webResult.status === "rejected") {
+    return json({ error: `${krogerResult.reason.message} / ${webResult.reason.message}` }, 502);
   }
 
-  try {
-    const token = await getToken(env);
-    const locationId = await getLocationId(env, zip, radius);
-    const url = `https://api.kroger.com/v1/products?filter.term=${encodeURIComponent(item)}&filter.locationId=${locationId}&filter.limit=5`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Kroger product search failed (${res.status}) for ${item}.`);
-    const data = await res.json();
+  let winner = null;
+  if (kroger && web) winner = web.price < kroger.price ? web : kroger;
+  else winner = kroger || web || null;
 
-    const priced = (data.data || [])
-      .map(p => {
-        const priceInfo = p.items && p.items[0] && p.items[0].price;
-        if (!priceInfo) return null;
-        return (priceInfo.promo && priceInfo.promo > 0) ? priceInfo.promo : priceInfo.regular;
-      })
-      .filter(Boolean)
-      .sort((a, b) => a - b);
-
-    const best = priced[0];
-    return json({ price: best || null });
-  } catch (err) {
-    return json({ error: err.message }, 502);
-  }
+  return json(winner || { price: null, store: null, url: null });
 }
 
 function json(obj, status = 200) {
