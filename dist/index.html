@@ -475,6 +475,7 @@ async function searchFreebiesCategory(key) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `${cat.label} search failed (${response.status}).`);
+  if (data.provider) console.log(`[${cat.label}] answered by: ${data.provider}`);
   return data.results || [];
 }
 
@@ -490,6 +491,7 @@ async function searchRestaurantCategory() {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
+  if (data.provider) console.log(`[Restaurant Deals] answered by: ${data.provider}`);
   return data.results || [];
 }
 

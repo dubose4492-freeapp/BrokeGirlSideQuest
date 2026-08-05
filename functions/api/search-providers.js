@@ -194,11 +194,14 @@ export async function searchWithFallback(env, query, includeDomains, options = {
   ].filter(p => p.key);
 
   const failures = [];
+  console.log(`[search] "${query}" — trying: ${providers.map(p => p.name).join(", ") || "(none keyed)"}, then duckduckgo`);
   for (const p of providers) {
     try {
       const results = await p.fn(env, query, includeDomains, options);
+      console.log(`[search] ${p.name} OK — ${results.length} results for "${query}"`);
       return { results, provider: p.name };
     } catch (err) {
+      console.warn(`[search] ${p.name} FAILED — ${err.message}`);
       failures.push(`${p.name}: ${err.message}`);
     }
   }
@@ -207,8 +210,10 @@ export async function searchWithFallback(env, query, includeDomains, options = {
   // back to the no-key DuckDuckGo scrape as the last resort.
   try {
     const results = await duckduckgoSearch(env, query, includeDomains, options);
+    console.log(`[search] duckduckgo OK — ${results.length} results for "${query}"`);
     return { results, provider: "duckduckgo" };
   } catch (ddgErr) {
+    console.warn(`[search] duckduckgo FAILED — ${ddgErr.message}`);
     failures.push(`duckduckgo: ${ddgErr.message}`);
     const err = new Error(`All search providers failed — ${failures.join(" | ")}`);
     err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
