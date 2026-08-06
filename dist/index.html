@@ -61,7 +61,30 @@
     position: sticky; top: 0; z-index: 10;
     border-bottom: 4px solid var(--ink);
     box-shadow: 0 6px 0 var(--pink);
+    transition: padding .15s;
   }
+  /* --- collapsible header (mobile: frees up screen space for deal lists) --- */
+  .header-collapse-btn {
+    position: absolute; top: 10px; right: 12px; z-index: 11;
+    width: 30px; height: 30px; border-radius: 50%;
+    background: #150F29; border: 2px solid var(--lav); color: var(--lav);
+    font-size: 13px; line-height: 1; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Press Start 2P', monospace; padding: 0;
+  }
+  .header-collapse-btn:active { transform: scale(0.92); }
+  header.collapsed { padding: 10px 46px 10px 18px; }
+  header.collapsed .hero-tagline,
+  header.collapsed .mascot-empty,
+  header.collapsed .hud,
+  header.collapsed .coin,
+  header.collapsed .sub { display: none; }
+  header.collapsed .row { gap: 8px; }
+  header.collapsed h1 { font-size: 11px; line-height: 1.3; }
+  header.collapsed .hero-eyebrow { font-size: 8px; }
+  header.collapsed .brand { gap: 8px; }
+  header.collapsed .header-actions { flex-direction: row; align-items: center; }
+  header.collapsed .refresh-btn { padding: 8px 12px; font-size: 11px; }
   header .row { display: flex; align-items: center; justify-content: space-between; max-width: 1000px; margin: 0 auto; flex-wrap: wrap; gap: 14px; }
   header .brand { display: flex; align-items: center; gap: 14px; }
   header .brand-text { display: flex; flex-direction: column; gap: 6px; }
@@ -346,6 +369,7 @@
     position: relative; z-index: 1; width: 100%; max-width: 560px; background: #14101F;
     border: 3px solid #3A3457; border-radius: 6px; padding: 16px; min-height: 168px;
     display: flex; flex-direction: column; gap: 10px; color: #fff;
+    isolation: isolate; /* own stacking context: keeps sibling paints (esp. iOS Safari) from bleeding over this panel's text when it re-renders */
   }
   .cs-statpanel-empty {
     margin: auto; color: #6C6690; font-family: 'Press Start 2P', monospace; font-size: 11px; text-align: center;
@@ -366,9 +390,10 @@
   .cs-sw-col.con .cs-sw-col-title { color: #FF6B8A; }
   .cs-sw-col ul { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.5; }
   .cs-confirm-btn {
-    position: relative; z-index: 1; margin-top: 16px; font-family: 'Press Start 2P', monospace;
-    font-size: 14px; color: #fff; background: transparent; border: 3px solid #3A3457; padding: 14px 34px;
-    cursor: not-allowed; letter-spacing: 2px; opacity: .5; transition: all .12s;
+    position: relative; z-index: 2; margin-top: 16px; font-family: 'Press Start 2P', monospace;
+    font-size: 14px; color: #fff; background: var(--card-dark, #05050A); border: 3px solid #3A3457; padding: 14px 34px;
+    cursor: not-allowed; letter-spacing: 2px; opacity: .5; transition: opacity .12s, border-color .12s, box-shadow .12s;
+    isolation: isolate; flex-shrink: 0;
   }
   .cs-confirm-btn.ready {
     border-color: var(--card-accent, var(--pink)); opacity: 1; cursor: pointer;
@@ -408,6 +433,7 @@
 </div>
 
 <header>
+  <button class="header-collapse-btn" id="headerCollapseBtn" onclick="toggleHeaderCollapse()" aria-label="Collapse header">&#9650;</button>
   <div class="row">
     <div class="brand">
       <div class="coin"><img src="/images/mascot.jpg" alt="kawaii cat mascot" loading="eager"></div>
@@ -962,6 +988,26 @@ function syncNavOffset() {
 }
 window.addEventListener("resize", syncNavOffset);
 
+// --- header collapse toggle (frees up screen space for deal lists on mobile) ---
+function toggleHeaderCollapse(force) {
+  const header = document.querySelector("header");
+  const btn = document.getElementById("headerCollapseBtn");
+  if (!header) return;
+  const collapsed = typeof force === "boolean" ? force : !header.classList.contains("collapsed");
+  header.classList.toggle("collapsed", collapsed);
+  if (btn) {
+    btn.innerHTML = collapsed ? "&#9660;" : "&#9650;";
+    btn.setAttribute("aria-label", collapsed ? "Expand header" : "Collapse header");
+  }
+  try { localStorage.setItem("bgsq_header_collapsed", collapsed ? "1" : "0"); } catch (e) {}
+  syncNavOffset();
+}
+(function initHeaderCollapse() {
+  let saved = null;
+  try { saved = localStorage.getItem("bgsq_header_collapsed"); } catch (e) {}
+  if (saved === "1") toggleHeaderCollapse(true);
+})();
+
 function render() {
   buildNav();
   renderHud();
@@ -1364,6 +1410,14 @@ function selectCharacter(id) {
 
   const panel = document.getElementById("csStatPanel");
   panel.style.setProperty("--card-accent", c.accent);
+  // Clear first and force a reflow before writing the new content — on some
+  // mobile browsers, swapping innerHTML on a panel with a sibling that has
+  // its own transition/box-shadow can leave stale text painted behind the
+  // new layout for a frame ("glitchy" double text). Clearing + reading
+  // offsetHeight forces the browser to fully repaint before the new markup
+  // lands.
+  panel.innerHTML = "";
+  void panel.offsetHeight;
   panel.innerHTML = `
     <div class="cs-sp-head">
       <img src="${c.img}" alt="${c.name}">
