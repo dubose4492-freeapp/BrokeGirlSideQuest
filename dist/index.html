@@ -489,6 +489,7 @@
 <nav><div class="inner" id="navBar"></div></nav>
 
 <main>
+  <div id="searchToolsSection">
   <div class="search-bar">
     <div class="search-field">
       <label for="zipInput">ZIP Code</label>
@@ -531,6 +532,7 @@
       with Gemini"</b> box above the search fields — it walks you through it.</p>
     </div>
   </details>
+  </div>
   <div id="statusArea"></div>
   <div id="content"></div>
 </main>
@@ -1079,6 +1081,8 @@ function render() {
   updateScanButton();
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
+  const searchTools = document.getElementById("searchToolsSection");
+  if (searchTools) searchTools.style.display = state.tab === "game" ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "tips") content.innerHTML = renderTips();
@@ -1572,6 +1576,8 @@ const GD_GOOD_ITEMS = ["🪙", "💸", "🎟️", "✨"];
 const GD_BAD_ITEMS = ["💣", "🧾"];
 let gdCanvas = null, gdCtx = null, gdW = 420, gdH = 480;
 let gdPlayer, gdDrops, gdScore, gdLives, gdRunning = false, gdSpawnTimer, gdDropSpeed, gdKeys = {}, gdLastTime, gdRafId = null;
+const GD_TIME_LIMIT = 60; // seconds
+let gdTimeLeft = GD_TIME_LIMIT;
 let gdFlashColor = null, gdFlashTimer = 0;
 let gdListenersBound = false;
 
@@ -1586,6 +1592,7 @@ function renderGame() {
         <p class="gd-sub">catch the drops. dodge the debt. — ${heroLabel}</p>
         <div class="gd-hud">
           <span id="gdScoreDisplay">SCORE 0</span>
+          <span id="gdTimeDisplay">TIME 1:00</span>
           <span class="gd-lives" id="gdLivesDisplay">♥♥♥</span>
         </div>
         <canvas id="gdCanvas" class="gd-canvas" width="${gdW}" height="${gdH}"></canvas>
@@ -1631,6 +1638,7 @@ function gdStart() {
   gdSpawnTimer = 0;
   gdDropSpeed = 2.2;
   gdKeys = {};
+  gdTimeLeft = GD_TIME_LIMIT;
   gdLastTime = performance.now();
   const overlay = document.getElementById("gdOverlayMsg");
   const startBtn = document.getElementById("gdStartBtn");
@@ -1649,8 +1657,15 @@ function gdStopLoop() {
 function gdUpdateHud() {
   const score = document.getElementById("gdScoreDisplay");
   const lives = document.getElementById("gdLivesDisplay");
+  const time = document.getElementById("gdTimeDisplay");
   if (score) score.textContent = "SCORE " + gdScore;
   if (lives) lives.textContent = "♥".repeat(Math.max(gdLives, 0)) + "♡".repeat(Math.max(3 - gdLives, 0));
+  if (time) {
+    const t = Math.max(0, Math.ceil(gdTimeLeft));
+    const m = Math.floor(t / 60);
+    const s = String(t % 60).padStart(2, "0");
+    time.textContent = "TIME " + m + ":" + s;
+  }
 }
 
 function gdBindControls() {
@@ -1695,6 +1710,15 @@ function gdLoop(now) {
   const dt = now - gdLastTime;
   gdLastTime = now;
 
+  gdTimeLeft -= dt / 1000;
+  if (gdTimeLeft <= 0) {
+    gdTimeLeft = 0;
+    gdUpdateHud();
+    gdRunning = false;
+    gdEnd();
+    return;
+  }
+
   if (gdKeys["arrowleft"] || gdKeys["a"]) gdPlayer.x -= gdPlayer.speed;
   if (gdKeys["arrowright"] || gdKeys["d"]) gdPlayer.x += gdPlayer.speed;
   gdPlayer.x = Math.min(Math.max(gdPlayer.x, 0), gdW - gdPlayer.w);
@@ -1720,6 +1744,8 @@ function gdLoop(now) {
   }
 
   gdDropSpeed = 2.2 + gdScore * 0.01;
+
+  gdUpdateHud();
 
   if (gdLives <= 0) { gdRunning = false; gdEnd(); return; }
 
