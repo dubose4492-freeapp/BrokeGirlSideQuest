@@ -610,12 +610,31 @@ let state = {
                                // state, instead of the old brittle trick of
                                // substring-matching the error text
 };
-// Level = number of times this browser has ever loaded the page. Bumped
-// once per load (not per scan/render), then written back so next visit
-// starts one higher.
-const visitLevel = (parseInt(localStorage.getItem("dff_level") || "0", 10) || 0) + 1;
-localStorage.setItem("dff_level", String(visitLevel));
-document.getElementById("levelLabel").textContent = `> LV.${visitLevel} SIDE QUEST`;
+// Level = number of completed scans run under the currently selected
+// character. Tracked per character (not per browser visit) and
+// persisted in localStorage, so switching characters shows — and later
+// resumes — that character's own count instead of one shared number.
+const charLevels = JSON.parse(localStorage.getItem("dff_char_levels") || "{}");
+// +1 so a freshly-picked character with zero scans still reads LV.1,
+// matching the old default label instead of starting at LV.0.
+function getCharLevel(id) { return (charLevels[id] || 0) + 1; }
+function refreshLevelLabel() {
+  const label = document.getElementById("levelLabel");
+  if (!label) return;
+  if (!selectedCharacterId) { label.textContent = "> LV.1 SIDE QUEST"; return; }
+  const c = CHARACTERS.find(x => x.id === selectedCharacterId);
+  label.textContent = c
+    ? `> LV.${getCharLevel(c.id)} · PLAYING AS ${c.name.toUpperCase()}`
+    : "> LV.1 SIDE QUEST";
+}
+// Called once a scan (full "Run Quest" or a single-category scan)
+// finishes, so levels track scans, not page loads.
+function bumpCharLevel(id) {
+  if (!id) return;
+  charLevels[id] = (charLevels[id] || 0) + 1;
+  localStorage.setItem("dff_char_levels", JSON.stringify(charLevels));
+  refreshLevelLabel();
+}
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
@@ -1243,6 +1262,7 @@ async function runFullScan() {
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
   localStorage.setItem("dff_last_scan", state.lastScan);
   localStorage.setItem("dff_results", JSON.stringify(state.results));
+  bumpCharLevel(selectedCharacterId);
 
   state.scanning = false;
   state.stopRequested = false;
@@ -1303,6 +1323,7 @@ async function scanSingleCategory(key) {
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
   localStorage.setItem("dff_last_scan", state.lastScan);
   localStorage.setItem("dff_results", JSON.stringify(state.results));
+  bumpCharLevel(selectedCharacterId);
 
   state.scanning = false;
   state.scanningKey = null;
@@ -1468,8 +1489,7 @@ function confirmCharacter() {
     bannerImg.alt = `${c.name} the ${c.animal} out questing the market street`;
   }
 
-  const label = document.getElementById("levelLabel");
-  if (label) label.textContent = `> PLAYING AS ${c.name.toUpperCase()} THE ${c.animal.toUpperCase()}`;
+  refreshLevelLabel();
 
   currentCharacterMascot = c.img;
   currentCharacterAlt = `${c.name} the ${c.animal}`;
