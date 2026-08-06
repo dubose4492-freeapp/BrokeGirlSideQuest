@@ -1737,7 +1737,9 @@ function gdLoop(now) {
       continue;
     }
     if (d.y > gdH) {
-      if (!d.bad) gdLives -= 1; // missed coin costs a life too (gentle penalty)
+      // Missing a good drop is no longer penalized — only getting hit by
+      // a bad item (bomb/receipt) costs a life. This keeps the full
+      // 60-second timer playable instead of ending early from missed coins.
       gdDrops.splice(i, 1);
       gdUpdateHud();
     }
