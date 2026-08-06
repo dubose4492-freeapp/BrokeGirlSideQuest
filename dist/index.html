@@ -462,11 +462,11 @@
   <div class="search-bar">
     <div class="search-field">
       <label for="zipInput">ZIP Code</label>
-      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); localStorage.setItem('dff_zip', state.zip); refreshGeminiPromptBox()" />
+      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); refreshGeminiPromptBox()" />
     </div>
     <div class="search-field">
       <label for="radiusInput">Radius (mi)</label>
-      <input id="radiusInput" type="number" min="1" max="100" placeholder="100" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); localStorage.setItem('dff_radius', String(v)); refreshGeminiPromptBox()" />
+      <input id="radiusInput" type="number" min="1" max="100" placeholder="100" onchange="const v=Math.min(100, Math.max(1, parseInt(this.value)||100)); this.value=v; state.radius=String(v); lsSet('dff_radius', String(v)); refreshGeminiPromptBox()" />
     </div>
   </div>
   <div class="gemini-promo">
@@ -591,17 +591,32 @@ const REQ_TYPES = {
 // the "unknown" label instead of printing literal "undefined".
 function reqTypeLabel(key) { return REQ_TYPES[key] || REQ_TYPES.unknown; }
 
+// localStorage can throw instead of just being empty — Safari Private
+// Browsing, a browser/extension setting that blocks site storage, or a
+// full quota all do this on read AND write. Every localStorage call in
+// this file goes through these two helpers instead of the raw API so one
+// blocked/unavailable storage never crashes page load or leaves the scan
+// button stuck disabled — it just behaves like storage isn't there.
+function lsGet(key, fallback = null) {
+  try { const v = localStorage.getItem(key); return v === null ? fallback : v; }
+  catch (e) { console.warn(`[storage] read "${key}" failed:`, e); return fallback; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, value); return true; }
+  catch (e) { console.warn(`[storage] write "${key}" failed:`, e); return false; }
+}
+
 let state = {
   tab: "dashboard",
   // One ZIP now drives both the Kroger official-price lookup and the
   // general "near me" web search — falls back to whatever was saved under
   // the old two-box setup so existing users don't lose their saved value.
-  zip: localStorage.getItem("dff_zip") || localStorage.getItem("dff_kroger_zip") || "",
-  radius: localStorage.getItem("dff_radius") || "100",
+  zip: lsGet("dff_zip") || lsGet("dff_kroger_zip") || "",
+  radius: lsGet("dff_radius") || "100",
   results: {},
   filters: {}, // per-category active requirement-type filter
-  saved: new Set(JSON.parse(localStorage.getItem("dff_saved") || "[]")),
-  lastScan: localStorage.getItem("dff_last_scan") || null,
+  saved: new Set(JSON.parse(lsGet("dff_saved") || "[]")),
+  lastScan: lsGet("dff_last_scan") || null,
   scanning: false,
   scanningKey: null, // set to a category key while a single-section scan (not the full "Run Quest") is in flight
   error: null,
@@ -614,7 +629,7 @@ let state = {
 // character. Tracked per character (not per browser visit) and
 // persisted in localStorage, so switching characters shows — and later
 // resumes — that character's own count instead of one shared number.
-const charLevels = JSON.parse(localStorage.getItem("dff_char_levels") || "{}");
+const charLevels = JSON.parse(lsGet("dff_char_levels") || "{}");
 // +1 so a freshly-picked character with zero scans still reads LV.1,
 // matching the old default label instead of starting at LV.0.
 function getCharLevel(id) { return (charLevels[id] || 0) + 1; }
@@ -632,7 +647,7 @@ function refreshLevelLabel() {
 function bumpCharLevel(id) {
   if (!id) return;
   charLevels[id] = (charLevels[id] || 0) + 1;
-  localStorage.setItem("dff_char_levels", JSON.stringify(charLevels));
+  lsSet("dff_char_levels", JSON.stringify(charLevels));
   refreshLevelLabel();
 }
 
@@ -640,7 +655,7 @@ document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
 Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips") state.results[k] = []; });
 try {
-  const saved = JSON.parse(localStorage.getItem("dff_results") || "null");
+  const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
 } catch (e) {}
 
@@ -1018,12 +1033,12 @@ function toggleHeaderCollapse(force) {
     btn.innerHTML = collapsed ? "&#9660;" : "&#9650;";
     btn.setAttribute("aria-label", collapsed ? "Expand header" : "Collapse header");
   }
-  try { localStorage.setItem("bgsq_header_collapsed", collapsed ? "1" : "0"); } catch (e) {}
+  lsSet("bgsq_header_collapsed", collapsed ? "1" : "0");
   syncNavOffset();
 }
 (function initHeaderCollapse() {
   let saved = null;
-  try { saved = localStorage.getItem("bgsq_header_collapsed"); } catch (e) {}
+  saved = lsGet("bgsq_header_collapsed");
   if (saved === "1") toggleHeaderCollapse(true);
 })();
 
@@ -1048,7 +1063,7 @@ function setFilter(key, filter) { state.filters[key] = filter; render(); }
 
 function toggleSave(id) {
   if (state.saved.has(id)) state.saved.delete(id); else state.saved.add(id);
-  localStorage.setItem("dff_saved", JSON.stringify([...state.saved]));
+  lsSet("dff_saved", JSON.stringify([...state.saved]));
   render();
 }
 function openDirections(query) {
@@ -1260,9 +1275,16 @@ async function runFullScan() {
   }
 
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
-  localStorage.setItem("dff_last_scan", state.lastScan);
-  localStorage.setItem("dff_results", JSON.stringify(state.results));
-  bumpCharLevel(selectedCharacterId);
+  // Storage writes are best-effort — Safari Private Browsing, blocked
+  // site storage, or a full quota can make setItem throw, and this cleanup
+  // must run regardless so the button doesn't get stuck disabled forever.
+  lsSet("dff_last_scan", state.lastScan);
+  lsSet("dff_results", JSON.stringify(state.results));
+  try {
+    bumpCharLevel(selectedCharacterId);
+  } catch (e) {
+    console.warn("[scan] bumpCharLevel failed:", e);
+  }
 
   state.scanning = false;
   state.stopRequested = false;
@@ -1321,9 +1343,16 @@ async function scanSingleCategory(key) {
   if (state.stopRequested) showToast("Scan stopped");
 
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
-  localStorage.setItem("dff_last_scan", state.lastScan);
-  localStorage.setItem("dff_results", JSON.stringify(state.results));
-  bumpCharLevel(selectedCharacterId);
+  // Storage writes are best-effort — Safari Private Browsing, blocked
+  // site storage, or a full quota can make setItem throw, and this cleanup
+  // must run regardless so the button doesn't get stuck disabled forever.
+  lsSet("dff_last_scan", state.lastScan);
+  lsSet("dff_results", JSON.stringify(state.results));
+  try {
+    bumpCharLevel(selectedCharacterId);
+  } catch (e) {
+    console.warn("[scan] bumpCharLevel failed:", e);
+  }
 
   state.scanning = false;
   state.scanningKey = null;
