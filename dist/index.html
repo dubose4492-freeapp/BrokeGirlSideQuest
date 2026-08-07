@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BrokeGirlSideQuest</title>
 <meta name="description" content="Escape debt. Build your empire. One free sample, one BOGO taco, one saved dollar at a time.">
+<!-- Content-Security-Policy: locks resource loading down to exactly what this
+     app uses. script/style still need 'unsafe-inline' since the app's logic
+     and per-element styling are inline (no build step) — but this still
+     blocks any injected <script src>, <iframe>, or fetch()/XHR to a domain
+     that isn't explicitly whitelisted below, which is the main way a stray
+     unescaped-data bug turns into actual data exfiltration. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.bigdatacloud.net; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self';">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 
 <!-- Open Graph / Slack, Discord, iMessage, Facebook -->
 <meta property="og:type" content="website">
@@ -920,7 +928,7 @@ function itemCard(item) {
   const claimUrl = isSafeUrl(item.claimUrl || item.productUrl || item.url);
   const blogUrl = isSafeUrl(item.blogUrl);
   const detailLinkInline = blogUrl
-    ? `: <a href="${escapeHtml(blogUrl)}" target="_blank" rel="noopener">${escapeHtml(hostname(blogUrl))}</a>`
+    ? `: <a href="${escapeHtml(blogUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(hostname(blogUrl))}</a>`
     : "";
 
   const safeId = escapeHtml(item.id);
@@ -1098,7 +1106,7 @@ function renderTube() {
     <div class="tube-card" style="--tube-accent:${ch.accent}">
       <div class="tube-card-head">
         <div class="tube-card-title">${escapeHtml(ch.name)}</div>
-        <a class="tube-visit" href="${escapeHtml(ch.channelUrl)}" target="_blank" rel="noopener">Channel ↗</a>
+        <a class="tube-visit" href="${escapeHtml(ch.channelUrl)}" target="_blank" rel="noopener noreferrer">Channel ↗</a>
       </div>
       <p class="tube-card-desc">${escapeHtml(ch.desc)}</p>
       <div class="tube-embed">
@@ -1130,15 +1138,15 @@ function renderHelp() {
     <p>If things feel like too much right now, help is out there — free, confidential, and available any time of day.</p>
     <div class="help-hotline-row">
       <a class="help-hotline-btn" href="tel:988">📞 Call or Text 988 — Suicide &amp; Crisis Lifeline</a>
-      <a class="help-hotline-btn alt" href="sms:741741&body=HOME" target="_blank" rel="noopener">💬 Text HOME to 741741 — Crisis Text Line</a>
+      <a class="help-hotline-btn alt" href="sms:741741&body=HOME" target="_blank" rel="noopener noreferrer">💬 Text HOME to 741741 — Crisis Text Line</a>
     </div>
   </div>
   <div class="help-grid">
     <div class="help-card">
       <h3>🏠 Rent Help</h3>
       <ul>
-        <li><a href="https://www.211.org" target="_blank" rel="noopener">211.org</a> or dial <b>211</b> — free helpline, connects you to local rent &amp; eviction-prevention programs</li>
-        <li><a href="https://nlihc.org/era" target="_blank" rel="noopener">NLIHC Emergency Rental Assistance Directory</a> — find programs by state/county</li>
+        <li><a href="https://www.211.org" target="_blank" rel="noopener noreferrer">211.org</a> or dial <b>211</b> — free helpline, connects you to local rent &amp; eviction-prevention programs</li>
+        <li><a href="https://nlihc.org/era" target="_blank" rel="noopener noreferrer">NLIHC Emergency Rental Assistance Directory</a> — find programs by state/county</li>
         <li>Local Salvation Army or Catholic Charities office — many offer one-time emergency rent grants</li>
         <li>Ask your court/legal aid office about eviction diversion programs before a hearing date</li>
       </ul>
@@ -1146,7 +1154,7 @@ function renderHelp() {
     <div class="help-card">
       <h3>💡 Utility Help</h3>
       <ul>
-        <li><a href="https://www.acf.hhs.gov/ocs/programs/liheap" target="_blank" rel="noopener">LIHEAP</a> — federal help paying heating/cooling bills</li>
+        <li><a href="https://www.acf.hhs.gov/ocs/programs/liheap" target="_blank" rel="noopener noreferrer">LIHEAP</a> — federal help paying heating/cooling bills</li>
         <li>Dial <b>211</b> for local utility hardship &amp; shutoff-prevention funds</li>
         <li>Call your utility company directly and ask about payment plans, budget billing, or hardship programs — many won't shut off service if you call first</li>
       </ul>
@@ -1154,9 +1162,9 @@ function renderHelp() {
     <div class="help-card">
       <h3>🍎 Food Help</h3>
       <ul>
-        <li><a href="https://www.feedingamerica.org/find-your-local-foodbank" target="_blank" rel="noopener">Feeding America Food Bank Locator</a> — find a free food pantry near you</li>
-        <li><a href="https://www.fns.usda.gov/snap/supplemental-nutrition-assistance-program" target="_blank" rel="noopener">SNAP</a> — apply for ongoing food assistance</li>
-        <li><a href="https://www.fns.usda.gov/wic" target="_blank" rel="noopener">WIC</a> — for pregnant/postpartum people &amp; kids under 5</li>
+        <li><a href="https://www.feedingamerica.org/find-your-local-foodbank" target="_blank" rel="noopener noreferrer">Feeding America Food Bank Locator</a> — find a free food pantry near you</li>
+        <li><a href="https://www.fns.usda.gov/snap/supplemental-nutrition-assistance-program" target="_blank" rel="noopener noreferrer">SNAP</a> — apply for ongoing food assistance</li>
+        <li><a href="https://www.fns.usda.gov/wic" target="_blank" rel="noopener noreferrer">WIC</a> — for pregnant/postpartum people &amp; kids under 5</li>
         <li>Dial <b>211</b> for same-day pantries, community fridges &amp; soup kitchens nearby</li>
       </ul>
     </div>
@@ -1173,8 +1181,8 @@ function renderHelp() {
       <ul>
         <li>Local Goodwill or Salvation Army — ask about free clothing vouchers (not just the paid store)</li>
         <li>Dial <b>211</b> for clothing closets near you</li>
-        <li><a href="https://www.onewarmcoat.org" target="_blank" rel="noopener">One Warm Coat</a> — free winter coats</li>
-        <li><a href="https://dressforsuccess.org" target="_blank" rel="noopener">Dress for Success</a> — free professional/interview clothing</li>
+        <li><a href="https://www.onewarmcoat.org" target="_blank" rel="noopener noreferrer">One Warm Coat</a> — free winter coats</li>
+        <li><a href="https://dressforsuccess.org" target="_blank" rel="noopener noreferrer">Dress for Success</a> — free professional/interview clothing</li>
       </ul>
     </div>
     <div class="help-card">
@@ -1183,7 +1191,7 @@ function renderHelp() {
       <ul>
         <li><a href="tel:8007997233">National DV Hotline — 1-800-799-7233</a></li>
         <li>Text <b>START</b> to <b>88788</b></li>
-        <li><a href="https://www.thehotline.org" target="_blank" rel="noopener">thehotline.org</a> — live chat, 24/7</li>
+        <li><a href="https://www.thehotline.org" target="_blank" rel="noopener noreferrer">thehotline.org</a> — live chat, 24/7</li>
       </ul>
       <p class="tip-note">If it's safer to browse quietly, most browsers let you delete history — or use a private/incognito window.</p>
     </div>
@@ -1206,20 +1214,20 @@ function renderTips() {
       <h3>📚 Free library apps</h3>
       <p>Your library card (free to get, even online in most counties) unlocks these — no extra cost:</p>
       <ul>
-        <li><a href="https://www.overdrive.com/apps/libby" target="_blank" rel="noopener">Libby</a> — free ebooks &amp; audiobooks</li>
-        <li><a href="https://www.hoopladigital.com" target="_blank" rel="noopener">Hoopla</a> — movies, music, audiobooks, comics (no waitlists)</li>
-        <li><a href="https://www.kanopy.com" target="_blank" rel="noopener">Kanopy</a> — free streaming films &amp; documentaries</li>
+        <li><a href="https://www.overdrive.com/apps/libby" target="_blank" rel="noopener noreferrer">Libby</a> — free ebooks &amp; audiobooks</li>
+        <li><a href="https://www.hoopladigital.com" target="_blank" rel="noopener noreferrer">Hoopla</a> — movies, music, audiobooks, comics (no waitlists)</li>
+        <li><a href="https://www.kanopy.com" target="_blank" rel="noopener noreferrer">Kanopy</a> — free streaming films &amp; documentaries</li>
       </ul>
       <p class="tip-note">Availability varies by library system — check what your local library card gives you access to.</p>
     </div>
     <div class="tip-card">
       <h3>🏛️ Government assistance programs</h3>
       <ul>
-        <li><a href="https://www.benefits.gov" target="_blank" rel="noopener">Benefits.gov</a> — official screener that matches you to federal/state programs</li>
-        <li><a href="https://www.fns.usda.gov/snap/supplemental-nutrition-assistance-program" target="_blank" rel="noopener">SNAP</a> — food assistance</li>
-        <li><a href="https://www.fns.usda.gov/wic" target="_blank" rel="noopener">WIC</a> — for pregnant/postpartum people and kids under 5</li>
-        <li><a href="https://www.acf.hhs.gov/ocs/programs/liheap" target="_blank" rel="noopener">LIHEAP</a> — help with heating/cooling bills</li>
-        <li><a href="https://www.211.org" target="_blank" rel="noopener">Dial 211</a> — free helpline that connects you to local assistance of all kinds</li>
+        <li><a href="https://www.benefits.gov" target="_blank" rel="noopener noreferrer">Benefits.gov</a> — official screener that matches you to federal/state programs</li>
+        <li><a href="https://www.fns.usda.gov/snap/supplemental-nutrition-assistance-program" target="_blank" rel="noopener noreferrer">SNAP</a> — food assistance</li>
+        <li><a href="https://www.fns.usda.gov/wic" target="_blank" rel="noopener noreferrer">WIC</a> — for pregnant/postpartum people and kids under 5</li>
+        <li><a href="https://www.acf.hhs.gov/ocs/programs/liheap" target="_blank" rel="noopener noreferrer">LIHEAP</a> — help with heating/cooling bills</li>
+        <li><a href="https://www.211.org" target="_blank" rel="noopener noreferrer">Dial 211</a> — free helpline that connects you to local assistance of all kinds</li>
       </ul>
     </div>
     <div class="tip-card">
@@ -1235,12 +1243,12 @@ function renderTips() {
     </div>
     <div class="tip-card">
       <h3>🎟️ Free events near you</h3>
-      <p><a href="https://www.eventbrite.com/d/united-states/free--events/" target="_blank" rel="noopener">Eventbrite</a> lets you filter by <b>Price &rarr; Free</b> to pull up free local events — meetups, workshops, festivals, and more.</p>
+      <p><a href="https://www.eventbrite.com/d/united-states/free--events/" target="_blank" rel="noopener noreferrer">Eventbrite</a> lets you filter by <b>Price &rarr; Free</b> to pull up free local events — meetups, workshops, festivals, and more.</p>
       <p>A few other apps have the same kind of free-events filter worth checking too:</p>
       <ul>
-        <li><a href="https://www.meetup.com" target="_blank" rel="noopener">Meetup</a> — tons of free local groups and meetups by interest</li>
-        <li><a href="https://www.facebook.com/events" target="_blank" rel="noopener">Facebook Events</a> — filter by "Free" under price</li>
-        <li><a href="https://nextdoor.com" target="_blank" rel="noopener">Nextdoor</a> — hyperlocal, neighbors often post free happenings</li>
+        <li><a href="https://www.meetup.com" target="_blank" rel="noopener noreferrer">Meetup</a> — tons of free local groups and meetups by interest</li>
+        <li><a href="https://www.facebook.com/events" target="_blank" rel="noopener noreferrer">Facebook Events</a> — filter by "Free" under price</li>
+        <li><a href="https://nextdoor.com" target="_blank" rel="noopener noreferrer">Nextdoor</a> — hyperlocal, neighbors often post free happenings</li>
       </ul>
       <p class="tip-note">Set your location and check back weekly, since new free listings get added all the time.</p>
     </div>
@@ -1248,20 +1256,20 @@ function renderTips() {
       <h3>🕵️ Top freebie-finder sites</h3>
       <p>These sites do a lot of the freebie-hunting legwork for you — worth checking regularly:</p>
       <ul>
-        <li><a href="https://hip2save.com/freebies/" target="_blank" rel="noopener">Hip2Save</a> — minute-by-minute updates on mail samples, restaurant freebies, and major retail deals</li>
-        <li><a href="https://thefreebieguy.com/freebies/" target="_blank" rel="noopener">The Freebie Guy</a> — vetted daily offers, from fast-food rewards and sweepstakes to full-sized product drops</li>
-        <li><a href="https://www.heyitsfree.net/" target="_blank" rel="noopener">Hey It's Free</a> — long-running community blog focused on legit mail-order samples and risk-free trials</li>
+        <li><a href="https://hip2save.com/freebies/" target="_blank" rel="noopener noreferrer">Hip2Save</a> — minute-by-minute updates on mail samples, restaurant freebies, and major retail deals</li>
+        <li><a href="https://thefreebieguy.com/freebies/" target="_blank" rel="noopener noreferrer">The Freebie Guy</a> — vetted daily offers, from fast-food rewards and sweepstakes to full-sized product drops</li>
+        <li><a href="https://www.heyitsfree.net/" target="_blank" rel="noopener noreferrer">Hey It's Free</a> — long-running community blog focused on legit mail-order samples and risk-free trials</li>
       </ul>
     </div>
     <div class="tip-card">
       <h3>🎁 Free-item swap apps</h3>
       <p>Neighbors give away stuff they no longer need — furniture, kids' items, food, moving boxes — all for free:</p>
       <ul>
-        <li><a href="https://buynothingproject.org" target="_blank" rel="noopener">Buy Nothing</a> — hyperlocal gifting groups organized by neighborhood</li>
-        <li><a href="https://www.facebook.com/marketplace/" target="_blank" rel="noopener">Facebook Marketplace</a> — filter by "Free" under price</li>
-        <li><a href="https://www.freecycle.org" target="_blank" rel="noopener">Freecycle</a> — one of the original free-stuff swap networks, organized by local groups</li>
-        <li><a href="https://www.olio.ex.io" target="_blank" rel="noopener">OLIO</a> — neighbors share surplus food and household items</li>
-        <li><a href="https://nextdoor.com" target="_blank" rel="noopener">Nextdoor</a> — neighbors often post free giveaways in the "For Sale &amp; Free" section</li>
+        <li><a href="https://buynothingproject.org" target="_blank" rel="noopener noreferrer">Buy Nothing</a> — hyperlocal gifting groups organized by neighborhood</li>
+        <li><a href="https://www.facebook.com/marketplace/" target="_blank" rel="noopener noreferrer">Facebook Marketplace</a> — filter by "Free" under price</li>
+        <li><a href="https://www.freecycle.org" target="_blank" rel="noopener noreferrer">Freecycle</a> — one of the original free-stuff swap networks, organized by local groups</li>
+        <li><a href="https://www.olio.ex.io" target="_blank" rel="noopener noreferrer">OLIO</a> — neighbors share surplus food and household items</li>
+        <li><a href="https://nextdoor.com" target="_blank" rel="noopener noreferrer">Nextdoor</a> — neighbors often post free giveaways in the "For Sale &amp; Free" section</li>
       </ul>
       <p class="tip-note">Most of these are organized by neighborhood or zip code, so what's available depends heavily on who's active near you.</p>
     </div>
@@ -1274,12 +1282,12 @@ function renderTips() {
       <h3>📺 Free streaming services</h3>
       <p>No subscription needed — these are ad-supported but completely free, no library card or trial required:</p>
       <ul>
-        <li><a href="https://tubitv.com" target="_blank" rel="noopener">Tubi</a> — huge free movie &amp; TV library</li>
-        <li><a href="https://pluto.tv" target="_blank" rel="noopener">Pluto TV</a> — free live channels + on-demand</li>
-        <li><a href="https://therokuchannel.roku.com" target="_blank" rel="noopener">The Roku Channel</a> — free movies &amp; shows (no Roku device needed, works in browser)</li>
-        <li><a href="https://www.xumo.com" target="_blank" rel="noopener">Xumo Play</a> — free live TV &amp; on-demand</li>
-        <li><a href="https://www.crackle.com" target="_blank" rel="noopener">Crackle</a> — free movies &amp; originals</li>
-        <li><a href="https://www.peacocktv.com" target="_blank" rel="noopener">Peacock</a> — has a limited free tier alongside its paid plans</li>
+        <li><a href="https://tubitv.com" target="_blank" rel="noopener noreferrer">Tubi</a> — huge free movie &amp; TV library</li>
+        <li><a href="https://pluto.tv" target="_blank" rel="noopener noreferrer">Pluto TV</a> — free live channels + on-demand</li>
+        <li><a href="https://therokuchannel.roku.com" target="_blank" rel="noopener noreferrer">The Roku Channel</a> — free movies &amp; shows (no Roku device needed, works in browser)</li>
+        <li><a href="https://www.xumo.com" target="_blank" rel="noopener noreferrer">Xumo Play</a> — free live TV &amp; on-demand</li>
+        <li><a href="https://www.crackle.com" target="_blank" rel="noopener noreferrer">Crackle</a> — free movies &amp; originals</li>
+        <li><a href="https://www.peacocktv.com" target="_blank" rel="noopener noreferrer">Peacock</a> — has a limited free tier alongside its paid plans</li>
       </ul>
       <p class="tip-note">Also check your library card and any T-Mobile/Verizon/AT&amp;T plan perks below — carriers sometimes bundle a paid streaming service in for free.</p>
     </div>
@@ -1287,11 +1295,11 @@ function renderTips() {
       <h3>🎮 Free gaming services</h3>
       <p>Ways to grab full games and play without paying:</p>
       <ul>
-        <li><a href="https://store.epicgames.com/en-US/free-games" target="_blank" rel="noopener">Epic Games Store</a> — a free full PC game every week, yours to keep</li>
-        <li><a href="https://www.gog.com" target="_blank" rel="noopener">GOG</a> — regular free giveaways &amp; a permanently free games section</li>
-        <li><a href="https://itch.io" target="_blank" rel="noopener">itch.io</a> — thousands of free indie games</li>
-        <li><a href="https://store.steampowered.com/genre/Free%20to%20Play/" target="_blank" rel="noopener">Steam Free-to-Play</a> — filter the store by free-to-play</li>
-        <li><a href="https://www.xbox.com/en-us/xbox-game-pass/cloud-gaming" target="_blank" rel="noopener">Xbox Cloud Gaming</a> &amp; <a href="https://www.amazon.com/luna" target="_blank" rel="noopener">Amazon Luna</a> — check for free trial periods to stream games with no console</li>
+        <li><a href="https://store.epicgames.com/en-US/free-games" target="_blank" rel="noopener noreferrer">Epic Games Store</a> — a free full PC game every week, yours to keep</li>
+        <li><a href="https://www.gog.com" target="_blank" rel="noopener noreferrer">GOG</a> — regular free giveaways &amp; a permanently free games section</li>
+        <li><a href="https://itch.io" target="_blank" rel="noopener noreferrer">itch.io</a> — thousands of free indie games</li>
+        <li><a href="https://store.steampowered.com/genre/Free%20to%20Play/" target="_blank" rel="noopener noreferrer">Steam Free-to-Play</a> — filter the store by free-to-play</li>
+        <li><a href="https://www.xbox.com/en-us/xbox-game-pass/cloud-gaming" target="_blank" rel="noopener noreferrer">Xbox Cloud Gaming</a> &amp; <a href="https://www.amazon.com/luna" target="_blank" rel="noopener noreferrer">Amazon Luna</a> — check for free trial periods to stream games with no console</li>
       </ul>
       <p class="tip-note">Amazon Prime members also get Prime Gaming — free monthly game claims and in-game loot, included if you already have Prime.</p>
     </div>
@@ -1299,9 +1307,9 @@ function renderTips() {
       <h3>🍔 Food delivery apps &amp; BOGO deals</h3>
       <p>These delivery apps regularly run free-delivery, BOGO, and % off promos — worth having a few installed to compare:</p>
       <ul>
-        <li><a href="https://www.doordash.com" target="_blank" rel="noopener">DoorDash</a> — check the "Deals" tab for BOGO &amp; $0 delivery fee offers</li>
-        <li><a href="https://www.ubereats.com" target="_blank" rel="noopener">Uber Eats</a> — frequent promo codes and restaurant-funded BOGO deals</li>
-        <li><a href="https://www.grubhub.com" target="_blank" rel="noopener">Grubhub</a> — "Perks" tab plus Grubhub+ trial windows</li>
+        <li><a href="https://www.doordash.com" target="_blank" rel="noopener noreferrer">DoorDash</a> — check the "Deals" tab for BOGO &amp; $0 delivery fee offers</li>
+        <li><a href="https://www.ubereats.com" target="_blank" rel="noopener noreferrer">Uber Eats</a> — frequent promo codes and restaurant-funded BOGO deals</li>
+        <li><a href="https://www.grubhub.com" target="_blank" rel="noopener noreferrer">Grubhub</a> — "Perks" tab plus Grubhub+ trial windows</li>
         <li>Individual restaurant apps (Chipotle, Wendy's, Taco Bell, Panera, etc.) — often cheaper than delivery-app pricing and run their own rewards/BOGO deals</li>
       </ul>
       <p class="tip-note">Comparing 2–3 apps for the same order can turn up very different delivery fees and promo codes — worth a quick check before ordering.</p>
