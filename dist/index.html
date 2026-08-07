@@ -1412,7 +1412,13 @@ function autoFillLocationFromGeo() {
     async (pos) => {
       try {
         const { latitude, longitude } = pos.coords;
-        const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`);
+        // Round to ~2 decimal places (~1km) before this ever leaves the
+        // device — plenty precise for a ZIP lookup, without handing the
+        // third-party geocoder an exact pinpoint of where the person is
+        // standing.
+        const roundedLat = Math.round(latitude * 100) / 100;
+        const roundedLon = Math.round(longitude * 100) / 100;
+        const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${roundedLat}&longitude=${roundedLon}&localityLanguage=en`);
         if (!res.ok) return;
         const data = await res.json();
         const zip = data.postcode ? String(data.postcode).trim() : "";
