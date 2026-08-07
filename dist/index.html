@@ -273,6 +273,20 @@
   .tip-card a { color: var(--lav); font-weight: 800; text-decoration: underline; }
   .tip-card .tip-note { font-size: 12.5px; opacity: .75; }
 
+  /* ---- watch & chill (youtube) tab ---- */
+  .tube-intro { margin: 0 0 16px; }
+  .tube-headline { font-family: 'Press Start 2P', monospace; font-size: 14px; text-shadow: 2px 2px 0 var(--pink); margin: 0 0 8px; }
+  .tube-sub { font-size: 14px; margin: 0; max-width: 640px; }
+  .tube-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+  .tube-card { background: var(--panel); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--tube-accent, var(--pink)); padding: 14px; display: flex; flex-direction: column; }
+  .tube-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 6px; }
+  .tube-card-title { font-family: 'Press Start 2P', monospace; font-size: 11px; line-height: 1.5; }
+  .tube-visit { font-size: 12px; font-weight: 800; color: var(--tube-accent, var(--pink)); text-decoration: underline; white-space: nowrap; }
+  .tube-card-desc { font-size: 13.5px; margin: 0 0 10px; }
+  .tube-embed { position: relative; width: 100%; aspect-ratio: 16 / 9; border: 3px solid var(--ink); background: #150F29; overflow: hidden; }
+  .tube-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .tube-video-title { font-size: 12px; font-weight: 800; margin-top: 8px; opacity: .85; }
+
   /* ---- coin dash mini-game tab ---- */
   .hidden { display: none !important; }
   .gd-wrap { max-width: 460px; margin: 0 auto; }
@@ -576,6 +590,11 @@ let currentCharacterAlt = "kawaii cat mascot";
 function CAT_SVG_FN() { return `<img src="${currentCharacterMascot}" alt="${currentCharacterAlt}">`; }
 
 const CATEGORIES = {
+  // Static content tab — no search/API call, just a curated list of
+  // free, family-friendly indie animation channels with an embedded
+  // top video each. Handled via renderTube() in render(), same pattern
+  // as the "tips" tab below.
+  tube: { label: "Watch & Chill", icon: "📺", static: true },
   game: { label: "Coin Dash", icon: "🎮", static: true },
   dashboard: { label: "Dashboard" },
   restaurant: { label: "Restaurant Deals", icon: "🍔" },
@@ -695,7 +714,7 @@ function bumpCharLevel(id) {
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "game") state.results[k] = []; });
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube") state.results[k] = []; });
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -908,7 +927,7 @@ function renderList(key) {
 // this is a gamified estimate, not a receipt), and how many of the 8
 // searchable categories have been scanned at least once this run.
 function computeStats() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube");
   let totalFound = 0, estValue = 0, scannedCount = 0;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -937,7 +956,7 @@ function renderHud() {
 
 function renderDashboard() {
   const stats = computeStats();
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube");
 
   const boardCards = catKeys.map(k => {
     const cat = CATEGORIES[k];
@@ -963,6 +982,66 @@ function renderDashboard() {
     <div class="quest-board-head">QUEST BOARD <span class="dash-line"></span></div>
     <div class="quest-board">${boardCards}</div>
     ${questComplete}`;
+}
+
+// Static content — free, family-friendly indie animation channels, each
+// with a hand-picked top/flagship video embedded right in the card so
+// kids (and everyone else) get some free entertainment without leaving
+// the app or falling down a recommendation-algorithm rabbit hole.
+// videoId/videoTitle point at each channel's flagship pilot/short —
+// verified against the channels' actual official uploads.
+const TUBE_CHANNELS = [
+  {
+    name: "GLITCH", accent: "var(--pink)",
+    channelUrl: "https://www.youtube.com/@GLITCH",
+    desc: "Independent animation studio behind The Amazing Digital Circus, Murder Drones, and Meta Runner — big-budget-feeling shows made entirely outside the traditional studio system.",
+    videoId: "HwAPLk_sQ3w", videoTitle: "THE AMAZING DIGITAL CIRCUS: PILOT"
+  },
+  {
+    name: "Lackadaisy (Iron Circus Animation)", accent: "var(--sun)",
+    channelUrl: "https://www.youtube.com/@LackadaisyComic",
+    desc: "A Kickstarter-funded short film turned full series — a Prohibition-era speakeasy run by a crew of sharply-dressed, sharper-tongued cats.",
+    videoId: "vffu6FG4YP4", videoTitle: "Lackadaisy: The Animated Short Film"
+  },
+  {
+    name: "Zeddyzi", accent: "var(--sky)",
+    channelUrl: "https://www.youtube.com/@Zeddyzi",
+    desc: "Solo indie animator behind Ramshackle — chaotic, heartfelt street-rat misadventures with a real found-family streak underneath the silliness.",
+    videoId: "i1r2QqSpJ5o", videoTitle: "RAMSHACKLE: The Animated Pilot"
+  },
+  {
+    name: "Alan Becker", accent: "var(--mint)",
+    channelUrl: "https://www.youtube.com/@alanbecker",
+    desc: "The OG stick-figure animator — Animator vs. Animation and Animation vs. Minecraft are wordless, all-ages classics that started a whole animation genre.",
+    videoId: "GW_fdXHOWp4", videoTitle: "Animation vs. Minecraft (original)"
+  }
+];
+
+function renderTube() {
+  const cards = TUBE_CHANNELS.map(ch => `
+    <div class="tube-card" style="--tube-accent:${ch.accent}">
+      <div class="tube-card-head">
+        <div class="tube-card-title">${escapeHtml(ch.name)}</div>
+        <a class="tube-visit" href="${escapeHtml(ch.channelUrl)}" target="_blank" rel="noopener">Channel ↗</a>
+      </div>
+      <p class="tube-card-desc">${escapeHtml(ch.desc)}</p>
+      <div class="tube-embed">
+        <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(ch.videoId)}"
+          title="${escapeHtml(ch.videoTitle)}" loading="lazy" frameborder="0"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowfullscreen></iframe>
+      </div>
+      <div class="tube-video-title">▶ ${escapeHtml(ch.videoTitle)}</div>
+    </div>`).join("");
+
+  return `
+    <div class="tube-intro">
+      <div class="tube-headline">📺 WATCH &amp; CHILL</div>
+      <p class="tube-sub">Free, family-friendly indie animation — queued up right here so nobody has
+      to go digging for something decent to watch. No ads to dodge, no algorithm rabbit hole, just
+      good cartoons made by small studios worth supporting.</p>
+    </div>
+    <div class="tube-list">${cards}</div>`;
 }
 
 // Static content — no API call, just evergreen pointers to free resources
@@ -1135,12 +1214,13 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = state.tab === "game" ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = state.tab === "game" ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "tips") content.innerHTML = renderTips();
+  else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
   else content.innerHTML = renderList(state.tab);
 
@@ -1382,7 +1462,7 @@ async function runFullScan() {
   stopBtn.style.display = "flex";
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube");
   for (let i = 0; i < categoryKeys.length; i++) {
     if (state.stopRequested) break;
     const key = categoryKeys[i];
