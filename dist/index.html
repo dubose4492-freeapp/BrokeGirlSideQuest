@@ -147,12 +147,12 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 0%,100% { box-shadow: 5px 5px 0 var(--ink); } 50% { box-shadow: 5px 5px 0 var(--sun), 0 0 16px 2px #ffc93c77; } }
 
-  nav { background: var(--panel); border-bottom: 4px solid var(--ink); overflow-x: auto; white-space: nowrap; }
+  nav { background: var(--panel); border-bottom: 4px solid var(--ink); overflow-x: auto; white-space: nowrap; user-select: none; -webkit-user-select: none; -ms-user-select: none; }
   nav .inner { max-width: 1000px; margin: 0 auto; display: flex; }
   nav button {
     background: none; border: none; border-right: 2px dashed var(--lav-soft);
     padding: 13px 16px; font-size: 14px; font-weight: 800; color: #4a3d68; cursor: pointer;
-    font-family: 'Baloo 2', sans-serif;
+    font-family: 'Baloo 2', sans-serif; user-select: none; -webkit-user-select: none; -ms-user-select: none;
   }
   nav button.active { color: var(--ink); background: var(--sun-soft); box-shadow: inset 0 -4px 0 var(--pink); }
   main { max-width: 1000px; margin: 0 auto; padding: 18px; }
@@ -1330,16 +1330,6 @@ function renderTips() {
   </div>`;
 }
 
-// Header height is no longer fixed (tagline + HUD bar can wrap on narrow
-// screens), so the sticky nav's offset is measured live instead of
-// hard-coded — re-run after anything that could resize the header.
-function syncNavOffset() {
-  const header = document.querySelector("header");
-  const nav = document.querySelector("nav");
-  if (header && nav) nav.style.top = header.offsetHeight + "px";
-}
-window.addEventListener("resize", syncNavOffset);
-
 // --- header collapse toggle (frees up screen space for deal lists on mobile) ---
 function toggleHeaderCollapse(force) {
   const header = document.querySelector("header");
@@ -1352,7 +1342,6 @@ function toggleHeaderCollapse(force) {
     btn.setAttribute("aria-label", collapsed ? "Expand header" : "Collapse header");
   }
   lsSet("bgsq_header_collapsed", collapsed ? "1" : "0");
-  syncNavOffset();
 }
 (function initHeaderCollapse() {
   let saved = null;
@@ -1381,7 +1370,6 @@ function render() {
   let statusHtml = "";
   if (state.error) statusHtml += `<div class="error-box">${escapeHtml(state.error)}</div>`;
   document.getElementById("statusArea").innerHTML = statusHtml;
-  syncNavOffset();
 }
 
 // ---------- interactions ----------
