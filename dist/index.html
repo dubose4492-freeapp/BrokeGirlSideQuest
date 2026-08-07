@@ -66,6 +66,9 @@
     );
   }
 
+  .site-sticky {
+    position: sticky; top: 0; z-index: 10;
+  }
   header {
     background: var(--card-dark);
     background-image:
@@ -75,7 +78,6 @@
       radial-gradient(1.5px 1.5px at 65% 20%, #ffffff44 1px, transparent 1px),
       radial-gradient(1.5px 1.5px at 85% 65%, #ffffff33 1px, transparent 1px);
     color: #F4F0FF; padding: 16px 18px 20px;
-    position: sticky; top: 0; z-index: 10;
     border-bottom: 4px solid var(--ink);
     box-shadow: 0 6px 0 var(--pink);
     transition: padding .15s;
@@ -145,7 +147,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @keyframes pulse { 0%,100% { box-shadow: 5px 5px 0 var(--ink); } 50% { box-shadow: 5px 5px 0 var(--sun), 0 0 16px 2px #ffc93c77; } }
 
-  nav { background: var(--panel); border-bottom: 4px solid var(--ink); position: sticky; top: 0; z-index: 9; overflow-x: auto; white-space: nowrap; }
+  nav { background: var(--panel); border-bottom: 4px solid var(--ink); overflow-x: auto; white-space: nowrap; }
   nav .inner { max-width: 1000px; margin: 0 auto; display: flex; }
   nav button {
     background: none; border: none; border-right: 2px dashed var(--lav-soft);
@@ -371,6 +373,12 @@
     text-align: center; font-family: 'Press Start 2P', monospace; font-size: 10px;
     color: var(--ink); background: var(--sun-soft); padding: 10px; border-top: 4px solid var(--ink);
   }
+  .footer-verse {
+    display: flex; align-items: baseline; justify-content: flex-end; gap: 4px;
+    font-family: 'Press Start 2P', monospace; font-size: 8px;
+    color: #7C4DFF; margin-top: 6px;
+  }
+  .footer-verse .cross { font-size: 16px; line-height: 1; }
 
   /* ---- splash / start screen ---- */
   .splash-screen {
@@ -411,6 +419,12 @@
   .splash-slang {
     position: relative; z-index: 1; font-family: 'Baloo 2', sans-serif; font-weight: 800;
     color: var(--sun); font-size: clamp(13px, 3.6vw, 16px); letter-spacing: .3px; max-width: 300px;
+  }
+  .splash-note {
+    position: absolute; right: 14px; bottom: 12px; z-index: 1;
+    font-family: 'Baloo 2', sans-serif; font-weight: 700; font-style: italic;
+    color: #CFC6F5; font-size: 11px; text-align: right; max-width: 220px; line-height: 1.4;
+    opacity: .85;
   }
 
   /* ---- character select screen ---- */
@@ -518,6 +532,7 @@
     <span>❤️</span><span>❤️</span><span>❤️</span><span>❤️</span><span>❤️</span>
   </div>
   <p class="splash-slang">getting free stuff is literally main character energy 💅✨</p>
+  <p class="splash-note">hope this lil app brings a smile to your face queen 👑 made with love for the real ones stretching every dollar 💫</p>
 </div>
 
 <div class="charselect-screen hide" id="charSelectScreen">
@@ -534,6 +549,7 @@
   </div>
 </div>
 
+<div class="site-sticky">
 <header>
   <button class="header-collapse-btn" id="headerCollapseBtn" onclick="toggleHeaderCollapse()" aria-label="Collapse header">&#9650;</button>
   <div class="row">
@@ -559,6 +575,7 @@
 </header>
 
 <nav><div class="inner" id="navBar"></div></nav>
+</div>
 
 <main>
   <div id="searchToolsSection">
@@ -615,7 +632,7 @@
 <footer class="pixel-footer">
   <img src="/images/banner.jpg" alt="pixel street scene: grocery store and boba shop">
 </footer>
-<div class="pixel-footer-caption">thanks for questing, bestie 🌿-claraann</div>
+<div class="pixel-footer-caption">thanks for questing, bestie 🌿-claraann<div class="footer-verse"><span class="cross">✝</span> John 3:16</div></div>
 
 <div class="toast" id="toast"></div>
 
@@ -1350,9 +1367,9 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
