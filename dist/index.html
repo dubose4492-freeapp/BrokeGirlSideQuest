@@ -290,6 +290,31 @@
   .tip-card a { color: var(--lav); font-weight: 800; text-decoration: underline; }
   .tip-card .tip-note { font-size: 12.5px; opacity: .75; }
 
+  /* ---- Emergency Help tab ---- */
+  .help-banner {
+    background: var(--card-dark); color: #F4F0FF; border: 3px solid var(--ink);
+    box-shadow: 5px 5px 0 var(--coral); padding: 20px; margin-bottom: 18px;
+    text-align: center;
+  }
+  .help-banner h2 { margin: 0 0 8px; font-family: 'Press Start 2P', monospace; font-size: 15px; line-height: 1.6; color: #fff; text-shadow: 2px 2px 0 var(--coral); }
+  .help-banner p { margin: 0 0 12px; font-size: 14px; color: #CFC6F5; font-weight: 700; }
+  .help-hotline-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  .help-hotline-btn {
+    display: inline-flex; align-items: center; gap: 8px; background: var(--coral); color: #2b0d0d;
+    border: 3px solid var(--ink); box-shadow: 4px 4px 0 var(--ink); padding: 10px 16px;
+    font-weight: 800; font-size: 14px; text-decoration: none;
+  }
+  .help-hotline-btn.alt { background: var(--sky); }
+  .help-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .help-card { background: var(--panel); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--coral); padding: 16px; }
+  .help-card h3 { margin: 0 0 8px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .help-card p { margin: 0 0 10px; font-size: 14px; }
+  .help-card ul { margin: 0 0 10px; padding-left: 20px; font-size: 14px; }
+  .help-card ul:last-child { margin-bottom: 0; }
+  .help-card li { margin-bottom: 6px; }
+  .help-card a { color: var(--pink); font-weight: 800; text-decoration: underline; }
+  .help-card .tip-note { font-size: 12.5px; opacity: .75; }
+
   /* ---- watch & chill (youtube) tab ---- */
   .tube-intro { margin: 0 0 16px; }
   .tube-headline { font-family: 'Press Start 2P', monospace; font-size: 14px; text-shadow: 2px 2px 0 var(--pink); margin: 0 0 8px; }
@@ -467,6 +492,13 @@
     box-shadow: 0 0 10px var(--card-accent, var(--pink)), inset 0 0 8px var(--card-accent, var(--pink));
   }
   .cs-confirm-btn.ready:hover { transform: scale(1.04); }
+  .cs-action-row { display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
+  .cs-random-btn {
+    position: relative; z-index: 2; margin-top: 16px; font-family: 'Press Start 2P', monospace;
+    font-size: 13px; color: var(--ink); background: var(--sun); border: 3px solid var(--ink); padding: 14px 18px;
+    cursor: pointer; letter-spacing: 1px; box-shadow: 4px 4px 0 var(--ink); transition: transform .08s, box-shadow .08s;
+  }
+  .cs-random-btn:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--ink); }
   @media (min-width: 480px) {
     .cs-grid { grid-template-columns: repeat(6, 1fr); }
   }
@@ -496,7 +528,10 @@
   <div class="cs-statpanel" id="csStatPanel">
     <div class="cs-statpanel-empty" id="csEmptyMsg">PICK A FIGHTER</div>
   </div>
-  <button class="cs-confirm-btn" id="csConfirmBtn" onclick="confirmCharacter()">LOCK IN ➜</button>
+  <div class="cs-action-row">
+    <button class="cs-random-btn" id="csRandomBtn" onclick="randomizeCharacter()" aria-label="Pick a random character">🎲 RANDOM</button>
+    <button class="cs-confirm-btn" id="csConfirmBtn" onclick="confirmCharacter()">LOCK IN ➜</button>
+  </div>
 </div>
 
 <header>
@@ -607,6 +642,13 @@ let currentCharacterAlt = "kawaii cat mascot";
 function CAT_SVG_FN() { return `<img src="${currentCharacterMascot}" alt="${currentCharacterAlt}">`; }
 
 const CATEGORIES = {
+  // Static content tab — no search/API call. Curated crisis/assistance
+  // resources (rent, utility, food, gas, clothing, DV, crisis lines).
+  // Kept first so it's the leftmost, most visible tab in the nav bar.
+  // Handled via renderHelp() in render(), same pattern as "tips" below —
+  // also skipped by runFullScan()/computeStats()'s category loops (see
+  // those "tips"/"help" exclusion filters elsewhere in this file).
+  help: { label: "Emergency Help", icon: "🆘", static: true },
   // Static content tab — no search/API call, just a curated list of
   // free, family-friendly indie animation channels with an embedded
   // top video each. Handled via renderTube() in render(), same pattern
@@ -731,7 +773,7 @@ function bumpCharLevel(id) {
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube") state.results[k] = []; });
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube") state.results[k] = []; });
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -944,7 +986,7 @@ function renderList(key) {
 // this is a gamified estimate, not a receipt), and how many of the 8
 // searchable categories have been scanned at least once this run.
 function computeStats() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube");
   let totalFound = 0, estValue = 0, scannedCount = 0;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -973,7 +1015,7 @@ function renderHud() {
 
 function renderDashboard() {
   const stats = computeStats();
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube");
 
   const boardCards = catKeys.map(k => {
     const cat = CATEGORIES[k];
@@ -1064,6 +1106,83 @@ function renderTube() {
 // Static content — no API call, just evergreen pointers to free resources
 // that a live web search tends to miss (library apps, benefit programs,
 // local offices). Updated by hand, not by the scan.
+function renderHelp() {
+  return `
+  <div class="help-banner">
+    <h2>🆘 You Are Not Alone</h2>
+    <p>If things feel like too much right now, help is out there — free, confidential, and available any time of day.</p>
+    <div class="help-hotline-row">
+      <a class="help-hotline-btn" href="tel:988">📞 Call or Text 988 — Suicide &amp; Crisis Lifeline</a>
+      <a class="help-hotline-btn alt" href="sms:741741&body=HOME" target="_blank" rel="noopener">💬 Text HOME to 741741 — Crisis Text Line</a>
+    </div>
+  </div>
+  <div class="help-grid">
+    <div class="help-card">
+      <h3>🏠 Rent Help</h3>
+      <ul>
+        <li><a href="https://www.211.org" target="_blank" rel="noopener">211.org</a> or dial <b>211</b> — free helpline, connects you to local rent &amp; eviction-prevention programs</li>
+        <li><a href="https://nlihc.org/era" target="_blank" rel="noopener">NLIHC Emergency Rental Assistance Directory</a> — find programs by state/county</li>
+        <li>Local Salvation Army or Catholic Charities office — many offer one-time emergency rent grants</li>
+        <li>Ask your court/legal aid office about eviction diversion programs before a hearing date</li>
+      </ul>
+    </div>
+    <div class="help-card">
+      <h3>💡 Utility Help</h3>
+      <ul>
+        <li><a href="https://www.acf.hhs.gov/ocs/programs/liheap" target="_blank" rel="noopener">LIHEAP</a> — federal help paying heating/cooling bills</li>
+        <li>Dial <b>211</b> for local utility hardship &amp; shutoff-prevention funds</li>
+        <li>Call your utility company directly and ask about payment plans, budget billing, or hardship programs — many won't shut off service if you call first</li>
+      </ul>
+    </div>
+    <div class="help-card">
+      <h3>🍎 Food Help</h3>
+      <ul>
+        <li><a href="https://www.feedingamerica.org/find-your-local-foodbank" target="_blank" rel="noopener">Feeding America Food Bank Locator</a> — find a free food pantry near you</li>
+        <li><a href="https://www.fns.usda.gov/snap/supplemental-nutrition-assistance-program" target="_blank" rel="noopener">SNAP</a> — apply for ongoing food assistance</li>
+        <li><a href="https://www.fns.usda.gov/wic" target="_blank" rel="noopener">WIC</a> — for pregnant/postpartum people &amp; kids under 5</li>
+        <li>Dial <b>211</b> for same-day pantries, community fridges &amp; soup kitchens nearby</li>
+      </ul>
+    </div>
+    <div class="help-card">
+      <h3>⛽ Gas Help</h3>
+      <ul>
+        <li>Dial <b>211</b> — many local charities and churches keep small gas-card funds for people who need to get to work, appointments, or interviews</li>
+        <li>Salvation Army &amp; Catholic Charities local offices often help with gas vouchers alongside rent/utility aid</li>
+        <li>Ask your job's HR or a case worker about transportation-assistance programs — some employers or counties cover this</li>
+      </ul>
+    </div>
+    <div class="help-card">
+      <h3>👕 Clothing Help</h3>
+      <ul>
+        <li>Local Goodwill or Salvation Army — ask about free clothing vouchers (not just the paid store)</li>
+        <li>Dial <b>211</b> for clothing closets near you</li>
+        <li><a href="https://www.onewarmcoat.org" target="_blank" rel="noopener">One Warm Coat</a> — free winter coats</li>
+        <li><a href="https://dressforsuccess.org" target="_blank" rel="noopener">Dress for Success</a> — free professional/interview clothing</li>
+      </ul>
+    </div>
+    <div class="help-card">
+      <h3>🛡️ Domestic Violence</h3>
+      <p>If you're in immediate danger, call <b>911</b>. Otherwise, these are free and confidential:</p>
+      <ul>
+        <li><a href="tel:8007997233">National DV Hotline — 1-800-799-7233</a></li>
+        <li>Text <b>START</b> to <b>88788</b></li>
+        <li><a href="https://www.thehotline.org" target="_blank" rel="noopener">thehotline.org</a> — live chat, 24/7</li>
+      </ul>
+      <p class="tip-note">If it's safer to browse quietly, most browsers let you delete history — or use a private/incognito window.</p>
+    </div>
+    <div class="help-card">
+      <h3>💛 Crisis Resources</h3>
+      <ul>
+        <li><a href="tel:988">988 Suicide &amp; Crisis Lifeline</a> — call or text 988, 24/7, free &amp; confidential</li>
+        <li>Text <b>HOME</b> to <b>741741</b> — Crisis Text Line</li>
+        <li><a href="tel:18006624357">SAMHSA National Helpline — 1-800-662-4357</a> — free, for mental health &amp; substance use support</li>
+        <li>Dial <b>211</b> for any other local urgent need — they'll route you to the right place</li>
+      </ul>
+      <p class="tip-note">Whatever you're facing, you don't have to carry it alone — reaching out is a strong move, not a last resort.</p>
+    </div>
+  </div>`;
+}
+
 function renderTips() {
   return `<div class="tips-grid">
     <div class="tip-card">
@@ -1236,6 +1355,7 @@ function render() {
   if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
+  else if (state.tab === "help") content.innerHTML = renderHelp();
   else if (state.tab === "tips") content.innerHTML = renderTips();
   else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
@@ -1446,7 +1566,7 @@ function buildAiPrompt() {
   ];
 
   for (const key of Object.keys(CATEGORIES)) {
-    if (key === "dashboard" || key === "tips" || key === "game") continue;
+    if (key === "dashboard" || key === "tips" || key === "help" || key === "game") continue;
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
@@ -1479,7 +1599,7 @@ async function runFullScan() {
   stopBtn.style.display = "flex";
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "game" && k !== "tube");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube");
   for (let i = 0; i < categoryKeys.length; i++) {
     if (state.stopRequested) break;
     const key = categoryKeys[i];
@@ -1542,7 +1662,7 @@ function stopScan() {
 // currentAbortController/state.results slot. Triggered via
 // handleScanClick() — never call this directly for "dashboard" or "tips".
 async function scanSingleCategory(key) {
-  if (state.scanning || key === "dashboard" || key === "tips" || key === "game") return;
+  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game") return;
 
   state.scanning = true;
   state.scanningKey = key;
@@ -1675,6 +1795,16 @@ function statBar(value) {
     pips += `<div class="cs-stat-pip ${i <= value ? "filled" : ""}"></div>`;
   }
   return pips;
+}
+
+function randomizeCharacter() {
+  // Picks any character other than the currently selected one when possible,
+  // so mashing the button keeps cycling through options instead of re-landing
+  // on the same pick.
+  const pool = CHARACTERS.filter(c => c.id !== selectedCharacterId);
+  const choices = pool.length ? pool : CHARACTERS;
+  const pick = choices[Math.floor(Math.random() * choices.length)];
+  if (pick) selectCharacter(pick.id);
 }
 
 function selectCharacter(id) {
