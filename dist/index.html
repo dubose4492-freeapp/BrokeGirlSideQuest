@@ -707,6 +707,26 @@ function hostname(url) {
   try { return new URL(url).hostname.replace("www.", ""); } catch (e) { return "Web"; }
 }
 
+// ---------- security helpers ----------
+// Deal data (title, store, blogUrl, claimUrl, etc.) comes from live web
+// search / AI extraction, not from a trusted source we control — so it's
+// treated as untrusted before it ever touches the DOM.
+// Encodes text for safe use inside HTML content or an HTML attribute.
+function escapeHtml(str) {
+  return String(str ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+// Only allow http(s) links through to href/window.open — blocks
+// javascript:, data:, and other schemes that could execute if a
+// scraped result ever contained a malicious "URL".
+function isSafeUrl(url) {
+  try {
+    const u = new URL(url, window.location.href);
+    return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
+  } catch (e) { return ""; }
+}
+
 // ---------- rendering ----------
 function buildNav() {
   const nav = document.getElementById("navBar");
@@ -800,34 +820,58 @@ function itemCard(item) {
   // Claim is never a dead end. When the offer came from a third-party page
   // (blog, deal tracker, news article), that source shows up as a "See
   // Details" link right in the meta row.
-  const claimUrl = item.claimUrl || item.productUrl || item.url;
-  const detailLinkInline = item.blogUrl
-    ? `: <a href="${item.blogUrl}" target="_blank" rel="noopener">${hostname(item.blogUrl)}</a>`
+  // claimUrl/blogUrl come from live search results, so they're passed
+  // through isSafeUrl() — only real http(s) links render as links.
+  const claimUrl = isSafeUrl(item.claimUrl || item.productUrl || item.url);
+  const blogUrl = isSafeUrl(item.blogUrl);
+  const detailLinkInline = blogUrl
+    ? `: <a href="${escapeHtml(blogUrl)}" target="_blank" rel="noopener">${escapeHtml(hostname(blogUrl))}</a>`
     : "";
 
-  return `<div class="item-card">
+  const safeId = escapeHtml(item.id);
+  const safeTitle = escapeHtml(item.title);
+  const safeStore = escapeHtml(item.store);
+
+  return `<div class="item-card" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}">
     <div class="item-media">${itemEmoji(item)}</div>
     <div class="item-body">
-      <p class="item-name">${item.title}</p>
-      <div class="item-store">${item.store}</div>
-      ${item.trustedSource ? `<div class="trusted-badge">⭐ ${item.trustedSource}</div>` : ""}
+      <p class="item-name">${safeTitle}</p>
+      <div class="item-store">${safeStore}</div>
+      ${item.trustedSource ? `<div class="trusted-badge">⭐ ${escapeHtml(item.trustedSource)}</div>` : ""}
       <div class="item-price-row">
-        <span class="item-price ${item.isFree ? "" : "paid"}">${priceLabel(item, cat)}</span>
+        <span class="item-price ${item.isFree ? "" : "paid"}">${escapeHtml(priceLabel(item, cat))}</span>
         <span class="cat-badge">${cat.label}</span>
       </div>
       <div class="item-meta">
         <span>${reqTypeLabel(item.requirementType)}${detailLinkInline}</span>
-        ${item.expires ? `<span>${item.expires}</span>` : ""}
+        ${item.expires ? `<span>${escapeHtml(item.expires)}</span>` : ""}
       </div>
     </div>
     <div class="item-actions">
-      <button onclick="toggleSave('${item.id.replace(/'/g, "\\'")}')" class="${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
-      <button onclick="openDirections('${(item.store + " " + state.zip).replace(/'/g, "\\'")}')">📍 Directions</button>
-      <button onclick="window.open('${claimUrl}', '_blank', 'noopener')">🔗 Claim</button>
-      <button onclick="shareItem('${item.title.replace(/'/g, "\\'")}', '${claimUrl}')">📤 Share</button>
+      <button class="save-btn ${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
+      <button class="dir-btn">📍 Directions</button>
+      <button class="claim-btn"${claimUrl ? "" : " disabled"}>🔗 Claim</button>
+      <button class="share-btn">📤 Share</button>
     </div>
   </div>`;
 }
+
+// Single delegated listener for all item-card action buttons — avoids
+// building onclick="..." strings out of untrusted deal data (title,
+// store, URLs), which is unsafe no matter how carefully you escape
+// quotes. Reads the safe, already-escaped values back off the card's
+// data-* attributes instead. Attached once; #content's *contents* get
+// replaced on every render, but #content itself never does, so this
+// keeps working across re-renders.
+document.getElementById("content").addEventListener("click", (e) => {
+  const card = e.target.closest(".item-card");
+  if (!card) return;
+  const { id, title, store, claim } = card.dataset;
+  if (e.target.closest(".save-btn")) toggleSave(id);
+  else if (e.target.closest(".dir-btn")) openDirections(`${store} ${state.zip}`);
+  else if (e.target.closest(".claim-btn")) { if (claim) window.open(claim, "_blank", "noopener"); }
+  else if (e.target.closest(".share-btn")) shareItem(title, claim);
+});
 
 function renderList(key) {
   const cat = CATEGORIES[key];
@@ -1101,7 +1145,7 @@ function render() {
   else content.innerHTML = renderList(state.tab);
 
   let statusHtml = "";
-  if (state.error) statusHtml += `<div class="error-box">${state.error}</div>`;
+  if (state.error) statusHtml += `<div class="error-box">${escapeHtml(state.error)}</div>`;
   document.getElementById("statusArea").innerHTML = statusHtml;
   syncNavOffset();
 }
