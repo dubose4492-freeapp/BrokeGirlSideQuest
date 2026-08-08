@@ -1571,6 +1571,41 @@ async function searchGroceryCategory(signal) {
   return items;
 }
 
+// Best-effort client-side safety net: if a returned item's "expires" text
+// parses as a real date that's already in the past, drop it. Server-side
+// classification is supposed to skip expired offers already, but this
+// catches anything that slips through (e.g. a source page that wasn't
+// updated) without needing a backend change. Unparseable/relative text
+// ("while supplies last", "ends soon") is left in rather than guessed at.
+function filterExpired(results) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return results.filter(item => {
+    if (!item.expires) return true;
+    const d = new Date(item.expires);
+    if (isNaN(d.getTime())) return true; // not a parseable date — keep, don't guess
+    return d >= today;
+  });
+}
+
+// Web-search-backed categories can turn up the same real-world deal from
+// two different blog/source pages (each with its own item id), which reads
+// as a duplicate card rather than a data error. Collapse on normalized
+// title+store, keeping the first (search results are already ranked, so
+// the first hit is generally the best-attributed one).
+function dedupeResults(results) {
+  const seen = new Set();
+  return results.filter(item => {
+    const norm = `${(item.title || "").trim().toLowerCase()}|${(item.store || "").trim().toLowerCase()}`;
+    if (seen.has(norm)) return false;
+    seen.add(norm);
+    return true;
+  });
+}
+
+function cleanResults(results) {
+  return dedupeResults(filterExpired(results));
+}
+
 // Every other tab (clothing, toys, accessories, events, community, mail)
 // goes through the same open-web-search + classify + resolve-a-real-claim-
 // link pipeline as grocery/restaurant, via /functions/api/freebies.js. The
@@ -1584,12 +1619,12 @@ async function searchFreebiesCategory(key, signal) {
     cache: "no-store",
     signal,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius })
+    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius, timeRange: cat.timeRange || null })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `${cat.label} search failed (${response.status}).`);
   if (data.provider) console.log(`[${cat.label}] answered by: ${data.provider}`);
-  return data.results || [];
+  return cleanResults(data.results || []);
 }
 
 // Restaurant deals now go through a dedicated endpoint that classifies
@@ -1606,7 +1641,7 @@ async function searchRestaurantCategory(signal) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
   if (data.provider) console.log(`[Restaurant Deals] answered by: ${data.provider}`);
-  return data.results || [];
+  return cleanResults(data.results || []);
 }
 
 // Builds one combined plain-text prompt covering every tab's search, meant

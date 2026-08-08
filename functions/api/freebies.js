@@ -373,7 +373,13 @@ export async function onRequestPost({ request, env }) {
 
   if (!results.length) return json({ results: [], provider });
 
-  results = filterAndSortByFreshness(results, CATEGORY_MAX_AGE_DAYS[category] ?? 30);
+  // NOTE: must NOT use `??` here — CATEGORY_MAX_AGE_DAYS.community is
+  // intentionally `null` (skip the freshness filter), and `??` treats
+  // null as nullish too, so `null ?? 30` silently became 30. That capped
+  // evergreen community resources (food pantries, fridges, closets) at a
+  // 30-day window they were never supposed to have.
+  const maxAge = (category in CATEGORY_MAX_AGE_DAYS) ? CATEGORY_MAX_AGE_DAYS[category] : 30;
+  results = filterAndSortByFreshness(results, maxAge);
   if (!results.length) return json({ results: [], provider, note: "All results were too old." });
 
   // Float known-good sources to the top of what's left, freshness order
