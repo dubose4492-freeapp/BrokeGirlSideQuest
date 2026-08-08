@@ -232,7 +232,14 @@ function isExpired(expiryText) {
 // only actually applies when topic="news" — without it, "days" is silently
 // ignored, which is why old posts (e.g. a July 2nd listing) were slipping
 // through even with days:7 set.
-const MAX_RESULT_AGE_DAYS = 5;
+//
+// Kept EQUAL to RESTAURANT_SEARCH_OPTS.days below (7), not tighter than
+// it — this used to be hardcoded to 5, which meant even a provider that DID
+// correctly honor the 7-day window (Serper/DuckDuckGo's week bucket) still
+// had its day-6/day-7 results thrown away here anyway, needlessly shrinking
+// the pool below what was actually asked for. If you change the `days`
+// value in RESTAURANT_SEARCH_OPTS further down, update this to match.
+const MAX_RESULT_AGE_DAYS = 7;
 
 function isStale(dateVal, maxDays) {
   if (!dateVal) return false; // no date signal at all — can't verify age, so don't punish it
@@ -532,7 +539,17 @@ export async function onRequestPost({ request, env }) {
   // them. The actual qualifying rules (free / BOGO / <= $MAX_QUALIFYING_PURCHASE
   // minimum purchase) are already enforced downstream by the classifier,
   // so the query itself just needs to point search at the right topic.
-  const query = `free food deals BOGO restaurants fast food near ${location} within ${radius} miles this week`;
+  // Named a representative sample of chains directly (mixing big national
+  // names with regional ones like Whataburger/Bojangles/Zaxby's/Culver's)
+  // rather than just "restaurants fast food" — generic phrasing mostly
+  // surfaces big national roundup-blog posts ("10 Best Fast Food Deals
+  // This Week"), which skew toward McDonald's/Taco Bell/Wendy's and often
+  // never mention regional-only chains at all, even when those chains have
+  // a real, current, national promotion running. Naming them increases
+  // keyword overlap with a chain's own promo page or a smaller local
+  // write-up that a generic query wouldn't match as well. This doesn't add
+  // a search call — it's the same one query, just phrased to catch more.
+  const query = `free food deals BOGO this week at McDonald's, Chick-fil-A, Wendy's, Taco Bell, Whataburger, Bojangles, Culver's, Sonic, Zaxby's, Raising Cane's, Popeyes, Chipotle, and other restaurants/fast food near ${location} within ${radius} miles`;
 
   let results, provider;
   try {
