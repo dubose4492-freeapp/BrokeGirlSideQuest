@@ -704,7 +704,7 @@ const CATEGORIES = {
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc, r) =>
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
-    `free samples by mail 2026 baby beauty coffee pet seeds` },
+    `free samples by mail ${new Date().getFullYear()} no purchase necessary` },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped
   // by renderList()/runFullScan()'s category loops (both filter on
@@ -1737,7 +1737,9 @@ function buildAiPrompt() {
     if (key === "grocery") {
       lines.push(`Current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
     } else if (key === "restaurant") {
-      lines.push(`Free food / BOGO deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week.`);
+      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count.`);
+    } else if (key === "community") {
+      lines.push(`${cat.query(state.zip, state.radius)}. These are ongoing resources, not time-limited deals — don't skip one just because the page describing it looks old; only skip it if it explicitly says closed or discontinued.`);
     } else {
       lines.push(cat.query(state.zip, state.radius));
     }
