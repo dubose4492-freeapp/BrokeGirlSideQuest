@@ -22,7 +22,7 @@ import { searchWithFallback } from "../_shared/search-providers.js";
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
 // classification path instead of falling straight to the regex fallback).
 // Shared with restaurant-deals.js and grocery-price.js.
-import { chatWithFallback, anyLLMConfigured } from "../_shared/llm-providers.js";
+import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -261,7 +261,7 @@ const CATEGORY_HINTS = {
 // object per snippet, so a roundup post naming several companies/orgs
 // yields one qualifying offer object per company/org instead of collapsing
 // the whole post into a single card.
-async function llmClassify(env, results, category) {
+async function llmClassify(env, results, category, { ensemble = false } = {}) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
@@ -285,12 +285,40 @@ If a snippet is a roundup mentioning several companies/orgs, include one object 
 Snippets:
 ${snippetText}`;
 
+  // Ensemble mode (used when the search step fell back to DuckDuckGo's
+  // thinner snippets): run every configured model in parallel and only
+  // keep an offer that at least 2 of them independently extracted — a
+  // single model misreading a short, low-context snippet gets caught
+  // when nothing else corroborates it.
+  if (ensemble) {
+    let chatResults;
+    try {
+      chatResults = await chatWithEnsemble(env, prompt, { temperature: 0, maxTokens: 2000 });
+    } catch (err) {
+      throw new Error(`LLM classification failed: ${err.message}`);
+    }
+    const parsedLists = chatResults.map(r => parseClassifyResponse(r.text, results, category)).filter(Boolean);
+    if (!parsedLists.length) return null;
+    if (parsedLists.length === 1) return parsedLists[0]; // only one model actually succeeded — nothing to corroborate against, trust it alone same as non-ensemble mode
+    console.log(`[freebies] ensemble: cross-checking ${parsedLists.length} model outputs for ${category}`);
+    return mergeCorroborated(parsedLists);
+  }
+
   let text;
   try {
     ({ text } = await chatWithFallback(env, prompt, { temperature: 0, maxTokens: 2000 }));
   } catch (err) {
     throw new Error(`LLM classification failed: ${err.message}`);
   }
+  return parseClassifyResponse(text, results, category);
+}
+
+// Parses one model's raw JSON response into the same item shape used
+// everywhere else in this file. Pulled out of llmClassify so ensemble mode
+// can run it against several models' responses independently, then compare
+// the results — a parse failure from one model just drops that model's
+// vote rather than failing classification entirely.
+function parseClassifyResponse(text, results, category) {
   const cleaned = text.replace(/^```json\s*|```$/g, "");
   let parsed;
   try { parsed = JSON.parse(cleaned); } catch { return null; }
@@ -320,6 +348,28 @@ ${snippetText}`;
     });
   }
   return items;
+}
+
+// Keeps an extracted offer only if at least 2 independently-run models both
+// found it (matched on source URL + normalized org name) — corroboration on
+// thin/ambiguous DuckDuckGo snippets is worth more than trusting any single
+// model's read. Field VALUES (expires, requirementType, etc.) are taken
+// from whichever model reported the offer first; only the offer's
+// EXISTENCE is what's actually being cross-checked here.
+function mergeCorroborated(parsedLists) {
+  const byKey = new Map();
+  for (const list of parsedLists) {
+    const seenInThisList = new Set(); // a model repeating its own item shouldn't inflate its corroboration count
+    for (const item of list) {
+      const key = `${item.url}|${(item.orgName || item.title || "").toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      if (seenInThisList.has(key)) continue;
+      seenInThisList.add(key);
+      const entry = byKey.get(key);
+      if (entry) entry.count++;
+      else byKey.set(key, { item, count: 1 });
+    }
+  }
+  return [...byKey.values()].filter(e => e.count >= 2).map(e => e.item);
 }
 
 // Resolves the org's real homepage — separate from whatever blog/article
@@ -373,7 +423,13 @@ export async function onRequestPost({ request, env }) {
 
   if (!results.length) return json({ results: [], provider });
 
-  results = filterAndSortByFreshness(results, CATEGORY_MAX_AGE_DAYS[category] ?? 30);
+  // NOTE: must NOT use `??` here — CATEGORY_MAX_AGE_DAYS.community is
+  // intentionally `null` (skip the freshness filter), and `??` treats
+  // null as nullish too, so `null ?? 30` silently became 30. That capped
+  // evergreen community resources (food pantries, fridges, closets) at a
+  // 30-day window they were never supposed to have.
+  const maxAge = (category in CATEGORY_MAX_AGE_DAYS) ? CATEGORY_MAX_AGE_DAYS[category] : 30;
+  results = filterAndSortByFreshness(results, maxAge);
   if (!results.length) return json({ results: [], provider, note: "All results were too old." });
 
   // Float known-good sources to the top of what's left, freshness order
@@ -381,9 +437,20 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
+  // Cross-check with multiple models whenever search fell back off the
+  // primary tier (Tavily) — Serper and Exa are decent providers, but
+  // they're only reached because Tavily's quota is used up, and Serper's
+  // Google-snippet text / Exa's truncated page text both give the
+  // classifier less to work with than Tavily's full raw content. DuckDuckGo
+  // (the true last resort) is the thinnest of all. Any of the three is
+  // "not the tier we designed the prompt against," so any of the three
+  // gets the same corroboration treatment rather than reserving it for
+  // DuckDuckGo alone.
+  const searchDegraded = provider !== "tavily";
+  const useEnsemble = searchDegraded && multipleLLMsConfigured(env);
   if (anyLLMConfigured(env)) {
     try {
-      classified = await llmClassify(env, results, category);
+      classified = await llmClassify(env, results, category, { ensemble: useEnsemble });
     } catch (err) {
       // fall through to regex below
     }
@@ -401,7 +468,7 @@ export async function onRequestPost({ request, env }) {
     return item;
   }));
 
-  return json({ results: finalResults, usedLLM: anyLLMConfigured(env), provider });
+  return json({ results: finalResults, usedLLM: anyLLMConfigured(env), usedEnsemble: useEnsemble, provider });
 }
 
 function json(obj, status = 200) {

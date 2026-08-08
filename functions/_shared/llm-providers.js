@@ -69,12 +69,20 @@ export async function openrouterChat(env, prompt, options = {}) {
 }
 
 export async function groqChat(env, prompt, options = {}) {
-  const model = env.GROQ_MODEL || "llama-3.3-70b-versatile";
+  // Groq deprecated llama-3.3-70b-versatile (announced June 17, 2026,
+  // shuts down August 16, 2026) in favor of openai/gpt-oss-120b or
+  // qwen/qwen3.6-27b. Using gpt-oss-120b as the new default so this
+  // doesn't go dark right after the shutdown date.
+  const model = env.GROQ_MODEL || "openai/gpt-oss-120b";
   return openaiCompatibleChat("https://api.groq.com/openai/v1/chat/completions", env.GROQ_API_KEY, model, prompt, options, "groq");
 }
 
 export async function cerebrasChat(env, prompt, options = {}) {
-  const model = env.CEREBRAS_MODEL || "llama3.1-70b";
+  // llama3.1-70b was deprecated in favor of llama-3.3-70b, which Cerebras
+  // has SINCE also deprecated (in favor of gpt-oss-120b) — so this now
+  // points straight at the current recommended model instead of a model
+  // that's already been retired twice over.
+  const model = env.CEREBRAS_MODEL || "gpt-oss-120b";
   return openaiCompatibleChat("https://api.cerebras.ai/v1/chat/completions", env.CEREBRAS_API_KEY, model, prompt, options, "cerebras");
 }
 
@@ -99,7 +107,12 @@ export async function huggingfaceChat(env, prompt, options = {}) {
 // header), and token/temperature limits live under generationConfig.
 export async function geminiChat(env, prompt, options = {}) {
   const { temperature = DEFAULT_TEMPERATURE, maxTokens = DEFAULT_MAX_TOKENS } = options;
-  const model = env.GOOGLE_AI_MODEL || "gemini-1.5-flash";
+  // gemini-1.5-flash is fully shut down (404s on every request) — all
+  // Gemini 1.0/1.5 models were retired. gemini-3.5-flash is GA with no
+  // announced shutdown date as of this writing; gemini-2.5-flash also
+  // still works today but is already scheduled to retire Oct 16, 2026,
+  // so it's not a great long-lived default.
+  const model = env.GOOGLE_AI_MODEL || "gemini-3.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_AI_API_KEY}`;
   const res = await fetch(url, {
     method: "POST",
@@ -166,6 +179,14 @@ export function anyLLMConfigured(env) {
   return PROVIDERS.some(p => env[p.key]);
 }
 
+// True if 2+ LLM providers are configured. Ensembling (chatWithEnsemble
+// below) only buys anything when there's a second model to cross-check
+// against — with just one key configured it's pure wasted cost, so
+// callers should check this before opting into ensemble mode.
+export function multipleLLMsConfigured(env) {
+  return PROVIDERS.filter(p => env[p.key]).length >= 2;
+}
+
 // Walks the provider list in order, skipping any whose key isn't set in
 // env, and returns { text, provider } from the first one that succeeds.
 // Mirrors searchWithFallback()'s shape/behavior in search-providers.js —
@@ -187,4 +208,32 @@ export async function chatWithFallback(env, prompt, options = {}) {
     }
   }
   throw new Error(`All LLM providers failed — ${failures.join(" | ")}`);
+}
+
+// Runs EVERY configured provider IN PARALLEL and returns every successful
+// { text, provider } result (not just the first, unlike chatWithFallback).
+// Deliberately NOT the default path — it multiplies LLM API calls by
+// however many providers are configured, so callers should only reach for
+// this in specific situations where that extra cost buys real accuracy
+// back: e.g. when the web-search step fell back to DuckDuckGo's thinner
+// snippets, cross-checking several models' extractions against each other
+// catches a single model's misreads/hallucinations on ambiguous text that
+// chatWithFallback's "first success wins" never would.
+export async function chatWithEnsemble(env, prompt, options = {}) {
+  const configured = PROVIDERS.filter(p => env[p.key]);
+  if (!configured.length) {
+    throw new Error("No LLM provider configured (checked OPENROUTER_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GOOGLE_AI_API_KEY, HUGGINGFACE_API_KEY, COHERE_API_KEY).");
+  }
+  const settled = await Promise.allSettled(configured.map(p => p.fn(env, prompt, options)));
+  const results = [];
+  settled.forEach((s, i) => {
+    if (s.status === "fulfilled") {
+      console.log(`[llm] ${configured[i].name} OK (ensemble)`);
+      results.push(s.value);
+    } else {
+      console.warn(`[llm] ${configured[i].name} FAILED (ensemble) — ${s.reason.message}`);
+    }
+  });
+  if (!results.length) throw new Error("All LLM providers failed in ensemble mode.");
+  return results;
 }

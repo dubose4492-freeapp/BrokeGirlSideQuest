@@ -188,6 +188,9 @@
   .item-price.paid { color: var(--ink); background: var(--pink-soft); }
   .cat-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun-soft); color: #5c4400; white-space: nowrap; }
   .trusted-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: #e6f7ec; color: #14532d; white-space: nowrap; display: inline-block; margin-top: 4px; }
+  .provider-note { font-size: 12.5px; font-weight: 700; color: #4a3d68; background: var(--lav-soft); border: 2px solid var(--ink); padding: 8px 12px; margin-bottom: 12px; }
+  .provider-note.secondary { background: #fff3d6; color: #6b4e00; }
+  .provider-note.backup { background: var(--sun-soft); color: #5c4400; }
   .req-badge { font-size: 13px; font-weight: 700; color: #4a3d68; }
   .item-meta { font-size: 12px; color: #4a3d68; display: flex; gap: 10px; flex-wrap: wrap; font-weight: 700; }
   .item-meta a { color: var(--lav); font-weight: 800; text-decoration: underline; }
@@ -770,10 +773,22 @@ let state = {
   scanning: false,
   scanningKey: null, // set to a category key while a single-section scan (not the full "Run Quest") is in flight
   error: null,
-  failedCategories: new Set() // which tabs failed on the last run — used to
+  failedCategories: new Set(), // which tabs failed on the last run — used to
                                // show the "this quest line failed" empty
                                // state, instead of the old brittle trick of
                                // substring-matching the error text
+  // Which search provider actually answered each category's last scan
+  // (freebies.js/restaurant-deals.js return this; grocery-price.js doesn't
+  // surface one). Surfaced in the UI so a DuckDuckGo-backed result (the
+  // no-key last resort, used whenever Tavily/Serper/Exa are all
+  // unconfigured or out of quota) is visibly flagged as lower-confidence
+  // instead of looking identical to a Tavily-backed one.
+  providers: {},
+  // Whether the last scan of each category used ensemble (multi-model
+  // cross-checked) classification — only true when search fell back to
+  // DuckDuckGo AND 2+ LLM providers were configured server-side to
+  // cross-check each other against its thinner snippets.
+  ensembleUsed: {}
 };
 // Level = number of completed scans run under the currently selected
 // character. Tracked per character (not per browser visit) and
@@ -997,6 +1012,8 @@ function renderList(key) {
       </button>`).join("")}
   </div>`;
 
+  const providerNote = providerNoteHtml(key);
+
   const failed = state.failedCategories.has(key);
   let body;
   if (filtered.length === 0) {
@@ -1007,7 +1024,45 @@ function renderList(key) {
   } else {
     body = filtered.map(itemCard).join("");
   }
-  return filterBar + `<div class="grid">${body}</div>`;
+  return filterBar + providerNote + `<div class="grid">${body}</div>`;
+}
+
+// Human-readable label + confidence styling for whichever search provider
+// answered this category's last scan. DuckDuckGo (the no-key last resort,
+// used whenever Tavily/Serper/Exa are all unconfigured or out of quota for
+// the month) gets flagged as backup/lower-confidence rather than looking
+// identical to a paid-tier result — it returns thinner page snippets, so
+// results found this way are more likely to be missing context or slightly
+// less precisely classified.
+const PROVIDER_LABELS = {
+  tavily: "Tavily", serper: "Serper", exa: "Exa", duckduckgo: "DuckDuckGo"
+};
+// tavily is the primary, cross-checked-against tier; everything else is a
+// fallback reached only because a higher tier's quota ran out — duckduckgo
+// is the true last resort (no API key, HTML scrape, thinnest results).
+const FALLBACK_TIERS = { serper: "backup", exa: "backup", duckduckgo: "last-resort" };
+function providerNoteHtml(key) {
+  const provider = state.providers[key];
+  if (!provider) return ""; // not scanned yet this session, or grocery (no provider field)
+  const label = PROVIDER_LABELS[provider] || provider;
+  const tier = FALLBACK_TIERS[provider]; // undefined for tavily
+  const ensembled = !!state.ensembleUsed[key];
+  let tierText = "";
+  let cssClass = "";
+  if (tier === "last-resort") {
+    cssClass = " backup";
+    tierText = ensembled
+      ? " (last resort) — primary search is out of quota, so results are thinner, but they were cross-checked across multiple AI models to help catch misreads before you see them."
+      : " (last resort) — primary search is out of quota, so these results are thinner and worth double-checking before you act on them.";
+  } else if (tier === "backup") {
+    cssClass = " secondary";
+    tierText = ensembled
+      ? " (backup search) — cross-checked across multiple AI models since this isn't the primary search tier."
+      : " (backup search) — Tavily is out of quota, so this ran on a backup search tier instead.";
+  }
+  return `<div class="provider-note${cssClass}">
+    🔍 Found via ${escapeHtml(label)}${tierText}
+  </div>`;
 }
 
 // Rolls up everything the HUD bar and Quest Board need in one pass:
@@ -1571,6 +1626,41 @@ async function searchGroceryCategory(signal) {
   return items;
 }
 
+// Best-effort client-side safety net: if a returned item's "expires" text
+// parses as a real date that's already in the past, drop it. Server-side
+// classification is supposed to skip expired offers already, but this
+// catches anything that slips through (e.g. a source page that wasn't
+// updated) without needing a backend change. Unparseable/relative text
+// ("while supplies last", "ends soon") is left in rather than guessed at.
+function filterExpired(results) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return results.filter(item => {
+    if (!item.expires) return true;
+    const d = new Date(item.expires);
+    if (isNaN(d.getTime())) return true; // not a parseable date — keep, don't guess
+    return d >= today;
+  });
+}
+
+// Web-search-backed categories can turn up the same real-world deal from
+// two different blog/source pages (each with its own item id), which reads
+// as a duplicate card rather than a data error. Collapse on normalized
+// title+store, keeping the first (search results are already ranked, so
+// the first hit is generally the best-attributed one).
+function dedupeResults(results) {
+  const seen = new Set();
+  return results.filter(item => {
+    const norm = `${(item.title || "").trim().toLowerCase()}|${(item.store || "").trim().toLowerCase()}`;
+    if (seen.has(norm)) return false;
+    seen.add(norm);
+    return true;
+  });
+}
+
+function cleanResults(results) {
+  return dedupeResults(filterExpired(results));
+}
+
 // Every other tab (clothing, toys, accessories, events, community, mail)
 // goes through the same open-web-search + classify + resolve-a-real-claim-
 // link pipeline as grocery/restaurant, via /functions/api/freebies.js. The
@@ -1584,12 +1674,12 @@ async function searchFreebiesCategory(key, signal) {
     cache: "no-store",
     signal,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius })
+    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius, timeRange: cat.timeRange || null })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `${cat.label} search failed (${response.status}).`);
-  if (data.provider) console.log(`[${cat.label}] answered by: ${data.provider}`);
-  return data.results || [];
+  if (data.provider) { console.log(`[${cat.label}] answered by: ${data.provider}`); state.providers[key] = data.provider; state.ensembleUsed[key] = !!data.usedEnsemble; }
+  return cleanResults(data.results || []);
 }
 
 // Restaurant deals now go through a dedicated endpoint that classifies
@@ -1605,8 +1695,8 @@ async function searchRestaurantCategory(signal) {
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
-  if (data.provider) console.log(`[Restaurant Deals] answered by: ${data.provider}`);
-  return data.results || [];
+  if (data.provider) { console.log(`[Restaurant Deals] answered by: ${data.provider}`); state.providers.restaurant = data.provider; state.ensembleUsed.restaurant = !!data.usedEnsemble; }
+  return cleanResults(data.results || []);
 }
 
 // Builds one combined plain-text prompt covering every tab's search, meant
