@@ -1035,7 +1035,7 @@ function renderList(key) {
 // results found this way are more likely to be missing context or slightly
 // less precisely classified.
 const PROVIDER_LABELS = {
-  tavily: "Tavily", serper: "Serper", exa: "Exa", duckduckgo: "DuckDuckGo"
+  tavily: "Tavily", serper: "Serper", exa: "Exa", duckduckgo: "DuckDuckGo", kroger: "Kroger's official API"
 };
 // tavily is the primary, cross-checked-against tier; everything else is a
 // fallback reached only because a higher tier's quota ran out — duckduckgo
@@ -1595,6 +1595,7 @@ async function searchGroceryItem(itemName, signal) {
   const response = await fetch(`/api/grocery-price?${params}`, { signal });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Grocery lookup failed (${response.status}) for ${itemName}.`);
+  recordGroceryProvider(data.provider, data.usedEnsemble);
   return {
     id: "grocery-" + itemName.replace(/\s+/g, "-").toLowerCase(),
     title: itemName,
@@ -1612,8 +1613,26 @@ async function searchGroceryItem(itemName, signal) {
     category: "grocery"
   };
 }
+// Grocery scans 11 items individually (see GROCERY_ITEMS), each with its
+// own /api/grocery-price call that can independently land on a different
+// search tier. Rather than showing 11 separate badges, track the WORST
+// tier seen across the whole scan (tavily best, duckduckgo worst; kroger —
+// no search involved at all — doesn't count toward this) so one badge for
+// the grocery tab still means something: "at least one item had to fall
+// back this far."
+const PROVIDER_RANK = { tavily: 0, serper: 1, exa: 1, duckduckgo: 2 };
+function recordGroceryProvider(provider, usedEnsemble) {
+  if (provider && provider in PROVIDER_RANK) {
+    const currentRank = PROVIDER_RANK[state.providers.grocery] ?? -1;
+    if (PROVIDER_RANK[provider] > currentRank) state.providers.grocery = provider;
+  }
+  if (usedEnsemble) state.ensembleUsed.grocery = true;
+}
+
 async function searchGroceryCategory(signal) {
   const items = [];
+  delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
+  state.ensembleUsed.grocery = false;
   for (const itemName of GROCERY_ITEMS) {
     if (state.stopRequested) break;
     try {

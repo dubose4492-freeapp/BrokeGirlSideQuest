@@ -23,7 +23,7 @@ import { searchWithFallback as sharedSearchWithFallback } from "../_shared/searc
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
 // extraction path instead of falling straight to the regex fallback).
 // Shared with freebies.js and restaurant-deals.js.
-import { chatWithFallback, anyLLMConfigured } from "../_shared/llm-providers.js";
+import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
 let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
@@ -139,7 +139,7 @@ function findChainName(text) {
   return null;
 }
 
-async function extractLowestPriceLLM(env, item, results) {
+async function extractLowestPriceLLM(env, item, results, { ensemble = false } = {}) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
     .join("\n\n");
@@ -157,12 +157,37 @@ or, if none of the snippets contain a specific usable price for this item:
 Snippets:
 ${snippetText}`;
 
+  // Ensemble mode (used when this search fell back off the primary Tavily
+  // tier): run every configured model in parallel and only trust a price
+  // if 2+ of them independently land on the SAME source url with a
+  // matching number — a single model's number pulled from thin/ambiguous
+  // snippet text isn't reliable enough to quote as a real price on its own.
+  if (ensemble) {
+    let chatResults;
+    try {
+      chatResults = await chatWithEnsemble(env, prompt, { temperature: 0, maxTokens: 200 });
+    } catch (err) {
+      throw new Error(`LLM price extraction failed: ${err.message}`);
+    }
+    const parsedList = chatResults.map(r => parsePriceResponse(r.text, results)).filter(Boolean);
+    if (!parsedList.length) return null;
+    if (parsedList.length === 1) return parsedList[0]; // only one model actually succeeded — nothing to corroborate against
+    return corroboratePrice(parsedList);
+  }
+
   let text;
   try {
     ({ text } = await chatWithFallback(env, prompt, { temperature: 0, maxTokens: 200 }));
   } catch (err) {
     throw new Error(`LLM price extraction failed: ${err.message}`);
   }
+  return parsePriceResponse(text, results);
+}
+
+// Parses one model's raw JSON response into { price, store, chain, url }.
+// Pulled out of extractLowestPriceLLM so ensemble mode can run it against
+// several models' responses independently before comparing them.
+function parsePriceResponse(text, results) {
   const cleaned = text.replace(/^```json\s*|```$/g, "");
   let parsed;
   try { parsed = JSON.parse(cleaned); } catch { return null; }
@@ -181,6 +206,23 @@ ${snippetText}`;
   return { price: parsed.price, store, chain, url: raw.url };
 }
 
+// Only trust a price when at least 2 independently-run models extracted the
+// SAME source url with a matching price (within a cent, to allow for
+// formatting/rounding). If nothing corroborates, return null rather than
+// arbitrarily picking one model's number — the caller (extractBest) falls
+// through to the deterministic regex extractor in that case, same as if
+// the LLM path had failed outright.
+function corroboratePrice(parsedList) {
+  for (let i = 0; i < parsedList.length; i++) {
+    for (let j = i + 1; j < parsedList.length; j++) {
+      if (parsedList[i].url === parsedList[j].url && Math.abs(parsedList[i].price - parsedList[j].price) < 0.01) {
+        return parsedList[i];
+      }
+    }
+  }
+  return null;
+}
+
 // ---------- Search providers ----------
 // This file's call sites expect a plain results array back (not
 // { results, provider }) and already wrap every call in their own
@@ -191,8 +233,7 @@ ${snippetText}`;
 // skipping the web-search tier the way the old local version did.
 const GROCERY_SEARCH_OPTS = { maxResults: 8 };
 async function searchWithFallback(env, query, domains) {
-  const { results } = await sharedSearchWithFallback(env, query, domains, GROCERY_SEARCH_OPTS);
-  return results;
+  return sharedSearchWithFallback(env, query, domains, GROCERY_SEARCH_OPTS); // { results, provider }
 }
 
 // Two-tier search: try the curated official-chain domains first (so the
@@ -206,11 +247,16 @@ async function searchWithFallback(env, query, domains) {
 // meant tier 2 almost never ran, since tier 1 nearly always returns
 // *something* — it just silently defaulted to Kroger whenever none of
 // those official pages had an extractable price.
-async function extractBest(env, item, results) {
+//
+// useEnsemble: true when the search that produced `results` fell back off
+// the primary Tavily tier — see matching comment in freebies.js for why
+// Serper/Exa get the same cross-check treatment as DuckDuckGo, not just
+// the true last resort.
+async function extractBest(env, item, results, useEnsemble) {
   if (!results.length) return null;
   if (anyLLMConfigured(env)) {
     try {
-      const llmBest = await extractLowestPriceLLM(env, item, results);
+      const llmBest = await extractLowestPriceLLM(env, item, results, { ensemble: useEnsemble });
       if (llmBest) return llmBest;
     } catch (err) {
       // fall through to regex
@@ -227,7 +273,7 @@ async function findOfficialProductPage(env, item, chain) {
   const domain = GROCERY_CHAIN_DOMAINS[chain];
   if (!domain) return null;
   try {
-    const results = await searchWithFallback(env, `${item} site:${domain}`, [domain]);
+    const { results } = await searchWithFallback(env, `${item} site:${domain}`, [domain]);
     return results.length ? results[0].url : null;
   } catch (err) {
     return null;
@@ -239,24 +285,30 @@ async function getWebSearchPrice(env, item, location, radius) {
   const query = `${item} price at ${chainList} grocery store near ${location} within ${radius} miles`;
 
   // Tier 1 — official chain domains only.
-  let officialResults = [];
+  let officialResults = [], officialProvider = null;
   try {
-    officialResults = await searchWithFallback(env, query, GROCERY_DOMAIN_LIST);
+    ({ results: officialResults, provider: officialProvider } = await searchWithFallback(env, query, GROCERY_DOMAIN_LIST));
   } catch (err) {
     officialResults = []; // fall through to tier 2 below
   }
-  let best = await extractBest(env, item, officialResults);
+  const tier1Ensemble = officialProvider && officialProvider !== "tavily" && multipleLLMsConfigured(env);
+  let best = await extractBest(env, item, officialResults, tier1Ensemble);
+  let usedProvider = best ? officialProvider : null;
+  let usedEnsemble = best ? tier1Ensemble : false;
 
   // Tier 2 — the actual open web, tried whenever tier 1 didn't produce a
   // usable price (empty results OR results with no extractable price).
   if (!best) {
-    let openResults = [];
+    let openResults = [], openProvider = null;
     try {
-      openResults = await searchWithFallback(env, query, null);
+      ({ results: openResults, provider: openProvider } = await searchWithFallback(env, query, null));
     } catch (err) {
       openResults = [];
     }
-    best = await extractBest(env, item, openResults);
+    const tier2Ensemble = openProvider && openProvider !== "tavily" && multipleLLMsConfigured(env);
+    best = await extractBest(env, item, openResults, tier2Ensemble);
+    usedProvider = best ? openProvider : null;
+    usedEnsemble = best ? tier2Ensemble : false;
   }
 
   if (!best) return null;
@@ -265,7 +317,7 @@ async function getWebSearchPrice(env, item, location, radius) {
   if (domainChain) {
     // Belt-and-suspenders: always label with the domain we're actually
     // linking to, so "Claim" and the card's store name can never disagree.
-    return { price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null };
+    return { price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null, provider: usedProvider, usedEnsemble };
   }
 
   // Price came from a third-party page (blog, deal tracker, etc.) — try to
@@ -276,7 +328,9 @@ async function getWebSearchPrice(env, item, location, radius) {
     store: best.store,
     url: productUrl || best.url, // primary link — prefer the real store page when we found one
     productUrl,
-    blogUrl: best.url
+    blogUrl: best.url,
+    provider: usedProvider,
+    usedEnsemble
   };
 }
 
@@ -311,7 +365,14 @@ export async function onRequestGet({ request, env }) {
   if (kroger && web) winner = web.price < kroger.price ? web : kroger;
   else winner = kroger || web || null;
 
-  return json(winner || { price: null, store: null, url: null, productUrl: null, blogUrl: null });
+  // Kroger's price comes from their own official API, not a web search, so
+  // it has no search-provider tier to report — mark it distinctly ("kroger")
+  // rather than leaving `provider` undefined, so the client can tell "no
+  // search was even needed, this is Kroger's own number" apart from "web
+  // search ran and happened to land on Tavily."
+  if (winner === kroger && kroger) winner = { ...kroger, provider: "kroger", usedEnsemble: false };
+
+  return json(winner || { price: null, store: null, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
 }
 
 function json(obj, status = 200) {
