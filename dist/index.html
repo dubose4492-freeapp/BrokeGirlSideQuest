@@ -1622,7 +1622,7 @@ function buildAiPrompt() {
   ];
 
   for (const key of Object.keys(CATEGORIES)) {
-    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about") continue;
+    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about") continue;
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
