@@ -13,7 +13,7 @@
 //
 // Client never sees any search/LLM keys — same trust boundary as every
 // other endpoint here.
-import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
+import { searchWithFallback as sharedSearchWithFallback, searchAllSources as sharedSearchAllSources } from "../_shared/search-providers.js";
 import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 
@@ -219,6 +219,15 @@ const GAS_SEARCH_OPTS = { maxResults: 8 };
 async function searchWithFallback(env, query, domains) {
   return sharedSearchWithFallback(env, query, domains, GAS_SEARCH_OPTS); // { results, provider }
 }
+// searchAllSources: fires every configured engine (Tavily, Gemini grounded
+// search, Serper, Exa, OpenAI/ChatGPT web search) plus DuckDuckGo IN
+// PARALLEL rather than stopping at the first success — used for both tiers
+// below. Gas is a single lookup per scan (unlike grocery-price.js's ~11
+// items), so widening both tiers here doesn't multiply cost the way it
+// would there.
+async function searchAllSources(env, query, domains) {
+  return sharedSearchAllSources(env, query, domains, GAS_SEARCH_OPTS);
+}
 
 async function extractBest(env, results, useEnsemble, location) {
   if (!results.length) return null;
@@ -257,10 +266,11 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   // are usually indexed by ZIP, not by city name alone.
   const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
 
-  // Tier 1 — known gas station chains + GasBuddy/AAA only.
-  let officialResults = [], officialProvider = null;
+  // Tier 1 — known gas station chains + GasBuddy/AAA only. Runs every
+  // configured engine in parallel (see searchAllSources above).
+  let officialResults = [], officialProviders = [];
   try {
-    ({ results: officialResults, provider: officialProvider } = await searchWithFallback(env, query, GAS_DOMAIN_LIST));
+    ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
   } catch (err) {
     officialResults = [];
   }
@@ -269,25 +279,25 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   // price can be extracted from it, or "cheapest near you" can quietly
   // resolve to "cheapest anywhere in the country."
   officialResults = filterByLocation(officialResults, location, zip);
-  const tier1Ensemble = officialProvider && officialProvider !== "tavily" && multipleLLMsConfigured(env);
+  const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
   let best = await extractBest(env, officialResults, tier1Ensemble, location);
-  let usedProvider = best ? officialProvider : null;
+  let usedProvider = best ? officialProviders.join("+") : null;
   let usedEnsemble = best ? tier1Ensemble : false;
 
   // Tier 2 — open web fallback, same reasoning as grocery-price.js: tier 1
   // domains often render prices via JS, so a domain-restricted crawl can
   // return real pages with zero extractable price text.
   if (!best) {
-    let openResults = [], openProvider = null;
+    let openResults = [], openProviders = [];
     try {
-      ({ results: openResults, provider: openProvider } = await searchWithFallback(env, query, null));
+      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, null));
     } catch (err) {
       openResults = [];
     }
     openResults = filterByLocation(openResults, location, zip);
-    const tier2Ensemble = openProvider && openProvider !== "tavily" && multipleLLMsConfigured(env);
+    const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, openResults, tier2Ensemble, location);
-    usedProvider = best ? openProvider : null;
+    usedProvider = best ? openProviders.join("+") : null;
     usedEnsemble = best ? tier2Ensemble : false;
   }
 

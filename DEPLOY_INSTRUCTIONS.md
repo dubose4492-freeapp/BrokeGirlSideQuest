@@ -48,25 +48,56 @@ noticeably more of your search quota than before — and potentially more
 still now that a single roundup post can produce several offers instead
 of one. Worth keeping an eye on if you're on a free tier.
 
-### Search now has a 4-deep fallback chain
+### Search: every engine, every scan
 All four search-using endpoints (`freebies.js`, `restaurant-deals.js`,
-`grocery-price.js`, `gas-price.js`) now share one provider chain:
+`grocery-price.js`, `gas-price.js`) share one provider layer in
+`functions/_shared/search-providers.js`, with six possible engines:
 
 1. **Tavily** (`TAVILY_API_KEY`)
-2. **Serper.dev** (`SERPER_API_KEY`) — 2,500 queries, one-time free tier
-3. **Exa** (`EXA_API_KEY`) — $10 credit, one-time free tier
-4. **DuckDuckGo** — no key, no signup, effectively unlimited
+2. **Gemini** (`GOOGLE_AI_API_KEY`) — Google Search grounding tool, 5,000
+   free grounded prompts/month
+3. **Serper.dev** (`SERPER_API_KEY`) — 2,500 queries, one-time free tier
+4. **Exa** (`EXA_API_KEY`) — $10 credit, one-time free tier
+5. **OpenAI / ChatGPT** (`OPENAI_API_KEY`) — ChatGPT's web_search tool via
+   the Responses API. This is a real OpenAI *platform* API key from
+   platform.openai.com with billing/credit attached — not a ChatGPT.com
+   login. No free tier, billed per call from the first request.
+6. **DuckDuckGo** — no key, no signup, effectively unlimited
 
-Brave was left out of the chain on purpose. Each remaining provider is
-only tried if every provider before it is either unconfigured (no secret
-set) or actually fails (errors, hits its cap, etc.) — this isn't
-round-robin, it always prefers Tavily first when available. Steps 1–3
-need a secret each; step 4 needs nothing and always runs as the final
-safety net, so **search now works even on a brand-new deploy with zero
-search secrets configured** — it just uses DuckDuckGo's HTML results
-until you add better-quality keys. That chain lives in one shared file,
-`functions/_shared/search-providers.js`, imported by all three endpoints
-so there's only one place to tune it.
+The **main per-scan result list** on every one of the four endpoints calls
+`searchAllSources()` — this fires every one of the engines above that's
+configured, IN PARALLEL, on every single scan, instead of stopping at the
+first one that answers. Results are merged and de-duplicated by URL; a
+listing that shows up in more than one engine's results gets tagged with
+every engine that found it. So "run a scan" now means: query Tavily,
+Gemini's grounded search, Serper, Exa, OpenAI's web search, and DuckDuckGo
+all at once, every time, for the freshest possible combined picture —
+matching Gemini AND ChatGPT independently re-searching from scratch on
+every button-press rather than reusing anything cached.
+
+The classification/"sorter AI" step right after search does the same
+thing on the model side: `chatWithEnsemble()` in `llm-providers.js` runs
+every configured LLM provider in parallel too, so with both
+`GOOGLE_AI_API_KEY` and `OPENAI_API_KEY` set, Gemini and ChatGPT each
+independently classify/sort the same raw search results and get
+cross-checked against each other before anything reaches the app.
+
+Narrower, single-answer lookups (e.g. "find this one company's official
+site" so the Claim button points somewhere real) still use the cheaper
+`searchWithFallback()` — stop at the first engine that answers — since
+ensembling six engines for a lookup with only one right answer doesn't buy
+anything extra.
+
+**Cost note:** `searchAllSources()` spends every configured engine's quota
+on every scan instead of only the cheapest one that works, so it costs
+noticeably more than the old stop-at-first-success chain — especially on
+`grocery-price.js`, which runs this once per grocery item (~11 items) per
+scan. OpenAI has no free tier at all, so once `OPENAI_API_KEY` is set,
+every scan spends real money on it immediately. Worth watching your
+provider dashboards once this is live, particularly if traffic grows.
+Leaving any of the five keyed engines unset just skips that engine —
+nothing breaks, `searchAllSources()` still works with as few as zero keys
+configured (DuckDuckGo alone).
 
 One caveat: DuckDuckGo has no official free web-search API, so that last
 step works by fetching and parsing DDG's plain HTML results page. It's
@@ -189,12 +220,26 @@ wrangler login
    You can skip the two KROGER_* ones if you're not using that feature yet;
    the grocery tab will just fall back to search-based pricing until they're set.
 
-   Optional — additional search fallbacks, only needed once Tavily
-   quota is a problem (DuckDuckGo already works with none of these set):
+   Optional — additional search engines. DuckDuckGo already works with
+   none of these set, and every one you add here doesn't just backstop
+   Tavily anymore — it's an ADDITIONAL engine `searchAllSources()` queries
+   in parallel on every scan (see "Search: every engine, every scan"
+   above), so each key you add increases both result quality/freshness
+   AND per-scan cost:
    ```bash
    npx wrangler pages secret put SERPER_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put EXA_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put GOOGLE_AI_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put OPENAI_API_KEY --project-name=brokegirlsidequest
    ```
+   `GOOGLE_AI_API_KEY` is the one key that does double duty: it powers
+   Gemini's grounded web search tier above AND lets Gemini act as a
+   classifier/"sorter AI" alongside whatever else is configured.
+   `OPENAI_API_KEY` does the same on the ChatGPT side — a real
+   platform.openai.com key with billing enabled, not a ChatGPT.com login —
+   powering both ChatGPT's web search tier and a second sorter AI. Set
+   both and every scan gets cross-checked by Gemini AND ChatGPT together,
+   on both the search side and the classification side.
 
 4. Deploy:
    ```bash

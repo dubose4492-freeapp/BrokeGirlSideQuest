@@ -18,7 +18,7 @@
 // Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
 // needed, last resort). Shared with freebies.js and restaurant-deals.js so
 // the provider chain lives in one place.
-import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
+import { searchWithFallback as sharedSearchWithFallback, searchAllSources as sharedSearchAllSources } from "../_shared/search-providers.js";
 // LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
 // extraction path instead of falling straight to the regex fallback).
@@ -238,6 +238,21 @@ const GROCERY_SEARCH_OPTS = { maxResults: 8 };
 async function searchWithFallback(env, query, domains) {
   return sharedSearchWithFallback(env, query, domains, GROCERY_SEARCH_OPTS); // { results, provider }
 }
+// searchAllSources: fires every configured engine (Tavily, Gemini grounded
+// search, Serper, Exa, OpenAI/ChatGPT web search) plus DuckDuckGo IN
+// PARALLEL rather than stopping at the first success. Used for tier 2 (the
+// open-web pass) below, where the wider net matters most — tier 1's
+// domain-restricted official-chain lookup stays on the cheaper
+// searchWithFallback since it's a narrow, single-purpose query per item,
+// same reasoning as the "find this org's official site" lookups in
+// freebies.js / restaurant-deals.js. NOTE: this runs once per grocery item
+// per scan, so turning this on for tier 2 multiplies search-provider usage
+// by however many items are on the Grocery tab (~11) each time someone
+// runs a scan — worth watching your provider quotas/billing once this is
+// live, especially OpenAI's, which has no free tier at all.
+async function searchAllSources(env, query, domains) {
+  return sharedSearchAllSources(env, query, domains, GROCERY_SEARCH_OPTS);
+}
 
 // Two-tier search: try the curated official-chain domains first (so the
 // link is the actual grocery store's page whenever possible), THEN try to
@@ -301,16 +316,21 @@ async function getWebSearchPrice(env, item, location, radius) {
 
   // Tier 2 — the actual open web, tried whenever tier 1 didn't produce a
   // usable price (empty results OR results with no extractable price).
+  // Runs every configured engine in parallel (see searchAllSources above)
+  // instead of stopping at the first that answers, so the sorter step
+  // always gets cross-checked by every configured classifier model too —
+  // no reason to gate that on "did search degrade" when it's already
+  // spending every engine's quota.
   if (!best) {
-    let openResults = [], openProvider = null;
+    let openResults = [], openProviders = [];
     try {
-      ({ results: openResults, provider: openProvider } = await searchWithFallback(env, query, null));
+      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, null));
     } catch (err) {
       openResults = [];
     }
-    const tier2Ensemble = openProvider && openProvider !== "tavily" && multipleLLMsConfigured(env);
+    const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, item, openResults, tier2Ensemble);
-    usedProvider = best ? openProvider : null;
+    usedProvider = best ? openProviders.join("+") : null;
     usedEnsemble = best ? tier2Ensemble : false;
   }
 

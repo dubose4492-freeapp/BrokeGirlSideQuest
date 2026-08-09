@@ -17,7 +17,12 @@
 // Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
 // needed, last resort). Shared with restaurant-deals.js and
 // grocery-price.js so the provider chain lives in one place.
-import { searchWithFallback } from "../_shared/search-providers.js";
+// searchAllSources: fires Tavily + Gemini grounded search + Serper + Exa +
+// OpenAI/ChatGPT web search + DuckDuckGo ALL in parallel, every scan — used
+// below for the main per-scan result list. searchWithFallback (cheaper,
+// stop-at-first-success) is still used for the narrow single-answer
+// "find this org's official site" lookup further down.
+import { searchWithFallback, searchAllSources } from "../_shared/search-providers.js";
 // LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
 // classification path instead of falling straight to the regex fallback).
@@ -435,11 +440,11 @@ export async function onRequestPost({ request, env }) {
     return json({ error: "query is invalid or too long." }, 400);
   }
 
-  let results, provider;
+  let results, providers;
   try {
-    const general = await searchWithFallback(env, query);
+    const general = await searchAllSources(env, query);
     results = general.results;
-    provider = general.provider;
+    providers = general.providers; // e.g. ["tavily","gemini","openai","duckduckgo"]
   } catch (err) {
     // Log the real, detailed reason server-side (visible via `wrangler
     // pages deployment tail`) — never forward raw provider error text
@@ -450,15 +455,18 @@ export async function onRequestPost({ request, env }) {
 
   // Best-effort extra pass scoped to the known-good freebie sites, merged
   // into the general pool — if it fails or turns up nothing, the general
-  // whole-web results still stand on their own.
+  // whole-web results still stand on their own. Also run across every
+  // engine (not just the cheap fallback chain) so a source that only one
+  // engine happens to index still gets caught.
   try {
-    const priority = await searchWithFallback(env, query, Object.keys(PRIORITY_SOURCES));
+    const priority = await searchAllSources(env, query, Object.keys(PRIORITY_SOURCES));
     const seen = new Set(results.map(r => r.url));
     for (const r of priority.results) {
       if (!seen.has(r.url)) { seen.add(r.url); results.push(r); }
     }
   } catch { /* ignore — priority pass is a bonus, not a requirement */ }
 
+  const provider = providers.join("+"); // kept in the response for debugging/visibility
   if (!results.length) return json({ results: [], provider });
 
   // NOTE: must NOT use `??` here — CATEGORY_MAX_AGE_DAYS.community is
@@ -475,17 +483,16 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
-  // Cross-check with multiple models whenever search fell back off the
-  // primary tier (Tavily) — Serper and Exa are decent providers, but
-  // they're only reached because Tavily's quota is used up, and Serper's
-  // Google-snippet text / Exa's truncated page text both give the
-  // classifier less to work with than Tavily's full raw content. DuckDuckGo
-  // (the true last resort) is the thinnest of all. Any of the three is
-  // "not the tier we designed the prompt against," so any of the three
-  // gets the same corroboration treatment rather than reserving it for
-  // DuckDuckGo alone.
-  const searchDegraded = provider !== "tavily";
-  const useEnsemble = searchDegraded && multipleLLMsConfigured(env);
+  // searchAllSources() above already queries every configured engine on
+  // every scan (Tavily, Gemini's grounded search, Serper, Exa, OpenAI's
+  // web search, DuckDuckGo) instead of stopping at the first that answers,
+  // mixing full-content and thinner-snippet results together regardless of
+  // which one "won." So the sorter step below always runs every configured
+  // classifier model (Gemini + ChatGPT + whichever others are keyed) in
+  // parallel too, rather than only when search happened to degrade off a
+  // single primary tier — every scan gets cross-checked by every available
+  // sorter AI, matching the same "run everything, every time" approach.
+  const useEnsemble = multipleLLMsConfigured(env);
   if (anyLLMConfigured(env)) {
     try {
       classified = await llmClassify(env, results, category, { ensemble: useEnsemble });

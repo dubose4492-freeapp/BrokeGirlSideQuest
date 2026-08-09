@@ -14,7 +14,13 @@
 // Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
 // needed, last resort). Shared with freebies.js and grocery-price.js so
 // the provider chain lives in one place.
-import { searchWithFallback as sharedSearchWithFallback } from "../_shared/search-providers.js";
+// searchAllSources: fires Tavily + Gemini grounded search + Serper + Exa +
+// OpenAI/ChatGPT web search + DuckDuckGo ALL in parallel, every scan — used
+// below (via the local wrapper further down) for the main per-scan result
+// list. sharedSearchWithFallback (cheaper, stop-at-first-success) still
+// backs the narrow single-answer "find this restaurant's official site"
+// lookup.
+import { searchWithFallback as sharedSearchWithFallback, searchAllSources as sharedSearchAllSources } from "../_shared/search-providers.js";
 // LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
 // classification path instead of falling straight to the regex fallback).
@@ -532,6 +538,9 @@ const RESTAURANT_SEARCH_OPTS = { maxResults: 12, days: 21 };
 async function searchWithFallback(env, query, includeDomains) {
   return sharedSearchWithFallback(env, query, includeDomains, RESTAURANT_SEARCH_OPTS);
 }
+async function searchAllSources(env, query, includeDomains) {
+  return sharedSearchAllSources(env, query, includeDomains, RESTAURANT_SEARCH_OPTS);
+}
 
 // For independent/local spots we don't have a domain mapped, spend one
 // extra search to find their real site — kept to the final, deduped list
@@ -582,11 +591,11 @@ export async function onRequestPost({ request, env }) {
   // a search call — it's the same one query, just phrased to catch more.
   const query = `free food deals BOGO this week at McDonald's, Chick-fil-A, Wendy's, Taco Bell, Whataburger, Bojangles, Culver's, Sonic, Zaxby's, Raising Cane's, Popeyes, Chipotle, and other restaurants/fast food near ${location} within ${radius} miles`;
 
-  let results, provider;
+  let results, providers;
   try {
-    const search = await searchWithFallback(env, query);
+    const search = await searchAllSources(env, query);
     results = search.results;
-    provider = search.provider;
+    providers = search.providers; // e.g. ["tavily","gemini","openai","duckduckgo"]
   } catch (err) {
     // Log the real, detailed reason server-side (visible via `wrangler
     // pages deployment tail`) — never forward raw provider error text
@@ -599,13 +608,14 @@ export async function onRequestPost({ request, env }) {
   // into the general pool — if it fails or turns up nothing, the general
   // whole-web results still stand on their own.
   try {
-    const priority = await searchWithFallback(env, query, Object.keys(PRIORITY_SOURCES));
+    const priority = await searchAllSources(env, query, Object.keys(PRIORITY_SOURCES));
     const seen = new Set(results.map(r => r.url));
     for (const r of priority.results) {
       if (!seen.has(r.url)) { seen.add(r.url); results.push(r); }
     }
   } catch { /* ignore — priority pass is a bonus, not a requirement */ }
 
+  const provider = providers.join("+"); // kept in the response for debugging/visibility
   if (!results.length) return json({ results: [], provider });
 
   results = filterAndSortByFreshness(results, MAX_RESULT_AGE_DAYS);
@@ -616,12 +626,13 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
-  // Cross-check with multiple models whenever search fell back off the
-  // primary tier (Tavily) — see matching comment in freebies.js for why
-  // Serper/Exa get the same treatment as DuckDuckGo here, not just the
-  // true last resort.
-  const searchDegraded = provider !== "tavily";
-  const useEnsemble = searchDegraded && multipleLLMsConfigured(env);
+  // searchAllSources() above already queries every configured engine on
+  // every scan instead of stopping at the first that answers — see
+  // matching comment in freebies.js. So the sorter step always runs every
+  // configured classifier model (Gemini + ChatGPT + whichever others are
+  // keyed) in parallel too, cross-checking every scan rather than only
+  // when search happened to degrade off a single primary tier.
+  const useEnsemble = multipleLLMsConfigured(env);
   if (anyLLMConfigured(env)) {
     try {
       classified = await llmClassify(env, results, { ensemble: useEnsemble });

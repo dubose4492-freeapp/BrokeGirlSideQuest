@@ -1,28 +1,43 @@
 // functions/_shared/search-providers.js
 //
-// Shared search-provider chain, tried in this order until one succeeds:
+// Shared search-provider layer. Two ways to use it:
+//
+// searchWithFallback() — cheap, sequential. Tries providers in order below,
+// stops at the first one that succeeds. Good for narrow, single-answer
+// lookups (e.g. "find this one company's official site").
+//
+// searchAllSources() — the "run every engine every time" mode. Fires every
+// CONFIGURED provider in parallel on every call (not stop-at-first-success),
+// merges and de-duplicates the results by URL, and tags each one with which
+// engine(s) surfaced it. This is what freebies.js / restaurant-deals.js /
+// grocery-price.js / gas-price.js use for the main per-scan result list, so
+// every "run quest" scan freshly queries Tavily, Gemini (both the grounded-
+// search tool AND, separately, Gemini used as a sorter/classifier over in
+// llm-providers.js), OpenAI/ChatGPT's web search tool, Serper, Exa, and
+// DuckDuckGo — every single scan, no caching, exactly like re-running the
+// same question across every engine at once. The trade-off: this spends
+// every configured provider's quota on every scan instead of only the
+// cheapest one that works, so it costs more than searchWithFallback — that
+// cost is the price of the "always freshest, always cross-checked" result
+// this app is going for.
+//
+// Providers, in the order searchWithFallback tries them (searchAllSources
+// doesn't care about order — it fires all of them together):
 //   1. Tavily      (env.TAVILY_API_KEY)
 //   2. Gemini       (env.GOOGLE_AI_API_KEY) — Google Search grounding tool.
 //                    5,000 free grounded prompts/MONTH on Gemini 3.x
-//                    (renews monthly), then $14/1,000. Placed ahead of
-//                    Serper/Exa on purpose: those two are one-time,
-//                    never-refilling free pools (2,500 total / $10 credit
-//                    total), so it's worth spending Gemini's renewing
-//                    monthly allotment first and saving the one-time pools
-//                    for when Tavily AND Gemini are both out.
+//                    (renews monthly), then $14/1,000.
 //   3. Serper.dev  (env.SERPER_API_KEY)  — 2,500 queries, one-time free tier
 //   4. Exa         (env.EXA_API_KEY)     — $10 credit, one-time free tier
-//   5. DuckDuckGo HTML scrape           — no key, no signup, unlimited
+//   5. OpenAI       (env.OPENAI_API_KEY) — ChatGPT's web_search tool via the
+//                    Responses API. Needs a real OpenAI platform API key
+//                    with billing enabled (platform.openai.com) — a
+//                    ChatGPT.com login is not usable here; this is a
+//                    server-to-server API call, not a browser session.
+//   6. DuckDuckGo HTML scrape           — no key, no signup, unlimited
 //
 // Every provider function returns the same normalized shape:
 //   [{ title, url, content, publishedDate }]
-//
-// searchWithFallback() walks the list above, skipping any provider whose
-// key isn't set in env, and returns the first one that succeeds along with
-// which provider answered (used for logging / debugging quota issues).
-// DuckDuckGo has no key requirement at all, so it's always tried last as
-// the true floor — even on a fresh deploy with zero secrets configured,
-// search still works, just without the better relevance of the paid tiers.
 //
 // `includeDomains` (optional array) scopes a search to specific sites —
 // used for the priority-source pass in freebies.js / restaurant-deals.js,
@@ -146,6 +161,70 @@ export async function geminiGroundedSearch(env, query, includeDomains, options =
     content: (segmentsByChunk[i] || [answerText]).join(" "),
     publishedDate: null
   })).filter(r => r.url);
+}
+
+// OpenAI — like Gemini above, not a traditional N-results search API. The
+// Responses API's built-in `web_search` tool lets the model search the web
+// as part of answering a prompt, then returns one synthesized answer plus
+// `annotations` of type `url_citation` on the output text — each one a
+// {url, title, start_index, end_index} pointing at the real source and
+// which stretch of the answer text came from it. Same idea as Gemini's
+// groundingChunks/groundingSupports, different field names.
+//
+// This reshapes that into the same {title, url, content, publishedDate}
+// list every other provider returns: one result per distinct cited URL,
+// with that source's `content` set to just the slice of the answer text
+// attributed to it (via start_index/end_index), falling back to the full
+// answer if a citation has no indices.
+//
+// No native includeDomains/days/maxResults knobs on the web_search tool
+// itself, so — same as the Gemini function — includeDomains/days get
+// folded into the natural-language prompt as instructions instead, and
+// maxResults just truncates the returned list after the fact.
+export async function openaiSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10, days } = options;
+  const model = env.OPENAI_MODEL || "gpt-5.4";
+
+  const constraints = [
+    includeDomains && includeDomains.length ? `Only use results from these sites: ${includeDomains.join(", ")}.` : "",
+    days ? `Only include information from roughly the last ${days} days.` : ""
+  ].filter(Boolean).join(" ");
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      input: `${query}${constraints ? " " + constraints : ""}`,
+      tools: [{ type: "web_search" }]
+    })
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`OpenAI web search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+
+  const message = (data.output || []).find(o => o.type === "message");
+  const textPart = (message?.content || []).find(c => c.type === "output_text");
+  const answerText = textPart?.text || data.output_text || "";
+  const citations = (textPart?.annotations || []).filter(a => a.type === "url_citation");
+  if (!answerText || !citations.length) return []; // ungrounded/empty answer — nothing usable to return
+
+  // Dedup by URL (a source can be cited more than once), keep first-seen
+  // order, and slice out just the text attributed to each citation.
+  const seen = new Map();
+  for (const c of citations) {
+    if (seen.has(c.url)) continue;
+    const segment = (typeof c.start_index === "number" && typeof c.end_index === "number")
+      ? answerText.slice(c.start_index, c.end_index)
+      : answerText;
+    seen.set(c.url, { title: c.title || "ChatGPT search result", url: c.url, content: segment, publishedDate: null });
+  }
+  return Array.from(seen.values()).slice(0, maxResults);
 }
 
 // Serper.dev — a Google SERP proxy. The free tier is 2,500 queries
@@ -294,7 +373,8 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
     { name: "gemini", key: env.GOOGLE_AI_API_KEY, fn: geminiGroundedSearch },
     { name: "serper", key: env.SERPER_API_KEY, fn: serperSearch },
-    { name: "exa", key: env.EXA_API_KEY, fn: exaSearch }
+    { name: "exa", key: env.EXA_API_KEY, fn: exaSearch },
+    { name: "openai", key: env.OPENAI_API_KEY, fn: openaiSearch }
   ].filter(p => p.key);
 
   const failures = [];
@@ -323,4 +403,75 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
     throw err;
   }
+}
+
+// Fires EVERY configured provider IN PARALLEL for the same query — Tavily,
+// Gemini's grounded search, Serper, Exa, OpenAI's web search, plus
+// DuckDuckGo every time (it needs no key, so it always runs alongside
+// whichever keyed providers are configured, rather than only as a last
+// resort). This is the "run it on every engine, every scan" mode: instead
+// of stopping at the first provider that answers, every one of them gets
+// asked fresh, so results reflect whatever's most current across all of
+// them right now, not just whichever provider happened to answer first.
+//
+// Results are merged and de-duplicated by URL. When the same URL comes
+// back from more than one provider, those results are combined into a
+// single entry — the longest `content` wins (whichever provider extracted
+// the most detail) and `sources` lists every provider that surfaced it, so
+// a listing multiple engines independently agree on can be treated as more
+// trustworthy downstream (e.g. by the sorter-AI classification step in
+// freebies.js / restaurant-deals.js).
+//
+// Costs more than searchWithFallback per call, on purpose — every
+// configured provider's quota gets spent on every single call instead of
+// just the cheapest one that works. Use this for the main per-scan result
+// list; keep narrow single-answer lookups (e.g. "find this one company's
+// site") on the cheaper searchWithFallback.
+export async function searchAllSources(env, query, includeDomains, options = {}) {
+  const providers = [
+    { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
+    { name: "gemini", key: env.GOOGLE_AI_API_KEY, fn: geminiGroundedSearch },
+    { name: "serper", key: env.SERPER_API_KEY, fn: serperSearch },
+    { name: "exa", key: env.EXA_API_KEY, fn: exaSearch },
+    { name: "openai", key: env.OPENAI_API_KEY, fn: openaiSearch }
+  ].filter(p => p.key);
+  // DuckDuckGo needs no key — always included, not just a last resort.
+  providers.push({ name: "duckduckgo", key: true, fn: duckduckgoSearch });
+
+  console.log(`[search-all] "${query}" — firing in parallel: ${providers.map(p => p.name).join(", ")}`);
+  const settled = await Promise.allSettled(providers.map(p => p.fn(env, query, includeDomains, options)));
+
+  const merged = new Map(); // url -> { title, url, content, publishedDate, sources: [] }
+  const succeeded = [];
+  const failures = [];
+  settled.forEach((s, i) => {
+    const name = providers[i].name;
+    if (s.status === "fulfilled") {
+      succeeded.push(name);
+      for (const r of s.value) {
+        if (!r.url) continue;
+        const existing = merged.get(r.url);
+        if (!existing) {
+          merged.set(r.url, { ...r, sources: [name] });
+        } else {
+          existing.sources.push(name);
+          // Keep whichever version has more extracted detail.
+          if ((r.content || "").length > (existing.content || "").length) existing.content = r.content;
+          existing.publishedDate = existing.publishedDate || r.publishedDate;
+        }
+      }
+    } else {
+      failures.push(`${name}: ${s.reason.message}`);
+    }
+  });
+
+  console.log(`[search-all] "${query}" — ${succeeded.join(", ") || "(none)"} succeeded, ${merged.size} unique results` + (failures.length ? ` | failed: ${failures.join(" | ")}` : ""));
+
+  if (!succeeded.length) {
+    const err = new Error(`All search providers failed — ${failures.join(" | ")}`);
+    err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+    throw err;
+  }
+
+  return { results: Array.from(merged.values()), providers: succeeded, failedProviders: failures };
 }

@@ -9,6 +9,12 @@
 //   5. Google AI Studio (env.GOOGLE_AI_API_KEY)   — free Gemini tier, up to ~1M tokens/day
 //   6. Hugging Face    (env.HUGGINGFACE_API_KEY)  — free router across open models
 //   7. Cohere          (env.COHERE_API_KEY)       — free trial, ~1,000 calls/month
+//   8. OpenAI          (env.OPENAI_API_KEY)       — no free tier, placed last on purpose.
+//                       This is what gives freebies.js / restaurant-deals.js their SECOND
+//                       "sorter AI" — chatWithEnsemble() below runs every configured
+//                       provider in parallel, so with both Google AI Studio and OpenAI
+//                       keyed, Gemini AND ChatGPT independently classify/sort the same
+//                       listings and get cross-checked against each other.
 //
 // grocery-price.js, freebies.js, and restaurant-deals.js used to call
 // OpenRouter directly and skip straight to their regex fallback if it
@@ -100,6 +106,16 @@ export async function huggingfaceChat(env, prompt, options = {}) {
   return openaiCompatibleChat("https://router.huggingface.co/v1/chat/completions", env.HUGGINGFACE_API_KEY, model, prompt, options, "huggingface");
 }
 
+// OpenAI's own chat completions endpoint — this is OpenAI-compatible by
+// definition, so it reuses the same helper as OpenRouter/Groq/Cerebras/
+// Mistral above. This is a real OpenAI platform API key with billing
+// enabled (platform.openai.com), not a ChatGPT.com login — a browser
+// session isn't usable here, this is a server-to-server API call.
+export async function openaiChat(env, prompt, options = {}) {
+  const model = env.OPENAI_CHAT_MODEL || "gpt-5.4";
+  return openaiCompatibleChat("https://api.openai.com/v1/chat/completions", env.OPENAI_API_KEY, model, prompt, options, "openai");
+}
+
 // ---------- Provider-specific formats ----------
 
 // Google AI Studio / Gemini — REST API, not OpenAI-shaped: the prompt goes
@@ -168,7 +184,8 @@ const PROVIDERS = [
   { name: "mistral", key: "MISTRAL_API_KEY", fn: mistralChat },
   { name: "google-ai-studio", key: "GOOGLE_AI_API_KEY", fn: geminiChat },
   { name: "huggingface", key: "HUGGINGFACE_API_KEY", fn: huggingfaceChat },
-  { name: "cohere", key: "COHERE_API_KEY", fn: cohereChat }
+  { name: "cohere", key: "COHERE_API_KEY", fn: cohereChat },
+  { name: "openai", key: "OPENAI_API_KEY", fn: openaiChat }
 ];
 
 // True if at least one LLM provider is configured. Callers use this
@@ -194,7 +211,7 @@ export function multipleLLMsConfigured(env) {
 export async function chatWithFallback(env, prompt, options = {}) {
   const configured = PROVIDERS.filter(p => env[p.key]);
   if (!configured.length) {
-    throw new Error("No LLM provider configured (checked OPENROUTER_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GOOGLE_AI_API_KEY, HUGGINGFACE_API_KEY, COHERE_API_KEY).");
+    throw new Error("No LLM provider configured (checked OPENROUTER_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GOOGLE_AI_API_KEY, HUGGINGFACE_API_KEY, COHERE_API_KEY, OPENAI_API_KEY).");
   }
   const failures = [];
   for (const p of configured) {
@@ -222,7 +239,7 @@ export async function chatWithFallback(env, prompt, options = {}) {
 export async function chatWithEnsemble(env, prompt, options = {}) {
   const configured = PROVIDERS.filter(p => env[p.key]);
   if (!configured.length) {
-    throw new Error("No LLM provider configured (checked OPENROUTER_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GOOGLE_AI_API_KEY, HUGGINGFACE_API_KEY, COHERE_API_KEY).");
+    throw new Error("No LLM provider configured (checked OPENROUTER_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY, MISTRAL_API_KEY, GOOGLE_AI_API_KEY, HUGGINGFACE_API_KEY, COHERE_API_KEY, OPENAI_API_KEY).");
   }
   const settled = await Promise.allSettled(configured.map(p => p.fn(env, prompt, options)));
   const results = [];
