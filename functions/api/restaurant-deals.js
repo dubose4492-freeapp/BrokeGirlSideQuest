@@ -210,8 +210,19 @@ function extractMinPurchase(text) {
 function parseExpiryDate(text) {
   if (!text) return null;
   const cleaned = text.replace(/^(expires?|through|until|ends?)\b/i, "").trim();
-  const parsed = new Date(cleaned);
-  if (!isNaN(parsed.getTime())) return parsed;
+  // Only trust a direct Date parse when the text actually names a year —
+  // otherwise `new Date("August 15")` silently defaults to the year 2001
+  // (a JS Date quirk, not "no year given = invalid"), which then reads as
+  // long-expired and wrongly filters out perfectly current offers like
+  // "register through August 15" or "deal ends Aug 9". Bare month/day
+  // text always goes through the guess-the-year logic below instead.
+  // (Same fix as freebies.js's copy of this function — this file keeps
+  // its own separate copy rather than sharing one.)
+  const hasExplicitYear = /\b\d{4}\b/.test(cleaned);
+  if (hasExplicitYear) {
+    const parsed = new Date(cleaned);
+    if (!isNaN(parsed.getTime())) return parsed;
+  }
   const md = cleaned.match(/([A-Za-z]{3,9})\s+(\d{1,2})/);
   if (md) {
     const now = new Date();
@@ -236,13 +247,16 @@ function isExpired(expiryText) {
 // ignored, which is why old posts (e.g. a July 2nd listing) were slipping
 // through even with days:7 set.
 //
-// Kept EQUAL to RESTAURANT_SEARCH_OPTS.days below (7), not tighter than
-// it — this used to be hardcoded to 5, which meant even a provider that DID
-// correctly honor the 7-day window (Serper/DuckDuckGo's week bucket) still
-// had its day-6/day-7 results thrown away here anyway, needlessly shrinking
-// the pool below what was actually asked for. If you change the `days`
-// value in RESTAURANT_SEARCH_OPTS further down, update this to match.
-const MAX_RESULT_AGE_DAYS = 7;
+// Widened from 7 to 21. A hard 7-day window treats every deal like a
+// one-off "this week only" news item, but most of what this tab actually
+// wants — a chain's standing app/rewards perk (McDonald's Friday free
+// fries, Taco Bell's new-account welcome reward, Subway's BOGO promo
+// code) — is a durable, ongoing offer, not something re-published every
+// week. A 7-day cutoff was silently dropping those before they ever
+// reached classification just because the page hadn't been freshly
+// re-crawled. 21 days gives standing offers room to breathe while still
+// keeping genuinely stale, months-old roundup posts out.
+const MAX_RESULT_AGE_DAYS = 21;
 
 function isStale(dateVal, maxDays) {
   if (!dateVal) return false; // no date signal at all — can't verify age, so don't punish it
@@ -288,10 +302,17 @@ function getEffectiveDate(r) {
 // ever has to pick among near-duplicate offers, it favors the newer one.
 // Uses real metadata when available, falling back to a date read out of
 // the page text itself when it isn't.
+//
+// A result hosted directly on a known chain's own official domain (e.g.
+// mcdonalds.com, sonicdrivein.com) is exempt from the age check entirely —
+// a chain's own deals/rewards page IS the current offer by definition,
+// the same way food pantries/community fridges are exempt from freebies.js's
+// freshness filter. Only third-party blog/roundup posts, which really can
+// go stale, get checked against maxDays.
 function filterAndSortByFreshness(results, maxDays) {
   return results
     .map(r => ({ ...r, effectiveDate: getEffectiveDate(r) }))
-    .filter(r => !isStale(r.effectiveDate, maxDays))
+    .filter(r => DOMAIN_TO_CHAIN_KEY[hostname(r.url)] || !isStale(r.effectiveDate, maxDays))
     .sort((a, b) => {
       if (!a.effectiveDate) return 1;
       if (!b.effectiveDate) return -1;
@@ -502,11 +523,12 @@ function mergeCorroborated(parsedLists) {
 }
 
 // ---------- Search providers ----------
-// This endpoint wants a wider net (12 results) and recent-only results
-// (last 7 days, Tavily-only — the shared function ignores `days` for
-// providers that don't support it) — the shared function takes those as
-// options, so wrap it here to keep the four call sites below unchanged.
-const RESTAURANT_SEARCH_OPTS = { maxResults: 12, days: 7 };
+// This endpoint wants a wider net (12 results) and reasonably-recent
+// results (last 21 days, matching MAX_RESULT_AGE_DAYS above — Tavily-only,
+// the shared function ignores `days` for providers that don't support it)
+// — the shared function takes those as options, so wrap it here to keep
+// the four call sites below unchanged.
+const RESTAURANT_SEARCH_OPTS = { maxResults: 12, days: 21 };
 async function searchWithFallback(env, query, includeDomains) {
   return sharedSearchWithFallback(env, query, includeDomains, RESTAURANT_SEARCH_OPTS);
 }

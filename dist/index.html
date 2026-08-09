@@ -784,10 +784,10 @@ const CATEGORIES = {
   accessories: { label: "Accessories", icon: "👜", timeRange: "month", query: (loc, r) =>
     `free backpacks water bottles tote bags school supplies, or any other item deemed an accessory, giveaways near ${loc} within ${r} miles` },
   events: { label: "Events", icon: "🎉", timeRange: "month", query: (loc, r) =>
-    `free community events this week near ${loc} within ${r} miles` },
+    `free community events near ${loc} within ${r} miles` },
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc, r) =>
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
-  mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
+  mail: { label: "By Mail", icon: "✉️", timeRange: null, query: () =>
     `free samples and free items by mail no purchase necessary` },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped

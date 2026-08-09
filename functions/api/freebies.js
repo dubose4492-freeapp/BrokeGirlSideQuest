@@ -29,14 +29,20 @@ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
-// food pantries / community fridges).
+// food pantries / community fridges / standing mail-in sample programs).
 const CATEGORY_MAX_AGE_DAYS = {
   clothing: 30,
   toys: 30,
   accessories: 30,
   events: 14,
   community: null,
-  mail: 30
+  // mail was 30 — changed to null (evergreen). The offers this tab wants
+  // most (SampleSource, PINCHme, Imagination Library, manufacturer sample
+  // request forms) are standing programs, not "this week's" listings —
+  // same reasoning as community's null above. A 30-day ceiling was
+  // dropping perfectly current, always-on programs just because the page
+  // they're described on wasn't recently republished.
+  mail: null
 };
 
 // events/community search queries are already narrowly scoped to on-topic
