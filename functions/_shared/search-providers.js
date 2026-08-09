@@ -431,7 +431,7 @@ const TIER_DEFS = [
   },
   {
     id: "tier2", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
-    extraEngines: ["openai", "googlecse"],
+    extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "SERPER_TOTAL_LIMIT", defaultCap: 2500, period: "total"
   },
   {
