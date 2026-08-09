@@ -3,3 +3,11 @@ compatibility_date = "2026-08-04"
 
 [assets]
 directory = "./dist"
+
+# Optional search-result cache (see DEPLOY_INSTRUCTIONS.md → "Optional:
+# caching search results"). If this binding isn't set up, search-providers.js
+# skips caching entirely and behaves exactly as before — nothing else in the
+# app depends on it.
+# [[kv_namespaces]]
+# binding = "SEARCH_CACHE"
+# id = "your-kv-namespace-id-here"
