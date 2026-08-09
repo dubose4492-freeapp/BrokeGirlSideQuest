@@ -2,9 +2,17 @@
 //
 // Shared search-provider chain, tried in this order until one succeeds:
 //   1. Tavily      (env.TAVILY_API_KEY)
-//   2. Serper.dev  (env.SERPER_API_KEY)  — 2,500 queries, one-time free tier
-//   3. Exa         (env.EXA_API_KEY)     — $10 credit, one-time free tier
-//   4. DuckDuckGo HTML scrape           — no key, no signup, unlimited
+//   2. Gemini       (env.GOOGLE_AI_API_KEY) — Google Search grounding tool.
+//                    5,000 free grounded prompts/MONTH on Gemini 3.x
+//                    (renews monthly), then $14/1,000. Placed ahead of
+//                    Serper/Exa on purpose: those two are one-time,
+//                    never-refilling free pools (2,500 total / $10 credit
+//                    total), so it's worth spending Gemini's renewing
+//                    monthly allotment first and saving the one-time pools
+//                    for when Tavily AND Gemini are both out.
+//   3. Serper.dev  (env.SERPER_API_KEY)  — 2,500 queries, one-time free tier
+//   4. Exa         (env.EXA_API_KEY)     — $10 credit, one-time free tier
+//   5. DuckDuckGo HTML scrape           — no key, no signup, unlimited
 //
 // Every provider function returns the same normalized shape:
 //   [{ title, url, content, publishedDate }]
@@ -26,7 +34,9 @@
 //     `days`; Serper/DuckDuckGo: nearest Google-style day/week/month/year
 //     bucket; Exa: exact `startPublishedDate` cutoff) — it's no longer
 //     Tavily-only, so a fallback hop doesn't silently drop the recency
-//     requirement the way it used to.
+//     requirement the way it used to. Gemini has no native `days`/
+//     `maxResults` knob for grounding — see geminiGroundedSearch below for
+//     how those are approximated instead.
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 
@@ -68,9 +78,79 @@ export async function tavilySearch(env, query, includeDomains, options = {}) {
   }));
 }
 
+// Gemini — not a traditional search API. Google Search grounding is a TOOL
+// on top of a normal chat call: you send a natural-language prompt with
+// tools: [{ google_search: {} }], and the model decides whether/how to
+// search, then returns ONE synthesized answer plus groundingMetadata
+// listing the real source URLs it drew from (groundingChunks) and which
+// stretch of the answer text came from which source (groundingSupports).
+//
+// That's a different shape than Tavily/Serper/Exa (which each return N
+// independent {title,url,snippet} hits for a keyword query), so this
+// reshapes it to match: one output "result" per real source URL Gemini
+// cited, with that source's content set to just the portion of the answer
+// actually attributed to it (via groundingSupports) — falling back to the
+// full answer text for a source if no specific segment was attributed to
+// it. This keeps every other provider function, and everything downstream
+// that classifies these results, unaware anything is different here.
+//
+// No native `includeDomains`/`days`/`maxResults` knobs on the grounding
+// tool itself (unlike Tavily/Serper/Exa) — includeDomains and days get
+// folded into the natural-language prompt as instructions instead (the
+// model generally respects this, but not with the hard guarantee a real
+// API parameter gives), and maxResults just truncates the returned list
+// after the fact.
+export async function geminiGroundedSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10, days } = options;
+  const model = env.GOOGLE_AI_MODEL || "gemini-3.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_AI_API_KEY}`;
+
+  const constraints = [
+    includeDomains && includeDomains.length ? `Only use results from these sites: ${includeDomains.join(", ")}.` : "",
+    days ? `Only include information from roughly the last ${days} days.` : ""
+  ].filter(Boolean).join(" ");
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: `${query}${constraints ? " " + constraints : ""}` }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: { temperature: 0 }
+    })
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Gemini grounded search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const candidate = data.candidates?.[0];
+  const answerText = candidate?.content?.parts?.map(p => p.text || "").join("") || "";
+  const grounding = candidate?.groundingMetadata;
+  const chunks = grounding?.groundingChunks || [];
+  if (!answerText || !chunks.length) return []; // ungrounded/empty answer — nothing usable to return
+
+  // Build chunk-index -> attributed-text-segments map from groundingSupports.
+  const segmentsByChunk = {};
+  for (const support of grounding?.groundingSupports || []) {
+    const text = support.segment?.text;
+    if (!text) continue;
+    for (const idx of support.groundingChunkIndices || []) {
+      (segmentsByChunk[idx] ||= []).push(text);
+    }
+  }
+
+  return chunks.slice(0, maxResults).map((chunk, i) => ({
+    title: chunk.web?.title || "Gemini search result",
+    url: chunk.web?.uri || "",
+    content: (segmentsByChunk[i] || [answerText]).join(" "),
+    publishedDate: null
+  })).filter(r => r.url);
+}
+
 // Serper.dev — a Google SERP proxy. The free tier is 2,500 queries
-// *total*, not monthly, so it's positioned as a third-string fallback
-// rather than something to lean on daily.
+// *total*, not monthly, so it's positioned after Gemini's renewing
+// monthly allotment rather than something to lean on daily.
 export async function serperSearch(env, query, includeDomains, options = {}) {
   const { maxResults = 10, days } = options;
   const siteFilter = includeDomains && includeDomains.length
@@ -212,6 +292,7 @@ function stripTags(s) {
 export async function searchWithFallback(env, query, includeDomains, options = {}) {
   const providers = [
     { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
+    { name: "gemini", key: env.GOOGLE_AI_API_KEY, fn: geminiGroundedSearch },
     { name: "serper", key: env.SERPER_API_KEY, fn: serperSearch },
     { name: "exa", key: env.EXA_API_KEY, fn: exaSearch }
   ].filter(p => p.key);

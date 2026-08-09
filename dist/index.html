@@ -1129,11 +1129,15 @@ function renderList(key) {
 // results found this way are more likely to be missing context or slightly
 // less precisely classified.
 const PROVIDER_LABELS = {
-  tavily: "Tavily", serper: "Serper", exa: "Exa", duckduckgo: "DuckDuckGo", kroger: "Kroger's official API"
+  tavily: "Tavily", gemini: "Gemini (Google Search)", serper: "Serper", exa: "Exa", duckduckgo: "DuckDuckGo", kroger: "Kroger's official API"
 };
 // tavily is the primary, cross-checked-against tier; everything else is a
 // fallback reached only because a higher tier's quota ran out — duckduckgo
 // is the true last resort (no API key, HTML scrape, thinnest results).
+// gemini isn't flagged as a lesser "backup" tier the way serper/exa are —
+// its results come from real Google Search grounding, comparable quality
+// to tavily, it's just second in line because tavily's the longer-running
+// primary integration.
 const FALLBACK_TIERS = { serper: "backup", exa: "backup", duckduckgo: "last-resort" };
 function providerNoteHtml(key) {
   const provider = state.providers[key];
@@ -1716,7 +1720,7 @@ async function searchGroceryItem(itemName, signal) {
 // no search involved at all — doesn't count toward this) so one badge for
 // the grocery tab still means something: "at least one item had to fall
 // back this far."
-const PROVIDER_RANK = { tavily: 0, serper: 1, exa: 1, duckduckgo: 2 };
+const PROVIDER_RANK = { tavily: 0, gemini: 0, serper: 1, exa: 1, duckduckgo: 2 };
 function recordGroceryProvider(provider, usedEnsemble) {
   if (provider && provider in PROVIDER_RANK) {
     const currentRank = PROVIDER_RANK[state.providers.grocery] ?? -1;
