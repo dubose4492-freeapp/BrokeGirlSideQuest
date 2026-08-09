@@ -291,6 +291,18 @@ npx wrangler pages secret put TAVILY_API_KEY --project-name=brokegirlsidequest
 ```
 Same command — it overwrites the existing value.
 
+## Checking your KV setup
+Both `RATE_LIMIT_KV` and `QUOTA_KV` fail open on purpose if you forget to
+bind them — the app keeps working either way, it just silently loses that
+one protection (see the comments in `functions/_shared/rate-limit.js` and
+`functions/_shared/quota.js`). Instead of digging through `wrangler.toml`
+to check, hit:
+```
+https://brokegirlsidequest.pages.dev/api/status
+```
+It reports whether each namespace is actually bound and calls out exactly
+what's missing — no secrets or counts, just binding presence.
+
 ## Troubleshooting
 - **Grocery tab shows "Kroger isn't configured on the server yet"** — the
   `KROGER_CLIENT_ID`/`KROGER_CLIENT_SECRET` secrets aren't set. It'll keep
