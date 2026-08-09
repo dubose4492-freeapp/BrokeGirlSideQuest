@@ -86,8 +86,17 @@ function extractExpiry(text) {
 function parseExpiryDate(text) {
   if (!text) return null;
   const cleaned = text.replace(/^(expires?|through|until|ends?)\b/i, "").trim();
-  const parsed = new Date(cleaned);
-  if (!isNaN(parsed.getTime())) return parsed;
+  // Only trust a direct Date parse when the text actually names a year —
+  // otherwise `new Date("August 15")` silently defaults to the year 2001
+  // (a JS Date quirk, not "no year given = invalid"), which then reads as
+  // long-expired and wrongly filters out perfectly current offers like
+  // "register through August 15" or "class ends Aug 9". Bare month/day
+  // text always goes through the guess-the-year logic below instead.
+  const hasExplicitYear = /\b\d{4}\b/.test(cleaned);
+  if (hasExplicitYear) {
+    const parsed = new Date(cleaned);
+    if (!isNaN(parsed.getTime())) return parsed;
+  }
   const md = cleaned.match(/([A-Za-z]{3,9})\s+(\d{1,2})/);
   if (md) {
     const now = new Date();
