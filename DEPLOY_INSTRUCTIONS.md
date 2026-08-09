@@ -63,10 +63,10 @@ of firing every engine on every call:
 
 | Tier | Engines (parallel within the tier) | Advances once... |
 |---|---|---|
-| 1 | **Tavily** + Gemini + OpenAI/ChatGPT web search | Tavily's monthly quota is used up |
-| 2 | **Serper.dev** + OpenAI/ChatGPT web search | Serper's one-time 2,500-query total is used up |
-| 3 | **Exa** + Gemini + OpenAI/ChatGPT web search | Exa's one-time $10 credit (approximated as a call count) is used up |
-| 4 | **DuckDuckGo** (scrape) + Gemini + OpenAI/ChatGPT web search | never — this is the terminal, unlimited floor |
+| 1 | **Tavily** + Gemini + OpenAI/ChatGPT web search + Google CSE | Tavily's monthly quota is used up |
+| 2 | **Serper.dev** + OpenAI/ChatGPT web search + Google CSE | Serper's one-time 2,500-query total is used up |
+| 3 | **Exa** + Gemini + OpenAI/ChatGPT web search + Google CSE | Exa's one-time $10 credit (approximated as a call count) is used up |
+| 4 | **DuckDuckGo** (scrape) + Gemini + OpenAI/ChatGPT web search + Google CSE | never — this is the terminal, unlimited floor |
 
 Only the ACTIVE tier's engines get called — Tier 2 is never touched while
 Tier 1 still has quota left. The bolded engine in each row is that tier's
@@ -253,6 +253,8 @@ wrangler login
    npx wrangler pages secret put EXA_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put GOOGLE_AI_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put OPENAI_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put GOOGLE_CSE_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put GOOGLE_CSE_ENGINE_ID --project-name=brokegirlsidequest
    ```
    `GOOGLE_AI_API_KEY` is the one key that does double duty: it powers
    Gemini's grounded web search tier above AND lets Gemini act as a
@@ -262,6 +264,20 @@ wrangler login
    powering both ChatGPT's web search tier and a second sorter AI. Set
    both and every scan gets cross-checked by Gemini AND ChatGPT together,
    on both the search side and the classification side.
+
+   `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_ENGINE_ID` together add Google's own
+   Custom Search JSON API as a fourth ride-along search engine (alongside
+   Gemini/OpenAI) in every tier — a different, ToS-compliant path to real
+   Google search results than Serper.dev's proxy above. You need BOTH
+   values, from two different places:
+   - `GOOGLE_CSE_API_KEY`: a Custom Search API key from Google Cloud Console
+   - `GOOGLE_CSE_ENGINE_ID`: the "Search engine ID" (cx) from a search
+     engine you configure at https://programmablesearchengine.google.com —
+     set it to search the entire web, not a specific site
+   Free tier is 100 queries/day (separate from Serper's one-time 2,500 and
+   Tavily's monthly allotment); past that it's billed per Google's pricing.
+   It's an unmetered extra like OpenAI, not one of the quota-tracked
+   primaries, so this app doesn't try to track that daily cap itself.
 
 4. Deploy:
    ```bash

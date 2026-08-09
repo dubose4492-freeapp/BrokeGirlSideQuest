@@ -7,23 +7,29 @@
 // approximated. This replaced an earlier "fire every engine every scan"
 // design; that mode is gone, this is the whole search layer now.
 //
-//   Tier 1 — Tavily + Gemini (grounded search) + OpenAI (web_search tool)
-//   Tier 2 — Serper.dev + OpenAI (web_search tool)          [once Tavily's quota is used up]
-//   Tier 3 — Exa + Gemini (grounded search) + OpenAI (web_search tool)  [once Serper's quota is used up]
-//   Tier 4 — DuckDuckGo (scrape) + Gemini + OpenAI          [once Exa's quota is used up — terminal, unlimited]
+//   Tier 1 — Tavily + Gemini (grounded search) + OpenAI (web_search tool) + Google CSE
+//   Tier 2 — Serper.dev + OpenAI (web_search tool) + Google CSE          [once Tavily's quota is used up]
+//   Tier 3 — Exa + Gemini (grounded search) + OpenAI (web_search tool) + Google CSE  [once Serper's quota is used up]
+//   Tier 4 — DuckDuckGo (scrape) + Gemini + OpenAI + Google CSE         [once Exa's quota is used up — terminal, unlimited]
 //
 // Each tier's engines are called IN PARALLEL and merged (same merge/dedupe
 // behavior the old searchAllSources() had) — it's only the tier-to-tier
 // progression that's sequential, not the calls within one tier. A tier is
 // skipped entirely if its primary engine isn't configured (no key set);
-// Gemini/OpenAI inside a tier are just cross-checking extras and are
-// silently dropped from that tier's parallel call if their own keys aren't
-// configured — they never block tier selection.
+// Gemini/OpenAI/Google CSE inside a tier are just cross-checking extras and
+// are silently dropped from that tier's parallel call if their own keys
+// aren't configured — they never block tier selection.
 //
 // Quota bookkeeping is keyed off each tier's PRIMARY engine only (Tavily,
-// Serper, Exa) — Gemini/OpenAI ride along in whichever tier is active
-// without being quota-tracked themselves, matching the tier spec above.
-// Caps, all overridable via env vars, with a conservative built-in default:
+// Serper, Exa) — Gemini/OpenAI/Google CSE ride along in whichever tier is
+// active without being quota-tracked themselves, matching the tier spec
+// above. Google's Custom Search JSON API does have its own free-tier cap
+// (100 queries/DAY, then billed) — same as OpenAI having no free tier at
+// all — but since it's an unmetered ride-along rather than a tier's
+// primary, this app doesn't track that usage; a 429 once you're over it
+// just drops out of that one scan's result merge like any other transient
+// engine failure. Caps for the three PRIMARY engines, all overridable via
+// env vars, with a conservative built-in default:
 //   TAVILY_MONTHLY_LIMIT  (default 1000)   — resets monthly
 //   SERPER_TOTAL_LIMIT    (default 2500)   — one-time free-tier total, never resets
 //   EXA_CALL_LIMIT        (default 1000)   — Exa's free tier is a one-time
@@ -369,6 +375,45 @@ function stripTags(s) {
     .trim();
 }
 
+// Google Custom Search JSON API — Google's own, ToS-compliant search API
+// (distinct from Serper.dev, which is a third-party proxy in front of
+// Google's consumer search results; this one calls Google directly).
+// Needs TWO env vars, not one: GOOGLE_CSE_API_KEY (from Google Cloud
+// Console) and GOOGLE_CSE_ENGINE_ID (the "cx" value from a Programmable
+// Search Engine configured at programmablesearchengine.google.com set to
+// search the whole web). Free tier is 100 queries/DAY (not monthly, not a
+// one-time total) — after that Google returns 429s, which this treats
+// like any other engine failure: this is a ride-along extra, not a
+// tier's primary, so one 429 just drops Google CSE from that scan's
+// result merge, same as an unconfigured or briefly-down Gemini/OpenAI
+// would. No separate quota-tracking key was added in quota.js for this —
+// same reasoning as OpenAI having no free-tier tracking: it's an
+// unmetered extra, cost/cap is whatever Google's dashboard says. Unlike
+// Serper (Google-bucket-only tbs=qdr:d/w/m/y) or the grounding-tool-based
+// Gemini/OpenAI (natural-language date hints only), the real API supports
+// an exact day count via `dateRestrict=dN`, so this is the most precise
+// of the bunch on recency.
+export async function googleCseSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10, days } = options;
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({
+    key: env.GOOGLE_CSE_API_KEY,
+    cx: env.GOOGLE_CSE_ENGINE_ID,
+    q: query + siteFilter,
+    num: String(Math.min(maxResults, 10)) // CSE hard-caps at 10 results per request, no way to ask for more in one call
+  });
+  if (days) params.set("dateRestrict", `d${days}`);
+  const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params.toString()}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Google Custom Search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const items = data.items || [];
+  return items.map(r => ({ title: r.title, url: r.link, content: r.snippet || "", publishedDate: null }));
+}
+
 // ---------- Tier definitions ----------
 // `primaryEngine` is what quota is tracked against and what decides
 // whether this tier is "exhausted". `keyEnv` is the env var that must be
@@ -381,28 +426,38 @@ function stripTags(s) {
 const TIER_DEFS = [
   {
     id: "tier1", primaryEngine: "tavily", keyEnv: "TAVILY_API_KEY",
-    extraEngines: ["gemini", "openai"],
+    extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "TAVILY_MONTHLY_LIMIT", defaultCap: 1000, period: "monthly"
   },
   {
     id: "tier2", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
-    extraEngines: ["openai"],
+    extraEngines: ["openai", "googlecse"],
     capEnv: "SERPER_TOTAL_LIMIT", defaultCap: 2500, period: "total"
   },
   {
     id: "tier3", primaryEngine: "exa", keyEnv: "EXA_API_KEY",
-    extraEngines: ["gemini", "openai"],
+    extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "EXA_CALL_LIMIT", defaultCap: 1000, period: "total"
   },
   {
     id: "tier4", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
-    extraEngines: ["gemini", "openai"],
+    extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: null, defaultCap: Infinity, period: "total"
   }
 ];
 
-const ENGINE_FN = { tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch, openai: openaiSearch, duckduckgo: duckduckgoSearch };
+const ENGINE_FN = { tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch, openai: openaiSearch, duckduckgo: duckduckgoSearch, googlecse: googleCseSearch };
 const ENGINE_KEY_ENV = { tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY", openai: "OPENAI_API_KEY" };
+
+// Google CSE needs TWO env vars (API key + search engine "cx" id), unlike
+// every other engine's single key — so this checks it as a special case
+// rather than trying to force it through ENGINE_KEY_ENV's one-env-var
+// shape. Every other extra engine still just looks up its single key.
+function isEngineConfigured(env, name) {
+  if (name === "googlecse") return !!(env.GOOGLE_CSE_API_KEY && env.GOOGLE_CSE_ENGINE_ID);
+  const keyEnv = ENGINE_KEY_ENV[name];
+  return keyEnv ? !!env[keyEnv] : true;
+}
 
 // This tier's primary engine, plus whichever of its extraEngines are
 // actually keyed — duckduckgo needs no key so it's always included when
@@ -411,7 +466,7 @@ function configuredEngines(env, tier) {
   const engines = [];
   if (tier.primaryEngine === "duckduckgo" || env[tier.keyEnv]) engines.push(tier.primaryEngine);
   for (const name of tier.extraEngines) {
-    if (env[ENGINE_KEY_ENV[name]]) engines.push(name);
+    if (isEngineConfigured(env, name)) engines.push(name);
   }
   return engines;
 }
