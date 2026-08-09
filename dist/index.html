@@ -318,7 +318,7 @@
   }
   .toast.show { opacity: 1; }
 
-  .tips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .tips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; align-items: start; }
   .tip-card { background: var(--panel); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--lav); padding: 16px; }
   .tip-card h3 { margin: 0 0 8px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
   .tip-card p { margin: 0 0 10px; font-size: 14px; }
@@ -345,6 +345,20 @@
   }
   .help-hotline-btn.alt { background: var(--sky); }
   .help-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+
+  /* ---- Desktop-only tidy-up: when a grid's last card is alone in its own
+     final row (nth-child(3n+1) = the first slot of a new row, combined with
+     :last-child = nothing comes after it), center it under the row above
+     instead of leaving it stuck in the left column with empty space on the
+     right. Only fires once the container is wide enough to actually be
+     laid out as 3 columns (see each grid's minmax() above) — mobile's
+     narrower 1-2 column stacks are left alone. ---- */
+  @media (min-width: 1000px) {
+    .help-grid > *:last-child:nth-child(3n+1),
+    .tube-list > *:last-child:nth-child(3n+1) {
+      grid-column: 2;
+    }
+  }
   .help-card { background: var(--panel); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--coral); padding: 16px; }
   .help-card h3 { margin: 0 0 8px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
   .help-card p { margin: 0 0 10px; font-size: 14px; }
