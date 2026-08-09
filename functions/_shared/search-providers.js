@@ -10,7 +10,7 @@
 //   Tier 1 — Tavily + Gemini (grounded search) + OpenAI (web_search tool) + Google CSE
 //   Tier 2 — Serper.dev + OpenAI (web_search tool) + Google CSE          [once Tavily's quota is used up]
 //   Tier 3 — Exa + Gemini (grounded search) + OpenAI (web_search tool) + Google CSE  [once Serper's quota is used up]
-//   Tier 4 — DuckDuckGo (scrape) + Gemini + OpenAI + Google CSE         [once Exa's quota is used up — terminal, unlimited]
+//   Tier 4 — DuckDuckGo (scrape) + Gemini + OpenAI + Google CSE + Firecrawl  [once Exa's quota is used up — terminal, unlimited]
 //
 // Each tier's engines are called IN PARALLEL and merged (same merge/dedupe
 // behavior the old searchAllSources() had) — it's only the tier-to-tier
@@ -414,6 +414,40 @@ export async function googleCseSearch(env, query, includeDomains, options = {}) 
   return items.map(r => ({ title: r.title, url: r.link, content: r.snippet || "", publishedDate: null }));
 }
 
+// Firecrawl — AI-first search+scrape API (docs.firecrawl.dev). Free tier is
+// 1,000 credits/month, no card required at signup; a plain (unscraped)
+// search costs 2 credits per 10 results, so this is roughly 500 searches/
+// month before you'd need to pay. Only ONE env var needed: FIRECRAWL_API_KEY
+// (a Bearer token, "fc-..."). No scrapeOptions are requested here — we only
+// want the lightweight title/description/url search hit (matching every
+// other engine's shape), not full-page markdown, since scraping each result
+// would burn credits far faster for no benefit to the classifier step
+// downstream (which only reads title+snippet text anyway).
+export async function firecrawlSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10 } = options;
+  const body = {
+    query,
+    limit: Math.min(maxResults, 10),
+    sources: [{ type: "web" }]
+  };
+  if (includeDomains && includeDomains.length) body.includeDomains = includeDomains;
+  const res = await fetch("https://api.firecrawl.dev/v2/search", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.FIRECRAWL_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Firecrawl search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const items = (data.data && data.data.web) || [];
+  return items.map(r => ({ title: r.title, url: r.url, content: r.description || "", publishedDate: null }));
+}
+
 // ---------- Tier definitions ----------
 // `primaryEngine` is what quota is tracked against and what decides
 // whether this tier is "exhausted". `keyEnv` is the env var that must be
@@ -441,13 +475,13 @@ const TIER_DEFS = [
   },
   {
     id: "tier4", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
-    extraEngines: ["gemini", "openai", "googlecse"],
+    extraEngines: ["gemini", "openai", "googlecse", "firecrawl"],
     capEnv: null, defaultCap: Infinity, period: "total"
   }
 ];
 
-const ENGINE_FN = { tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch, openai: openaiSearch, duckduckgo: duckduckgoSearch, googlecse: googleCseSearch };
-const ENGINE_KEY_ENV = { tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY", openai: "OPENAI_API_KEY" };
+const ENGINE_FN = { tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch, openai: openaiSearch, duckduckgo: duckduckgoSearch, googlecse: googleCseSearch, firecrawl: firecrawlSearch };
+const ENGINE_KEY_ENV = { tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY", openai: "OPENAI_API_KEY", firecrawl: "FIRECRAWL_API_KEY" };
 
 // Google CSE needs TWO env vars (API key + search engine "cx" id), unlike
 // every other engine's single key — so this checks it as a special case

@@ -279,6 +279,21 @@ wrangler login
    It's an unmetered extra like OpenAI, not one of the quota-tracked
    primaries, so this app doesn't try to track that daily cap itself.
 
+   `FIRECRAWL_API_KEY` adds Firecrawl (docs.firecrawl.dev) as a fifth
+   ride-along search engine, currently only in Tier 4 (the DuckDuckGo
+   terminal tier) — added specifically to give the terminal tier a more
+   reliable engine alongside DuckDuckGo's fragile HTML scraping. Only ONE
+   env var needed:
+   ```bash
+   npx wrangler pages secret put FIRECRAWL_API_KEY --project-name=brokegirlsidequest
+   ```
+   Sign up at https://firecrawl.dev (no credit card required) to get a key
+   starting with `fc-`. Free tier is 1,000 credits/month; an unscraped
+   search costs 2 credits per 10 results, so this is roughly 500 searches/
+   month before billing kicks in. Like Google CSE/Gemini/OpenAI, it's an
+   unmetered extra — not quota-tracked, and a failure just drops it from
+   that scan's result merge.
+
 4. Deploy:
    ```bash
    npx wrangler pages deploy dist --project-name=brokegirlsidequest
