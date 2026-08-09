@@ -58,19 +58,43 @@ of one. Worth keeping an eye on if you're on a free tier.
 ### Search: strict tiers, not "every engine every scan"
 All four search-using endpoints (`freebies.js`, `restaurant-deals.js`,
 `grocery-price.js`, `gas-price.js`) share one provider layer in
-`functions/_shared/search-providers.js`, built around four TIERS instead
-of firing every engine on every call:
+`functions/_shared/search-providers.js`, built around TWELVE TIERS instead
+of firing every engine on every call — every free-tier, no-credit-card web
+search API worth wiring in, stacked so the app burns through generous
+renewing tiers first, then one-time allotments, and only falls back to the
+always-on (but weaker) scrapers once every paid-adjacent free tier is spent:
 
-| Tier | Engines (parallel within the tier) | Advances once... |
-|---|---|---|
-| 1 | **Tavily** + Gemini + OpenAI/ChatGPT web search + Google CSE | Tavily's monthly quota is used up |
-| 2 | **Serper.dev** + OpenAI/ChatGPT web search + Google CSE | Serper's one-time 2,500-query total is used up |
-| 3 | **Exa** + Gemini + OpenAI/ChatGPT web search + Google CSE | Exa's one-time $10 credit (approximated as a call count) is used up |
-| 4 | **DuckDuckGo** (scrape) + Gemini + OpenAI/ChatGPT web search + Google CSE | never — this is the terminal, unlimited floor |
+| Tier | Primary engine | Free allotment | Advances once... |
+|---|---|---|---|
+| 1 | **Tavily** | 1,000/mo | quota used up (resets next month) |
+| 2 | **ContextWire** | 1,000/mo | quota used up (resets next month) |
+| 3 | **Firecrawl** | ~500 searches/mo (1,000 credits) | quota used up (resets next month) |
+| 4 | **Exa** | ~1,000 calls/mo ($10 recurring credit, approximated) | quota used up (resets next month) |
+| 5 | **Linkup** | ~1,000 calls/mo ($5 recurring credit, approximated) | quota used up (resets next month) |
+| 6 | **Zenserp** | 50/mo | quota used up (resets next month) |
+| 7 | **Serper.dev** | 2,500 total | one-time allotment used up, never resets |
+| 8 | **Searlo** | 3,000 total | one-time allotment used up, never resets |
+| 9 | **SearchApi.io** | 100 total | one-time allotment used up, never resets |
+| 10 | **Value SERP** | 100 total | one-time allotment used up, never resets |
+| 11 | **Serpent API** | 10 total | one-time allotment used up, never resets |
+| 12 | **DuckDuckGo** (scrape) | unlimited | never — this is the terminal floor |
 
-Only the ACTIVE tier's engines get called — Tier 2 is never touched while
-Tier 1 still has quota left. The bolded engine in each row is that tier's
-*primary*; quota is tracked only against it (via
+Every tier also carries the same parallel "extras" as before — Gemini
+(grounded search), OpenAI/ChatGPT (web_search tool), and Google CSE — plus
+SearXNG (only if you self-host one, see `SEARXNG_URL` below) riding along
+in Tier 12 alongside DuckDuckGo. None of the extras are quota-tracked;
+only the bolded primary in each row is.
+
+**Not wired in, on purpose:** Parallel Search's free tier is MCP-protocol-
+only (no plain REST endpoint a `fetch()` call can hit), and InfoMesh is a
+decentralized P2P Python package (libp2p/Kademlia DHT) that needs real TCP
+sockets — neither can run inside a Cloudflare Worker. Search1API, Olostep,
+and NewsCatcher weren't verified against live docs before this was wired
+up; ask if you want any of those added next.
+
+Only the ACTIVE tier's engines get called — a later tier is never touched
+while an earlier one still has quota left. The bolded engine in each row is
+that tier's *primary*; quota is tracked only against it (via
 `functions/_shared/quota.js`, KV-backed — see setup below). Gemini and
 OpenAI ride along inside whichever tier is active as cross-checking
 extras and aren't quota-tracked themselves.
@@ -104,7 +128,7 @@ has no free tier at all, so once `OPENAI_API_KEY` is set it spends real
 money on every scan regardless of which tier is active. Worth watching
 your provider dashboards once this is live.
 
-One caveat: DuckDuckGo (Tier 4) has no official free web-search API, so
+One caveat: DuckDuckGo (Tier 12) has no official free web-search API, so
 that step works by fetching and parsing DDG's plain HTML results page.
 It's the most fragile engine in the whole chain — if DuckDuckGo changes
 their page markup, it'll start quietly returning fewer or zero results
@@ -243,19 +267,38 @@ wrangler login
    the grocery tab will just fall back to search-based pricing until they're set.
 
    Optional — additional search engines. DuckDuckGo already works with
-   none of these set, and every one you add here doesn't just backstop
-   Tavily anymore — it's an ADDITIONAL engine `searchAllSources()` queries
-   in parallel on every scan (see "Search: every engine, every scan"
-   above), so each key you add increases both result quality/freshness
-   AND per-scan cost:
+   none of these set, and every key below UNLOCKS ONE MORE TIER — it never
+   fires on every scan, only once every tier above it in the table has run
+   out (see the 12-tier table above). Set as many or as few as you want;
+   any tier whose key is missing is just skipped over.
    ```bash
-   npx wrangler pages secret put SERPER_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put CONTEXTWIRE_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put FIRECRAWL_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put EXA_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put LINKUP_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put ZENSERP_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put SERPER_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put SEARLO_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put SEARCHAPI_IO_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put VALUESERP_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put SERPENT_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put GOOGLE_AI_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put OPENAI_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put GOOGLE_CSE_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put GOOGLE_CSE_ENGINE_ID --project-name=brokegirlsidequest
    ```
+   Where to sign up for each (all no-credit-card free tiers, verified
+   against live docs as of this writing):
+   - ContextWire — https://contextwire.dev
+   - Firecrawl — https://firecrawl.dev (key starts with `fc-`)
+   - Exa — https://exa.ai
+   - Linkup — https://linkup.so
+   - Zenserp — https://zenserp.com
+   - Serper.dev — https://serper.dev
+   - Searlo — https://searlo.tech
+   - SearchApi.io — https://searchapi.io
+   - Value SERP — https://valueserp.com
+   - Serpent API — https://apiserpent.com
    `GOOGLE_AI_API_KEY` is the one key that does double duty: it powers
    Gemini's grounded web search tier above AND lets Gemini act as a
    classifier/"sorter AI" alongside whatever else is configured.
@@ -279,20 +322,22 @@ wrangler login
    It's an unmetered extra like OpenAI, not one of the quota-tracked
    primaries, so this app doesn't try to track that daily cap itself.
 
-   `FIRECRAWL_API_KEY` adds Firecrawl (docs.firecrawl.dev) as a fifth
-   ride-along search engine, currently only in Tier 4 (the DuckDuckGo
-   terminal tier) — added specifically to give the terminal tier a more
-   reliable engine alongside DuckDuckGo's fragile HTML scraping. Only ONE
-   env var needed:
+   `FIRECRAWL_API_KEY` is its own quota-tracked TIER now (Tier 3), not just
+   a ride-along extra — Firecrawl's real 1,000-credit/month cap (2 credits
+   per 10-result search, ~500 searches/mo) is tracked the same way Tavily's
+   is, so it advances to the next tier once it's actually used up instead
+   of silently over-running its free allowance.
+
+   `SEARXNG_URL` is different from every other key above: it's not a hosted
+   API you sign up for, it's the URL of a SearXNG instance YOU run yourself
+   (Docker, a free-tier VPS, etc. — see https://docs.searxng.org). If set,
+   it rides along as an extra in Tier 12 next to DuckDuckGo — genuinely
+   unlimited once it's running, since there's no vendor rate limit on your
+   own server. Your instance needs `json` enabled under `search.formats` in
+   its `settings.yml` (off by default) for this app to parse its results.
    ```bash
-   npx wrangler pages secret put FIRECRAWL_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put SEARXNG_URL --project-name=brokegirlsidequest
    ```
-   Sign up at https://firecrawl.dev (no credit card required) to get a key
-   starting with `fc-`. Free tier is 1,000 credits/month; an unscraped
-   search costs 2 credits per 10 results, so this is roughly 500 searches/
-   month before billing kicks in. Like Google CSE/Gemini/OpenAI, it's an
-   unmetered extra — not quota-tracked, and a failure just drops it from
-   that scan's result merge.
 
 4. Deploy:
    ```bash

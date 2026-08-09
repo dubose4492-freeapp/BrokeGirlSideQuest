@@ -7,10 +7,36 @@
 // approximated. This replaced an earlier "fire every engine every scan"
 // design; that mode is gone, this is the whole search layer now.
 //
-//   Tier 1 — Tavily + Gemini (grounded search) + OpenAI (web_search tool) + Google CSE
-//   Tier 2 — Serper.dev + OpenAI (web_search tool) + Google CSE          [once Tavily's quota is used up]
-//   Tier 3 — Exa + Gemini (grounded search) + OpenAI (web_search tool) + Google CSE  [once Serper's quota is used up]
-//   Tier 4 — DuckDuckGo (scrape) + Gemini + OpenAI + Google CSE + Firecrawl  [once Exa's quota is used up — terminal, unlimited]
+// Twelve tiers now, primaries in this order (each tier's parallel extras —
+// Gemini/OpenAI/Google CSE, plus SearXNG in the terminal tier — omitted
+// below for brevity, see TIER_DEFS for the exact list per tier):
+//   Monthly-renewing (resets automatically, tried first):
+//     Tier 1  — Tavily        (1,000/mo)
+//     Tier 2  — ContextWire   (1,000/mo)
+//     Tier 3  — Firecrawl     (1,000 credits/mo, ~500 searches)
+//     Tier 4  — Exa           ($10/mo recurring credit, ~1,000 calls)
+//     Tier 5  — Linkup        ($5/mo recurring credit, ~1,000 calls, after a 4,000-query signup bonus)
+//     Tier 6  — Zenserp       (50/mo)
+//   One-time (never resets — bump the *_LIMIT env var if you upgrade):
+//     Tier 7  — Serper.dev    (2,500 total)
+//     Tier 8  — Searlo        (3,000 total)
+//     Tier 9  — SearchApi.io  (100 total)
+//     Tier 10 — Value SERP    (100 total)
+//     Tier 11 — Serpent API   (10 total)
+//   Terminal (no key, never exhausted):
+//     Tier 12 — DuckDuckGo (scrape) + SearXNG (only if self-hosted, see searxngSearch)
+//
+// Deliberately NOT wired in, and why:
+//   - Parallel Search's free tier is MCP-protocol-only (search.parallel.ai/mcp,
+//     no plain REST endpoint) — not something a normal fetch() call can hit
+//     reliably, and this app has no MCP client. Skipped rather than guessed at.
+//   - InfoMesh is a decentralized P2P Python package (libp2p/Kademlia DHT) —
+//     it needs real TCP sockets and a Python runtime, neither of which a
+//     Cloudflare Worker (V8 isolate, JS only) can do. Not portable here.
+//   - The "DuckDuckGo Python trick" (duckduckgo_search) is the same idea as
+//     duckduckgoSearch() below, just in Python — already covered.
+//   - Search1API, Olostep, NewsCatcher weren't verified against live docs
+//     before this was wired up — ask if you want any of them added next.
 //
 // Each tier's engines are called IN PARALLEL and merged (same merge/dedupe
 // behavior the old searchAllSources() had) — it's only the tier-to-tier
@@ -28,15 +54,25 @@
 // all — but since it's an unmetered ride-along rather than a tier's
 // primary, this app doesn't track that usage; a 429 once you're over it
 // just drops out of that one scan's result merge like any other transient
-// engine failure. Caps for the three PRIMARY engines, all overridable via
-// env vars, with a conservative built-in default:
-//   TAVILY_MONTHLY_LIMIT  (default 1000)   — resets monthly
-//   SERPER_TOTAL_LIMIT    (default 2500)   — one-time free-tier total, never resets
-//   EXA_CALL_LIMIT        (default 1000)   — Exa's free tier is a one-time
-//     $10 CREDIT, not a call count, and there's no live "credit remaining"
-//     endpoint to check — this approximates it as a call-count budget.
-//     Set EXA_CALL_LIMIT explicitly once you know your actual Exa pricing
-//     if this default drifts from what $10 actually buys you.
+// engine failure. Caps for every PRIMARY engine, all overridable via env
+// vars (see TIER_DEFS's capEnv/defaultCap for the authoritative list),
+// with conservative built-in defaults:
+//   TAVILY_MONTHLY_LIMIT       (default 1000)  — resets monthly
+//   CONTEXTWIRE_MONTHLY_LIMIT  (default 1000)  — resets monthly
+//   FIRECRAWL_MONTHLY_LIMIT    (default 500)   — resets monthly (1,000 credits/mo ÷ ~2 credits/search)
+//   EXA_CALL_LIMIT             (default 1000)  — resets monthly (approximated call-count budget, see below)
+//   LINKUP_MONTHLY_LIMIT       (default 1000)  — resets monthly (approximated call-count budget, same idea as Exa)
+//   ZENSERP_MONTHLY_LIMIT      (default 50)    — resets monthly
+//   SERPER_TOTAL_LIMIT         (default 2500)  — one-time free-tier total, never resets
+//   SEARLO_TOTAL_LIMIT         (default 3000)  — one-time free-tier total, never resets
+//   SEARCHAPI_IO_TOTAL_LIMIT   (default 100)   — one-time free-tier total, never resets
+//   VALUESERP_TOTAL_LIMIT      (default 100)   — one-time free-tier total, never resets
+//   SERPENT_API_TOTAL_LIMIT    (default 10)    — one-time free-tier total, never resets
+// Exa and Linkup's free tiers are both a one-time/recurring DOLLAR credit,
+// not a call count, and neither exposes a live "credit remaining" endpoint
+// — both are approximated as a call-count budget the same way. Set the
+// matching env var explicitly once you know your actual per-call cost if
+// the 1000-call default drifts from what your plan's credit actually buys.
 // See functions/_shared/quota.js for how usage is persisted (KV, fails
 // open — an unbound QUOTA_KV means the tier system can't track usage and
 // effectively stays on Tier 1 forever; see that file's header).
@@ -448,6 +484,188 @@ export async function firecrawlSearch(env, query, includeDomains, options = {}) 
   return items.map(r => ({ title: r.title, url: r.url, content: r.description || "", publishedDate: null }));
 }
 
+// Linkup — RAG-focused search. Free tier is 4,000 queries at signup, then
+// $5/month in RECURRING credits (roughly 1,000+ searches/mo depending on
+// depth) — so like Tavily/Firecrawl it's a monthly-renewing tier, not a
+// one-time total. depth:"standard" balances quality vs cost; "fast" skips
+// the LLM-interpretation step entirely if you want to shave latency/cost
+// further (see docs.linkup.so) but standard matches this app's other
+// AI-native engines (Tavily/Exa) most closely.
+export async function linkupSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10 } = options;
+  const res = await fetch("https://api.linkup.so/v1/search", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${env.LINKUP_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      q: query,
+      depth: "standard",
+      outputType: "searchResults",
+      ...(includeDomains && includeDomains.length ? { includeDomains } : {})
+    })
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Linkup search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = (data.results || []).filter(r => r.type !== "image");
+  return results.slice(0, maxResults).map(r => ({
+    title: r.name, url: r.url, content: r.content || "", publishedDate: null
+  }));
+}
+
+// ContextWire — AI-native search built for agents (contextwire.dev), 1,000
+// free queries/month, no card. Only ONE env var needed: CONTEXTWIRE_API_KEY.
+export async function contextwireSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10 } = options;
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({ q: query + siteFilter });
+  const res = await fetch(`https://contextwire.dev/api/search?${params.toString()}`, {
+    headers: { "Authorization": `Bearer ${env.CONTEXTWIRE_API_KEY}` }
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`ContextWire search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.results || [];
+  return results.slice(0, maxResults).map(r => ({
+    title: r.title, url: r.url, content: r.snippet || r.description || "", publishedDate: null
+  }));
+}
+
+// Searlo — Google SERP proxy (searlo.tech). Free tier is 3,000 credits at
+// signup, one-time (does not renew) — same "use it up, then move on"
+// shape as Serper.dev, just a bigger allotment. Only ONE env var needed:
+// SEARLO_API_KEY.
+export async function searloSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10 } = options;
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({ q: query + siteFilter, num: String(Math.min(maxResults, 10)) });
+  const res = await fetch(`https://api.searlo.tech/api/v1/search/web?${params.toString()}`, {
+    headers: { "X-API-Key": env.SEARLO_API_KEY }
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Searlo search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.organic || [];
+  return results.map(r => ({
+    title: r.title, url: r.link, content: r.snippet || "", publishedDate: null
+  }));
+}
+
+// Zenserp — Google SERP scraper (zenserp.com/app.zenserp.com), a small but
+// genuinely RECURRING free tier: 50 searches/month on the Hobby plan. Only
+// ONE env var needed: ZENSERP_API_KEY.
+export async function zenserpSearch(env, query, includeDomains, options = {}) {
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({ q: query + siteFilter });
+  const res = await fetch(`https://app.zenserp.com/api/v2/search?${params.toString()}`, {
+    headers: { "apikey": env.ZENSERP_API_KEY }
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Zenserp search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.organic || [];
+  return results.map(r => ({
+    title: r.title, url: r.url, content: r.description || "", publishedDate: null
+  }));
+}
+
+// SearchApi.io — multi-engine SERP scraper (Google/Bing/YouTube/Scholar).
+// Free tier is 100 queries at signup, one-time. Only ONE env var needed:
+// SEARCHAPI_IO_KEY (named with the _IO suffix so it can never collide with
+// a differently-shaped "SEARCHAPI_*" var from another provider).
+export async function searchApiIoSearch(env, query, includeDomains, options = {}) {
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({ engine: "google", q: query + siteFilter, api_key: env.SEARCHAPI_IO_KEY });
+  const res = await fetch(`https://www.searchapi.io/api/v1/search?${params.toString()}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`SearchApi.io search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.organic_results || [];
+  return results.map(r => ({
+    title: r.title, url: r.link, content: r.snippet || "", publishedDate: r.date || null
+  }));
+}
+
+// Value SERP — no-frills Google SERP scraper (valueserp.com). Free tier is
+// 100 queries at signup, one-time. Only ONE env var needed: VALUESERP_API_KEY.
+export async function valueSerpSearch(env, query, includeDomains, options = {}) {
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({ api_key: env.VALUESERP_API_KEY, q: query + siteFilter });
+  const res = await fetch(`https://api.valueserp.com/search?${params.toString()}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Value SERP search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.organic_results || [];
+  return results.map(r => ({
+    title: r.title, url: r.link, content: r.snippet || "", publishedDate: r.date || null
+  }));
+}
+
+// Serpent API (apiserpent.com) — multi-engine SERP scraper. Free tier is
+// only 10 queries at signup, one-time — the smallest allotment in the
+// whole chain, which is why it sits second-to-last among the one-time
+// tiers, just above the always-on terminal tier. Only ONE env var needed:
+// SERPENT_API_KEY.
+export async function serpentApiSearch(env, query, includeDomains, options = {}) {
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const params = new URLSearchParams({ q: query + siteFilter, engine: "google" });
+  const res = await fetch(`https://apiserpent.com/api/search/quick?${params.toString()}`, {
+    headers: { "X-API-Key": env.SERPENT_API_KEY }
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Serpent API search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.results?.organic || [];
+  return results.map(r => ({
+    title: r.title, url: r.url, content: r.snippet || "", publishedDate: null
+  }));
+}
+
+// SearXNG — open-source, SELF-HOSTED metasearch engine. Not a hosted
+// service with a key; this only activates if YOU stand up your own
+// instance (Docker, a free-tier VPS, etc. — see searxng.org) and point
+// SEARXNG_URL at it (e.g. "https://searx.yourdomain.com"). Once running,
+// it's genuinely unlimited/free — no per-query cost, no rate-limited
+// vendor — same terminal-tier role as DuckDuckGo, just aggregating 70+
+// engines instead of scraping one. Needs `?format=json` enabled in your
+// instance's settings.yml (search.formats), which is off by default.
+export async function searxngSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10 } = options;
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const base = env.SEARXNG_URL.replace(/\/$/, "");
+  const params = new URLSearchParams({ q: query + siteFilter, format: "json" });
+  const res = await fetch(`${base}/search?${params.toString()}`);
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`SearXNG search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.results || [];
+  return results.slice(0, maxResults).map(r => ({
+    title: r.title, url: r.url, content: r.content || "", publishedDate: r.publishedDate || null
+  }));
+}
+
 // ---------- Tier definitions ----------
 // `primaryEngine` is what quota is tracked against and what decides
 // whether this tier is "exhausted". `keyEnv` is the env var that must be
@@ -457,6 +675,11 @@ export async function firecrawlSearch(env, query, includeDomains, options = {}) 
 // are the cross-checking engines that ride along in this tier's parallel
 // call; each is only actually included if ITS OWN key is configured, but
 // their absence never disqualifies the tier itself.
+// ---- MONTHLY-RENEWING tiers first (tried in order; roughly biggest/most
+// reliable free allotment first) ----
+// ---- then ONE-TIME tiers (never reset — bump the *_LIMIT env var if you
+// upgrade rather than expecting the counter to clear) ----
+// ---- then the always-on TERMINAL tier last ----
 const TIER_DEFS = [
   {
     id: "tier1", primaryEngine: "tavily", keyEnv: "TAVILY_API_KEY",
@@ -464,24 +687,75 @@ const TIER_DEFS = [
     capEnv: "TAVILY_MONTHLY_LIMIT", defaultCap: 1000, period: "monthly"
   },
   {
-    id: "tier2", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
+    id: "tier2", primaryEngine: "contextwire", keyEnv: "CONTEXTWIRE_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "CONTEXTWIRE_MONTHLY_LIMIT", defaultCap: 1000, period: "monthly"
+  },
+  {
+    id: "tier3", primaryEngine: "firecrawl", keyEnv: "FIRECRAWL_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "FIRECRAWL_MONTHLY_LIMIT", defaultCap: 500, period: "monthly" // 1,000 credits/mo, ~2 credits per search
+  },
+  {
+    id: "tier4", primaryEngine: "exa", keyEnv: "EXA_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "EXA_CALL_LIMIT", defaultCap: 1000, period: "monthly" // $10/mo recurring credit, approximated as a call count — see exaSearch
+  },
+  {
+    id: "tier5", primaryEngine: "linkup", keyEnv: "LINKUP_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "LINKUP_MONTHLY_LIMIT", defaultCap: 1000, period: "monthly" // $5/mo recurring credit, approximated as a call count, same shape as Exa
+  },
+  {
+    id: "tier6", primaryEngine: "zenserp", keyEnv: "ZENSERP_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "ZENSERP_MONTHLY_LIMIT", defaultCap: 50, period: "monthly"
+  },
+  {
+    id: "tier7", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "SERPER_TOTAL_LIMIT", defaultCap: 2500, period: "total"
   },
   {
-    id: "tier3", primaryEngine: "exa", keyEnv: "EXA_API_KEY",
+    id: "tier8", primaryEngine: "searlo", keyEnv: "SEARLO_API_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
-    capEnv: "EXA_CALL_LIMIT", defaultCap: 1000, period: "total"
+    capEnv: "SEARLO_TOTAL_LIMIT", defaultCap: 3000, period: "total"
   },
   {
-    id: "tier4", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
-    extraEngines: ["gemini", "openai", "googlecse", "firecrawl"],
+    id: "tier9", primaryEngine: "searchapiio", keyEnv: "SEARCHAPI_IO_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "SEARCHAPI_IO_TOTAL_LIMIT", defaultCap: 100, period: "total"
+  },
+  {
+    id: "tier10", primaryEngine: "valueserp", keyEnv: "VALUESERP_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "VALUESERP_TOTAL_LIMIT", defaultCap: 100, period: "total"
+  },
+  {
+    id: "tier11", primaryEngine: "serpentapi", keyEnv: "SERPENT_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "SERPENT_API_TOTAL_LIMIT", defaultCap: 10, period: "total"
+  },
+  {
+    id: "tier12", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
+    extraEngines: ["gemini", "openai", "googlecse", "searxng"],
     capEnv: null, defaultCap: Infinity, period: "total"
   }
 ];
 
-const ENGINE_FN = { tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch, openai: openaiSearch, duckduckgo: duckduckgoSearch, googlecse: googleCseSearch, firecrawl: firecrawlSearch };
-const ENGINE_KEY_ENV = { tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY", openai: "OPENAI_API_KEY", firecrawl: "FIRECRAWL_API_KEY" };
+const ENGINE_FN = {
+  tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch,
+  openai: openaiSearch, duckduckgo: duckduckgoSearch, googlecse: googleCseSearch, firecrawl: firecrawlSearch,
+  linkup: linkupSearch, contextwire: contextwireSearch, searlo: searloSearch, zenserp: zenserpSearch,
+  searchapiio: searchApiIoSearch, valueserp: valueSerpSearch, serpentapi: serpentApiSearch, searxng: searxngSearch
+};
+const ENGINE_KEY_ENV = {
+  tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY",
+  openai: "OPENAI_API_KEY", firecrawl: "FIRECRAWL_API_KEY", linkup: "LINKUP_API_KEY",
+  contextwire: "CONTEXTWIRE_API_KEY", searlo: "SEARLO_API_KEY", zenserp: "ZENSERP_API_KEY",
+  searchapiio: "SEARCHAPI_IO_KEY", valueserp: "VALUESERP_API_KEY", serpentapi: "SERPENT_API_KEY",
+  searxng: "SEARXNG_URL" // not a real API key, just an instance URL — see searxngSearch
+};
 
 // Google CSE needs TWO env vars (API key + search engine "cx" id), unlike
 // every other engine's single key — so this checks it as a special case
@@ -513,7 +787,7 @@ function isEngineConfigured(env, name) {
 // costs nothing on the classification side. Serper is deliberately left
 // out — it's Tier 2's primary only (never rides along in Tier 4), and
 // it's working fine on the original rich query as-is.
-const KEYWORD_ENGINES = new Set(["duckduckgo", "googlecse", "firecrawl"]);
+const KEYWORD_ENGINES = new Set(["duckduckgo", "googlecse", "firecrawl", "searxng"]);
 function simplifyQueryForKeywordEngines(query) {
   return query
     .replace(/\bwithin\s+\d+\s*(miles|mi)\b/gi, "")
