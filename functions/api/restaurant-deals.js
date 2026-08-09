@@ -11,15 +11,18 @@
 // extract one offer PER RESTAURANT mentioned in a qualifying snippet, not
 // just one card per URL.
 //
-// Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
-// needed, last resort). Shared with freebies.js and grocery-price.js so
-// the provider chain lives in one place.
-// searchAllSources: fires Tavily + Gemini grounded search + Serper + Exa +
-// OpenAI/ChatGPT web search + DuckDuckGo ALL in parallel, every scan — used
-// below (via the local wrapper further down) for the main per-scan result
-// list. sharedSearchWithFallback (cheaper, stop-at-first-success) still
-// backs the narrow single-answer "find this restaurant's official site"
-// lookup.
+// Search providers: strict sequential TIER system (see
+// functions/_shared/search-providers.js) — only the currently-ACTIVE
+// tier's engines fire per scan, not every configured provider. A later
+// tier is only touched once the active tier's primary engine has used up
+// its tracked free-tier quota, or as a one-off resilience fallback if the
+// active tier's engines all fail outright on a given call. Shared with
+// freebies.js and grocery-price.js so the provider chain lives in one
+// place. searchAllSources: fires the active tier's engines in parallel
+// and merges them — used below (via the local wrapper further down) for
+// the main per-scan result list. sharedSearchWithFallback (cheaper,
+// stop-at-first-success) still backs the narrow single-answer "find this
+// restaurant's official site" lookup.
 import { searchWithFallback as sharedSearchWithFallback, searchAllSources as sharedSearchAllSources } from "../_shared/search-providers.js";
 // LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
@@ -410,12 +413,26 @@ function regexClassify(results) {
 // object per snippet, so a roundup post naming several restaurants yields
 // one qualifying offer object per restaurant instead of collapsing the
 // whole post into a single card.
-async function llmClassify(env, results, { ensemble = false } = {}) {
+// Asks the model to return an "offers" array per snippet (see freebies.js
+// for why), now also passing location/radius so the model can flag
+// independent/local spots that are clearly outside the requested area.
+// NOTE: this is a best-effort TEXTUAL check based on whatever the snippet
+// says, not real geocoding/distance math — this app has no lat/lng lookup
+// or address parser. It catches the obvious case ("this pizzeria is in
+// Portland, Oregon" when the user searched Nashville), not a precise
+// radius cutoff. The primary radius signal is still the "within N miles"
+// phrase in the search query itself — which, per search-providers.js's
+// simplifyQueryForKeywordEngines, is stripped before reaching DuckDuckGo/
+// Google CSE/SearXNG, so results from those specific engines get no
+// radius hint at either the search OR classification step; this
+// snippet-text check is the only backstop for that gap, and it only
+// catches cases where the snippet happens to mention a location at all.
+async function llmClassify(env, results, location, radius, { ensemble = false } = {}) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
   const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today's date is ${today}. You are reviewing restaurant/food deal search results pulled from the open web. Some snippets describe just one deal; others are "roundup" posts listing deals at several different restaurants — extract EACH qualifying deal separately in that case, one per restaurant.
+  const prompt = `Today's date is ${today}. You are reviewing restaurant/food deal search results pulled from the open web, for someone near ${location} who wants results within ${radius} miles. Some snippets describe just one deal; others are "roundup" posts listing deals at several different restaurants — extract EACH qualifying deal separately in that case, one per restaurant.
 
 For EACH snippet below, return an "offers" array (empty if nothing in it qualifies). For every deal found in that snippet, include:
 - restaurantName: the specific restaurant/chain the deal is at (e.g. "McDonald's", "Antonio's Pizza"). Always fill this in if the snippet names a restaurant.
@@ -424,6 +441,7 @@ For EACH snippet below, return an "offers" array (empty if nothing in it qualifi
   (b) a BOGO ("buy one get one") free offer, or
   (c) an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_PURCHASE} or less (e.g. "free dessert with any $10 purchase").
   A plain discount, a percentage off, a priced combo, a regular menu mention, an offer requiring MORE than $${MAX_QUALIFYING_PURCHASE} spend, or an offer whose stated end date is before today does NOT qualify.
+  For a NATIONAL CHAIN (present at locations nationwide), don't reject it on location grounds — it's reasonable to assume they have or will have a nearby location. For an INDEPENDENT/LOCAL restaurant, qualifies is also false if the snippet states or clearly implies it's in a different city, region, or state than ${location} and outside a ${radius}-mile drive — a snippet with no location detail at all should NOT be disqualified on that basis alone (assume it's local to the search area unless it says otherwise).
 - title: a short clean description of that specific offer.
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "unknown".
 - minPurchase: the dollar amount required to spend if requirementType is "min_purchase", else null.
@@ -566,11 +584,18 @@ export async function onRequestPost({ request, env }) {
 
   let body;
   try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
-  const { location, radius } = body;
+  const { location } = body;
   if (!location) return json({ error: "location is required." }, 400);
   if (typeof location !== "string" || location.length > 200) {
     return json({ error: "location is invalid or too long." }, 400);
   }
+  // Clamped 1-100 server-side, same as grocery-price.js/gas-price.js —
+  // previously this endpoint trusted whatever the client sent verbatim
+  // (including "within undefined miles" if the field was omitted), even
+  // though the client-side <input max="100"> already caps it in the UI.
+  // A UI cap is not a server-side guarantee.
+  const rawRadius = Number(body.radius);
+  const radius = Number.isFinite(rawRadius) ? Math.min(100, Math.max(1, Math.round(rawRadius))) : 100;
 
   // Kept deliberately simple/natural rather than a boolean OR/quote
   // expression — that style works great on Tavily's semantic "advanced"
@@ -626,16 +651,16 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
-  // searchAllSources() above already queries every configured engine on
-  // every scan instead of stopping at the first that answers — see
-  // matching comment in freebies.js. So the sorter step always runs every
-  // configured classifier model (Gemini + ChatGPT + whichever others are
-  // keyed) in parallel too, cross-checking every scan rather than only
-  // when search happened to degrade off a single primary tier.
+  // Unlike search (which only fires ONE tier's engines per scan — see the
+  // header comment above), the sorter step below still runs every
+  // CONFIGURED classifier model in parallel whenever 2+ are keyed
+  // (multipleLLMsConfigured), regardless of which search tier was active
+  // — cheap insurance against a single model's misreads, since LLM
+  // classification is one call pair per scan regardless of search volume.
   const useEnsemble = multipleLLMsConfigured(env);
   if (anyLLMConfigured(env)) {
     try {
-      classified = await llmClassify(env, results, { ensemble: useEnsemble });
+      classified = await llmClassify(env, results, location, radius, { ensemble: useEnsemble });
     } catch (err) {
       // fall through to regex below
     }

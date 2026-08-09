@@ -219,12 +219,11 @@ const GAS_SEARCH_OPTS = { maxResults: 8 };
 async function searchWithFallback(env, query, domains) {
   return sharedSearchWithFallback(env, query, domains, GAS_SEARCH_OPTS); // { results, provider }
 }
-// searchAllSources: fires every configured engine (Tavily, Gemini grounded
-// search, Serper, Exa, OpenAI/ChatGPT web search) plus DuckDuckGo IN
-// PARALLEL rather than stopping at the first success — used for both tiers
-// below. Gas is a single lookup per scan (unlike grocery-price.js's ~11
-// items), so widening both tiers here doesn't multiply cost the way it
-// would there.
+// searchAllSources: fires the currently-ACTIVE tier's engines in parallel
+// (see the strict sequential TIER system in search-providers.js — NOT
+// every configured engine on every call) — used for both passes below.
+// Gas is a single lookup per scan (unlike grocery-price.js's ~11 items),
+// so this doesn't multiply cost the way it would there.
 async function searchAllSources(env, query, domains) {
   return sharedSearchAllSources(env, query, domains, GAS_SEARCH_OPTS);
 }

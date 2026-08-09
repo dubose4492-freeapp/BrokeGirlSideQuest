@@ -14,14 +14,17 @@
 // below extract one offer PER COMPANY/ORG mentioned in a qualifying
 // snippet, not just one card per URL.
 //
-// Search providers: Tavily -> Serper -> Exa -> DuckDuckGo (no key
-// needed, last resort). Shared with restaurant-deals.js and
-// grocery-price.js so the provider chain lives in one place.
-// searchAllSources: fires Tavily + Gemini grounded search + Serper + Exa +
-// OpenAI/ChatGPT web search + DuckDuckGo ALL in parallel, every scan — used
-// below for the main per-scan result list. searchWithFallback (cheaper,
-// stop-at-first-success) is still used for the narrow single-answer
-// "find this org's official site" lookup further down.
+// Search providers: strict sequential TIER system (see
+// functions/_shared/search-providers.js) — only the currently-ACTIVE
+// tier's engines fire per scan (e.g. just Tavily + its Gemini/OpenAI/
+// GoogleCSE ride-alongs), not every configured provider. A later tier is
+// only touched once the active tier's primary engine has used up its
+// tracked free-tier quota, or as a one-off resilience fallback if the
+// active tier's engines all fail outright on a given call.
+// searchAllSources: fires the active tier's engines in parallel and merges
+// them — used below for the main per-scan result list. searchWithFallback
+// (cheaper, stop-at-first-success) is still used for the narrow
+// single-answer "find this org's official site" lookup further down.
 import { searchWithFallback, searchAllSources } from "../_shared/search-providers.js";
 // LLM providers: OpenRouter -> Groq -> Cerebras -> Mistral -> Google AI
 // Studio -> Hugging Face -> Cohere (any ONE configured key unlocks the LLM
@@ -376,20 +379,36 @@ const CATEGORY_EXTRA_RULES = {
 // Asks the model to return an "offers" array PER SNIPPET rather than one
 // object per snippet, so a roundup post naming several companies/orgs
 // yields one qualifying offer object per company/org instead of collapsing
-// the whole post into a single card.
-async function llmClassify(env, results, category, { ensemble = false } = {}) {
+// the whole post into a single card. Also passes location/radius (mail is
+// the one category where these don't apply — see CATEGORY_HINTS.mail —
+// but harmless to pass along regardless) so the model can flag
+// local/independent results that are clearly outside the requested area.
+// NOTE: this is a best-effort TEXTUAL check based on whatever the snippet
+// happens to say, not real geocoding/distance math — this app has no
+// lat/lng lookup or address parser. The primary radius signal is still
+// the "within N miles" phrase already baked into `query` before search —
+// which, per search-providers.js's simplifyQueryForKeywordEngines, is
+// stripped before reaching DuckDuckGo/Google CSE/SearXNG, so results from
+// those specific engines get no radius hint at either the search OR
+// classification step; this snippet-text check is the only backstop for
+// that gap, and it only catches cases where the snippet mentions a
+// location at all.
+async function llmClassify(env, results, category, location, radius, { ensemble = false } = {}) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 700)}`)
     .join("\n\n");
   const today = new Date().toISOString().slice(0, 10);
   const categoryHint = CATEGORY_HINTS[category] || "free offers";
   const extraRule = CATEGORY_EXTRA_RULES[category] || "";
+  const locationRule = (category === "mail")
+    ? "" // ships anywhere — no location/radius disqualification applies
+    : ` The person is near ${location || "their stated area"} and wants results within ${radius} miles. For a NATIONAL BRAND/CHAIN (present at locations nationwide), don't reject it on location grounds. For a LOCAL/INDEPENDENT org or a specific single-location event, qualifies is also false if the snippet states or clearly implies it's in a different city, region, or state than that and outside a ${radius}-mile drive — a snippet with no location detail at all should NOT be disqualified on that basis alone (assume it's local to the search area unless it says otherwise).`;
 
   const prompt = `Today's date is ${today}. You are reviewing search results about ${categoryHint}. Some snippets describe just one offer/resource; others are "roundup" posts listing several from different companies/organizations — extract EACH qualifying offer separately in that case, one per company/org.
 
 For EACH snippet below, return an "offers" array (empty if nothing in it qualifies). For every offer/resource found in that snippet, include:
 - orgName: the specific company, brand, or organization behind it (e.g. "Old Navy", "Second Harvest Food Bank"). Always fill this in if the snippet names one.
-- qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).${extraRule}
+- qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).${extraRule}${locationRule}
 - title: a short clean description of that specific offer/resource.
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "unknown".
 - minSpend: the dollar amount required to spend if requirementType is "min_purchase", else null.
@@ -522,7 +541,7 @@ export async function onRequestPost({ request, env }) {
 
   let body;
   try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
-  const { category, query } = body;
+  const { category, query, location } = body;
   if (!category || !query) return json({ error: "category and query are required." }, 400);
   // A real query typed/built by the app is always well under this — this
   // just caps how much text one request can force through search + LLM
@@ -530,6 +549,13 @@ export async function onRequestPost({ request, env }) {
   if (typeof query !== "string" || query.length > 300) {
     return json({ error: "query is invalid or too long." }, 400);
   }
+  // The client (index.html) already sends location/radius alongside query
+  // — they were previously destructured out here and silently dropped, so
+  // the sorter AI below never saw them even though the query text itself
+  // has "within N miles" baked in. Clamped 1-100 server-side, same as
+  // grocery-price.js/gas-price.js/restaurant-deals.js.
+  const rawRadius = Number(body.radius);
+  const radius = Number.isFinite(rawRadius) ? Math.min(100, Math.max(1, Math.round(rawRadius))) : 100;
 
   let results, providers;
   try {
@@ -574,19 +600,18 @@ export async function onRequestPost({ request, env }) {
   results.sort((a, b) => (prioritySourceName(b.url) ? 1 : 0) - (prioritySourceName(a.url) ? 1 : 0));
 
   let classified = null;
-  // searchAllSources() above already queries every configured engine on
-  // every scan (Tavily, Gemini's grounded search, Serper, Exa, OpenAI's
-  // web search, DuckDuckGo) instead of stopping at the first that answers,
-  // mixing full-content and thinner-snippet results together regardless of
-  // which one "won." So the sorter step below always runs every configured
-  // classifier model (Gemini + ChatGPT + whichever others are keyed) in
-  // parallel too, rather than only when search happened to degrade off a
-  // single primary tier — every scan gets cross-checked by every available
-  // sorter AI, matching the same "run everything, every time" approach.
+  // Unlike search (which only fires ONE tier's engines per scan — see the
+  // header comment above), the sorter step below still runs every
+  // CONFIGURED classifier model in parallel whenever 2+ are keyed
+  // (multipleLLMsConfigured), regardless of which search tier was active.
+  // That's a deliberate difference: search cost scales with call volume
+  // across many scans, so it's gated behind quota; LLM classification is
+  // one call pair per scan regardless, so cross-checking it every time is
+  // cheap insurance against a single model's misreads.
   const useEnsemble = multipleLLMsConfigured(env);
   if (anyLLMConfigured(env)) {
     try {
-      classified = await llmClassify(env, results, category, { ensemble: useEnsemble });
+      classified = await llmClassify(env, results, category, location, radius, { ensemble: useEnsemble });
     } catch (err) {
       // fall through to regex below
     }

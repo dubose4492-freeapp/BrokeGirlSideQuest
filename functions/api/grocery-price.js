@@ -238,18 +238,19 @@ const GROCERY_SEARCH_OPTS = { maxResults: 8 };
 async function searchWithFallback(env, query, domains) {
   return sharedSearchWithFallback(env, query, domains, GROCERY_SEARCH_OPTS); // { results, provider }
 }
-// searchAllSources: fires every configured engine (Tavily, Gemini grounded
-// search, Serper, Exa, OpenAI/ChatGPT web search) plus DuckDuckGo IN
-// PARALLEL rather than stopping at the first success. Used for tier 2 (the
-// open-web pass) below, where the wider net matters most — tier 1's
+// searchAllSources: fires the currently-ACTIVE tier's engines in parallel
+// (see the strict sequential TIER system in search-providers.js — NOT
+// every configured engine on every call). Used for tier 2 (the open-web
+// pass) below, where the wider net matters most — tier 1's
 // domain-restricted official-chain lookup stays on the cheaper
 // searchWithFallback since it's a narrow, single-purpose query per item,
 // same reasoning as the "find this org's official site" lookups in
 // freebies.js / restaurant-deals.js. NOTE: this runs once per grocery item
-// per scan, so turning this on for tier 2 multiplies search-provider usage
-// by however many items are on the Grocery tab (~11) each time someone
-// runs a scan — worth watching your provider quotas/billing once this is
-// live, especially OpenAI's, which has no free tier at all.
+// per scan, so it still multiplies search-provider usage by however many
+// items are on the Grocery tab (~11) each time someone runs a scan, even
+// though each call only hits one tier's worth of engines — worth watching
+// your provider quotas/billing once this is live, especially any
+// ride-along engine with no free tier at all (e.g. OpenAI).
 async function searchAllSources(env, query, domains) {
   return sharedSearchAllSources(env, query, domains, GROCERY_SEARCH_OPTS);
 }
