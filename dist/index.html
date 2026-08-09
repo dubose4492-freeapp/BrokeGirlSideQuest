@@ -780,15 +780,15 @@ const CATEGORIES = {
   clothing: { label: "Clothing", icon: "👕", timeRange: "month", query: (loc, r) =>
     `free clothing shoes giveaways promotions near ${loc} within ${r} miles` },
   toys: { label: "Toys", icon: "🧸", timeRange: "month", query: (loc, r) =>
-    `free toy giveaways promotions LEGO Hasbro toy drives near ${loc} within ${r} miles` },
+    `free toy giveaways promotions, free toy drives, kids workshops, LOWES HOMEDEPOT MICHAELS LEGO Hasbro toy drives near ${loc} within ${r} miles` },
   accessories: { label: "Accessories", icon: "👜", timeRange: "month", query: (loc, r) =>
-    `free backpacks water bottles tote bags school supplies giveaways near ${loc} within ${r} miles` },
+    `free backpacks water bottles tote bags school supplies, or any other item deemed an accessory, giveaways near ${loc} within ${r} miles` },
   events: { label: "Events", icon: "🎉", timeRange: "month", query: (loc, r) =>
     `free community events this week near ${loc} within ${r} miles` },
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc, r) =>
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
-    `free samples by mail ${new Date().getFullYear()} no purchase necessary` },
+    `free items by mail ${new Date().getFullYear()} no purchase necessary, no shipping cost` },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped
   // by renderList()/runFullScan()'s category loops (both filter on

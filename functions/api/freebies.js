@@ -69,6 +69,15 @@ function prioritySourceName(url) {
 
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 function looksFree(text) { return /\bfree\b/i.test(text || ""); }
+// Regex-fallback-only check for the "By Mail" tab's no-shipping-cost rule
+// (the LLM path gets the same rule via CATEGORY_EXTRA_RULES.mail above).
+// Deliberately narrow — only trips on an explicit shipping/handling fee
+// mentioned near a dollar amount, so it doesn't false-positive on offers
+// that just happen to say "free shipping" or "shipping included".
+function requiresPaidShipping(text) {
+  return /\b(shipping|s\s?&\s?h|handling)\b[^.]{0,25}\$\s?\d/i.test(text || "") &&
+    !/\bfree\s+(shipping|s\s?&\s?h|handling)\b/i.test(text || "");
+}
 
 function extractRequirementType(text) {
   const t = (text || "").toLowerCase();
@@ -190,8 +199,13 @@ function findMultipleOrgMentions(text) {
 // because that's the query that found it.
 const CATEGORY_KEYWORDS = {
   clothing: /\b(cloth(?:ing|es)?|apparel|shoes?|sneakers?|jacket|jeans|shirt|dress(?:es)?|outfit|footwear)\b/i,
-  toys: /\b(toys?|games?|action figures?|dolls?|lego|playset)\b/i,
-  accessories: /\b(backpacks?|tote bags?|water bottles?|school suppl(?:y|ies)|accessor(?:y|ies)|bags?|sunglasses|jewelry)\b/i,
+  // Includes "toy drive"/"kids workshop"/named hardware-store workshop
+  // programs alongside plain "toy" mentions — a Lowe's Build and Grow or
+  // Home Depot Kids Workshop post often never uses the word "toy" at all
+  // (it's a free build-a-craft-kit clinic), so the old toy-word-only regex
+  // missed those even though they're exactly what the Toys tab is after.
+  toys: /\b(toys?|games?|action figures?|dolls?|lego|playset|toy drive|kids? workshop|build and grow|craft kit)\b/i,
+  accessories: /\b(backpacks?|tote bags?|water bottles?|school suppl(?:y|ies)|accessor(?:y|ies)|bags?|sunglasses|jewelry|hat|scarf|glove|mitten|hair clip)\b/i,
   mail: /\b(sample|by mail|mail-?in|free sample)\b/i
 };
 function matchesCategory(text, category) {
@@ -206,6 +220,7 @@ function regexClassify(results, category) {
     const combinedText = (raw.content || "") + " " + (raw.title || "");
     if (!ALWAYS_QUALIFIES.has(category) && !looksFree(combinedText)) continue;
     if (!matchesCategory(combinedText, category)) continue;
+    if (category === "mail" && requiresPaidShipping(combinedText)) continue;
 
     const expires = extractExpiry(raw.content);
     if (isExpired(expires)) continue;
@@ -253,11 +268,17 @@ function regexClassify(results, category) {
 // ---------- LLM classification ----------
 const CATEGORY_HINTS = {
   clothing: "free clothing, shoes, or apparel giveaways/promotions",
-  toys: "free toy giveaways or promotions",
-  accessories: "free backpacks, water bottles, tote bags, or school-supply giveaways",
+  toys: "free toy giveaways, toy drives, kids' craft/build workshops (e.g. Lowe's Build and Grow, Home Depot Kids Workshop, Michaels Make Break), or other free toy promotions",
+  accessories: "free backpacks, water bottles, tote bags, school supplies, or any other item that counts as a free accessory (jewelry, sunglasses, hats, hair accessories, etc.)",
   events: "free community events",
   community: "food pantries, community fridges, clothing closets, or other free community resources",
-  mail: "free samples available by mail"
+  mail: "free items (not just samples) available by mail"
+};
+// An extra qualifying rule appended only for categories where "free" alone
+// isn't the whole bar — right now just "By Mail", where the app is
+// specifically supposed to skip anything that's free-but-you-pay-shipping.
+const CATEGORY_EXTRA_RULES = {
+  mail: ` A "by mail" offer only counts as qualifying if there's no shipping/handling fee charged to get it — if the item itself is free but the offer requires paying for shipping, set qualifies to false.`
 };
 
 // Asks the model to return an "offers" array PER SNIPPET rather than one
@@ -270,12 +291,13 @@ async function llmClassify(env, results, category, { ensemble = false } = {}) {
     .join("\n\n");
   const today = new Date().toISOString().slice(0, 10);
   const categoryHint = CATEGORY_HINTS[category] || "free offers";
+  const extraRule = CATEGORY_EXTRA_RULES[category] || "";
 
   const prompt = `Today's date is ${today}. You are reviewing search results about ${categoryHint}. Some snippets describe just one offer/resource; others are "roundup" posts listing several from different companies/organizations — extract EACH qualifying offer separately in that case, one per company/org.
 
 For EACH snippet below, return an "offers" array (empty if nothing in it qualifies). For every offer/resource found in that snippet, include:
 - orgName: the specific company, brand, or organization behind it (e.g. "Old Navy", "Second Harvest Food Bank"). Always fill this in if the snippet names one.
-- qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).
+- qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).${extraRule}
 - title: a short clean description of that specific offer/resource.
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "unknown".
 - isLocal: true if this is a local/independent org or event, false if it's a well-known national brand/chain.
