@@ -10,21 +10,8 @@
      and per-element styling are inline (no build step) — but this still
      blocks any injected <script src>, <iframe>, or fetch()/XHR to a domain
      that isn't explicitly whitelisted below, which is the main way a stray
-     unescaped-data bug turns into actual data exfiltration.
-
-     EXCEPTION for the Google Custom Search widget (#googleCseSection
-     below): cse.google.com/www.google.com added to script-src (loads and
-     runs the widget's JS) and connect-src (the widget's own XHR calls when
-     you actually search), www.gstatic.com added to style-src (the widget's
-     stylesheet). img-src is intentionally NOT widened — a search box can
-     return results linking to literally any site on the web, and adding
-     img-src * so every result's favicon/thumbnail loads would undo most of
-     what this policy protects against. Net effect: the search box and result
-     titles/snippets will render; result thumbnails may just show as blank
-     icons instead of loading everything the CSP would otherwise be locking
-     down. This is intentionally scoped to Google's own domains only, not a
-     general loosening. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cse.google.com https://www.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://www.gstatic.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.bigdatacloud.net https://cse.google.com https://www.google.com; frame-src https://www.youtube-nocookie.com https://cse.google.com https://www.google.com; object-src 'none'; base-uri 'self'; form-action 'self';">
+     unescaped-data bug turns into actual data exfiltration. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.bigdatacloud.net; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self';">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 
 <!-- Open Graph / Slack, Discord, iMessage, Facebook -->
@@ -331,18 +318,6 @@
   .ai-info-fineprint { font-size: 12px; opacity: .75; }
   .gemini-promo-note { margin: 10px 4px 16px; opacity: .8; }
   .gemini-btn-shot { display: block; margin: 8px 0; image-rendering: auto; border: 2px solid var(--ink); background: #fff; padding: 6px 10px; }
-  .google-cse-promo {
-    background: linear-gradient(135deg, var(--lav-soft), var(--mint-soft));
-    border: 3px solid var(--ink); padding: 16px; margin-bottom: 16px;
-    box-shadow: 5px 5px 0 var(--sun);
-  }
-  .google-cse-promo-head { font-family: 'Press Start 2P', monospace; font-size: 13px; margin-bottom: 10px; line-height: 1.6; }
-  .google-cse-promo p { margin: 0 0 10px; font-size: 13.5px; }
-  /* Google's own widget CSS (loaded from gstatic, allowed via the CSP
-     exception above) handles the box/results styling inside .gcse-search —
-     this wrapper just gives it the same card treatment as the rest of the
-     page so it doesn't look like a foreign element bolted on. */
-  .google-cse-wrap { background: var(--panel); border: 2px solid var(--ink); padding: 10px; }
   .ai-info-prompt {
     display: block; width: 100%; box-sizing: border-box; font-family: 'Space Mono', monospace; font-size: 12.5px;
     border: 2px solid var(--ink); background: var(--bg); padding: 10px; margin: 0 0 10px; resize: vertical;
@@ -787,28 +762,6 @@
     phone or tablet. On a phone, you can still tap <b>Copy Prompt</b> and paste it
     straight into Google or the Gemini app in your phone's browser — it's completely
     optional either way, but it's the fastest way to double up on your search.</p>
-  </div>
-
-  <!-- Google Custom Search widget — separate from this app's own Toys/
-       Accessories/etc. search pipeline (see functions/_shared/search-
-       providers.js's googleCseSearch, a different, server-side use of the
-       same search engine). This is Google's own client-side box/results
-       UI, rendering results exactly as Google returns them — not run
-       through this app's classification, "$10 or less" filtering, or
-       trusted-source badging. Placed here (static markup, NOT inside
-       #content) because content's innerHTML gets replaced on every
-       tab/scan and browsers never execute <script> tags injected that
-       way — this section survives every re-render untouched. -->
-  <div class="google-cse-promo" id="googleCseSection">
-    <div class="google-cse-promo-head">🔎 Search Google directly</div>
-    <p>Want to run your own search right here instead of waiting on a scan?
-    Type into the box below — these are Google's own live results, shown
-    as-is (not filtered to free/BOGO offers the way the rest of this app is).</p>
-    <div class="google-cse-wrap">
-      <script async src="https://cse.google.com/cse.js?cx=4480ee78ec44f4afb">
-      </script>
-      <div class="gcse-search"></div>
-    </div>
   </div>
 </main>
 
