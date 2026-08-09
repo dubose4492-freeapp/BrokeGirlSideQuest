@@ -291,6 +291,22 @@ npx wrangler pages secret put TAVILY_API_KEY --project-name=brokegirlsidequest
 ```
 Same command — it overwrites the existing value.
 
+## "Add to Home Screen"
+`dist/` now includes a `manifest.webmanifest` and an `icons/` folder (the
+same pixel-controller mark as the browser-tab favicon, rendered as opaque
+PNGs at 32/192/512px plus a 180px `apple-touch-icon.png` for iOS). No setup
+needed — these are static files and deploy automatically with the rest of
+`dist/`.
+
+A banner also appears at the top of the screen the first time someone taps
+Scan (on phone-width screens only — it's hidden above 720px), showing
+platform-appropriate steps: an "Install" button that triggers Chrome/
+Android's native install prompt where supported, or manual Share-menu
+steps on iOS Safari (which has no programmatic install trigger). Dismissing
+it (✕) sets a `localStorage` flag so it never shows again for that visitor.
+No code changes needed to adjust it — it's plain HTML/CSS/JS in `dist/index.html`
+(search for `a2hsBanner`).
+
 ## Checking your KV setup
 Both `RATE_LIMIT_KV` and `QUOTA_KV` fail open on purpose if you forget to
 bind them — the app keeps working either way, it just silently loses that
