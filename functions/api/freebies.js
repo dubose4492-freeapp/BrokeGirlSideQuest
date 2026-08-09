@@ -275,7 +275,7 @@ const CATEGORY_HINTS = {
   clothing: "free clothing, shoes, or apparel giveaways/promotions",
   toys: "free toy giveaways, toy drives, kids' craft/build workshops (e.g. Lowe's Build and Grow, Home Depot Kids Workshop, Michaels Make Break), or other free toy promotions",
   accessories: "free backpacks, water bottles, tote bags, school supplies, or any other item that counts as a free accessory (jewelry, sunglasses, hats, hair accessories, etc.)",
-  events: "free community events",
+  events: "free events (community-organized or hosted by a business/venue — concerts, festivals, family activities, promotions, etc.)",
   community: "food pantries, community fridges, clothing closets, or other free community resources",
   mail: "free items (not just samples) available by mail"
 };
