@@ -12,3 +12,25 @@ directory = "./dist"
 # [[kv_namespaces]]
 # binding = "RATE_LIMIT_KV"
 # id = "your-kv-namespace-id-here"
+
+# Required for the search-provider TIER SYSTEM to actually advance tiers
+# (see DEPLOY_INSTRUCTIONS.md → "Search tiers & quota tracking"). Tracks
+# how many calls each tier's primary engine (Tavily -> Serper -> Exa) has
+# used, in functions/_shared/quota.js. If this binding isn't set up, quota
+# usage always reads as 0 and the app effectively stays on Tier 1 (Tavily)
+# forever instead of ever advancing — it fails open the same way
+# RATE_LIMIT_KV does, it just means the tiers don't actually rotate.
+# Use a SEPARATE KV namespace from RATE_LIMIT_KV above (`wrangler kv
+# namespace create QUOTA_KV`) so quota counters and rate-limit counters
+# never share keys.
+# [[kv_namespaces]]
+# binding = "QUOTA_KV"
+# id = "your-kv-namespace-id-here"
+
+# Optional overrides for each tier's free-quota cap (see the tier table at
+# the top of functions/_shared/search-providers.js for what each default
+# assumes). Uncomment and adjust if your actual plan/usage differs.
+# [vars]
+# TAVILY_MONTHLY_LIMIT = "1000"
+# SERPER_TOTAL_LIMIT = "2500"
+# EXA_CALL_LIMIT = "1000"

@@ -56,6 +56,42 @@ const CATEGORY_MAX_AGE_DAYS = {
 // clothing/toys/accessories/mail are.
 const ALWAYS_QUALIFIES = new Set(["events", "community"]);
 
+// Categories where a "spend $X or less, get an item free" offer (BOGO-style
+// promos, "spend $10 get a free gift", etc.) counts as qualifying, same
+// rule restaurant-deals.js already applies to food deals. Deliberately
+// excludes grocery (its own endpoint, priced item-by-item — a spend
+// threshold doesn't apply there) and community (food pantries/fridges/
+// closets are already fully free, no spend threshold is relevant).
+const SPEND_TO_FREE_CATEGORIES = new Set(["clothing", "toys", "accessories", "events", "mail"]);
+const MAX_QUALIFYING_SPEND = 10; // dollars — "spend $10 or less, get an item free"
+// Rough US-average sales tax, used only to flag when a stated PRE-TAX spend
+// requirement is close enough to $MAX_QUALIFYING_SPEND that tax could push
+// the actual checkout total over it — not a substitute for the real local
+// rate (which would need a ZIP-to-tax-rate lookup this app doesn't have).
+// Offers still qualify on their stated pre-tax amount; this only adds a
+// `taxMayExceedLimit` flag so the client can show a heads-up.
+const ESTIMATED_SALES_TAX_RATE = 0.09;
+function taxMayExceedLimit(spend) {
+  return spend != null && spend <= MAX_QUALIFYING_SPEND && spend * (1 + ESTIMATED_SALES_TAX_RATE) > MAX_QUALIFYING_SPEND;
+}
+
+// Looks for "spend/with a purchase of/minimum purchase of $X" style phrasing
+// and returns the dollar amount, or null if no spend requirement is stated.
+// Same pattern restaurant-deals.js uses for its own $10 rule.
+function extractMinSpend(text) {
+  const t = text || "";
+  const patterns = [
+    /(?:spend|with (?:a |any )?purchase of|minimum purchase of|purchase of)\s*\$?\s?(\d+(?:\.\d{2})?)/i,
+    /\$\s?(\d+(?:\.\d{2})?)\s*(?:minimum|purchase|order)/i
+  ];
+  for (const p of patterns) {
+    const m = t.match(p);
+    if (m) return parseFloat(m[1]);
+  }
+  return null;
+}
+function looksBogo(text) { return /\bbogo\b|buy\s*one[,]?\s*get\s*one/i.test(text || ""); }
+
 const BLOCKED_CLAIM_DOMAINS = [
   "facebook.com", "instagram.com", "tiktok.com", "twitter.com", "x.com", "reddit.com",
   "yelp.com", "tripadvisor.com", "wikipedia.org", "pinterest.com", "youtube.com", "linkedin.com"
@@ -83,7 +119,9 @@ function looksFree(text) { return /\bfree\b/i.test(text || ""); }
 
 function extractRequirementType(text) {
   const t = (text || "").toLowerCase();
+  if (looksBogo(t)) return "bogo";
   if (/no purchase (necessary|required)/.test(t)) return "no_purchase";
+  if (extractMinSpend(t) != null) return "min_purchase";
   if (/sign[\s-]?up|register|create an account/.test(t)) return "signup";
   if (/loyalty|rewards (app|program|card)/.test(t)) return "loyalty";
   if (/rebate|mail-in|mail in offer/.test(t)) return "rebate";
@@ -227,9 +265,27 @@ function matchesCategory(text, category) {
 
 function regexClassify(results, category) {
   const items = [];
+  const spendEligible = SPEND_TO_FREE_CATEGORIES.has(category);
   for (const raw of results) {
     const combinedText = (raw.content || "") + " " + (raw.title || "");
-    if (!ALWAYS_QUALIFIES.has(category) && !looksFree(combinedText)) continue;
+    const isBogo = spendEligible && looksBogo(combinedText);
+    const minSpend = spendEligible ? extractMinSpend(combinedText) : null;
+    // A spend requirement only qualifies alongside "free" language in the
+    // same snippet (a plain "$8 tote bag" isn't a freebie just because it
+    // happens to be under $10) — mirrors restaurant-deals.js's rule.
+    const qualifiesMinSpend = minSpend != null && minSpend <= MAX_QUALIFYING_SPEND && looksFree(combinedText);
+    // A dollar amount anywhere in the text disqualifies the plain-free
+    // bucket for spend-eligible categories — "free scarf when you spend
+    // $45" should NOT slip through just because the word "free" appears;
+    // it only qualifies via the BOGO/qualifiesMinSpend checks above, and
+    // $45 fails those. Mirrors restaurant-deals.js's same guard. Doesn't
+    // apply to events/community (ALWAYS_QUALIFIES) — those are already
+    // narrowly scoped by their own search query.
+    const hasDollarAmount = /\$\s?\d+(\.\d{2})?/.test(combinedText.replace(/free/gi, ""));
+    const qualifiesPlainFree = ALWAYS_QUALIFIES.has(category)
+      ? true
+      : looksFree(combinedText) && (!spendEligible || !hasDollarAmount);
+    if (!isBogo && !qualifiesMinSpend && !qualifiesPlainFree) continue;
     if (!matchesCategory(combinedText, category)) continue;
 
     const expires = extractExpiry(raw.content);
@@ -239,6 +295,30 @@ function regexClassify(results, category) {
     const isLocal = /\blocal\b|\bcommunity\b/i.test(combinedText);
     const orgMentions = findMultipleOrgMentions(combinedText);
 
+    let price = null;
+    let spendRequired = null;
+    let taxNote = null;
+    if (isBogo) {
+      price = "BOGO Free";
+    } else if (qualifiesMinSpend) {
+      price = `Free w/ $${minSpend.toFixed(2)} purchase`;
+      spendRequired = minSpend;
+      if (taxMayExceedLimit(minSpend)) taxNote = `May exceed $${MAX_QUALIFYING_SPEND} once local sales tax is added — check before you check out.`;
+    }
+
+    const baseItem = {
+      url: raw.url,
+      isFree: true,
+      isLocal,
+      requirementType,
+      expires,
+      price,
+      spendRequired,
+      taxNote,
+      trustedSource: prioritySourceName(raw.url),
+      category
+    };
+
     if (orgMentions.length > 1) {
       for (const orgName of orgMentions) {
         items.push({
@@ -246,13 +326,7 @@ function regexClassify(results, category) {
           title: `Free offer from ${orgName}`,
           orgName,
           store: orgName,
-          url: raw.url,
-          isFree: true,
-          isLocal,
-          requirementType,
-          expires,
-          trustedSource: prioritySourceName(raw.url),
-          category
+          ...baseItem
         });
       }
     } else {
@@ -262,13 +336,7 @@ function regexClassify(results, category) {
         title: raw.title || "Untitled offer",
         orgName,
         store: orgName,
-        url: raw.url,
-        isFree: true,
-        isLocal,
-        requirementType,
-        expires,
-        trustedSource: prioritySourceName(raw.url),
-        category
+        ...baseItem
       });
     }
   }
@@ -280,15 +348,30 @@ const CATEGORY_HINTS = {
   clothing: "free clothing, shoes, or apparel giveaways/promotions",
   toys: "free toy giveaways, toy drives, kids' craft/build workshops (e.g. Lowe's Build and Grow, Home Depot Kids Workshop, Michaels Make Break), or other free toy promotions",
   accessories: "free backpacks, water bottles, tote bags, school supplies, or any other item that counts as a free accessory (jewelry, sunglasses, hats, hair accessories, etc.)",
-  events: "free events (community-organized or hosted by a business/venue — concerts, festivals, family activities, promotions, etc.)",
+  // isLocal here doubles as the radius/drive-distance signal — the search
+  // query already scopes to "within N miles of <location>", so treat an
+  // event as isLocal:true only if it's actually happening at a physical
+  // place near that location (charity events, giveaways, community
+  // festivals, a store's in-person promotion), not something purely
+  // online/nationwide with no venue near the person, and not a mail-in
+  // program (that belongs on the Mail tab, not Events).
+  events: "100% free events happening at a real physical location — charity events, giveaways, festivals, concerts, community gatherings, or a business/venue's free promotions — near the person and within the distance they said they're willing to drive",
   community: "food pantries, community fridges, clothing closets, or other free community resources",
-  mail: "free items (not just samples) available by mail"
+  mail: "free items (not just samples) available by mail — no local/radius matching applies here since these ship anywhere"
 };
 // Extra qualifying rules appended per-category, for categories where "free"
-// alone isn't the whole bar. Empty for now — the old By-Mail
-// no-shipping-fee rule was too strict (it choked off legitimate results
-// where a snippet just mentioned shipping in passing) and was removed.
-const CATEGORY_EXTRA_RULES = {};
+// alone isn't the whole bar. Every SPEND_TO_FREE_CATEGORIES category also
+// accepts a BOGO or "spend $X or less, get an item free" offer — same rule
+// restaurant-deals.js applies to food deals — with a rough sales-tax
+// heads-up since the stated spend amount is usually pre-tax.
+const SPEND_RULE_TEXT = ` A BOGO ("buy one get one") free offer also qualifies. So does an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_SPEND} or less (e.g. "free tote bag with any $10 purchase") — note that's usually a PRE-TAX amount, so flag it if tax could push the real checkout total over $${MAX_QUALIFYING_SPEND}. An offer requiring MORE than $${MAX_QUALIFYING_SPEND} spend does not qualify on that basis alone.`;
+const CATEGORY_EXTRA_RULES = {
+  clothing: SPEND_RULE_TEXT,
+  toys: SPEND_RULE_TEXT,
+  accessories: SPEND_RULE_TEXT,
+  events: SPEND_RULE_TEXT,
+  mail: SPEND_RULE_TEXT
+};
 
 // Asks the model to return an "offers" array PER SNIPPET rather than one
 // object per snippet, so a roundup post naming several companies/orgs
@@ -308,12 +391,13 @@ For EACH snippet below, return an "offers" array (empty if nothing in it qualifi
 - orgName: the specific company, brand, or organization behind it (e.g. "Old Navy", "Second Harvest Food Bank"). Always fill this in if the snippet names one.
 - qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).${extraRule}
 - title: a short clean description of that specific offer/resource.
-- requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "unknown".
+- requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "unknown".
+- minSpend: the dollar amount required to spend if requirementType is "min_purchase", else null.
 - isLocal: true if this is a local/independent org or event, false if it's a well-known national brand/chain.
 - expires: a short date string if an end date is mentioned, else null.
 
 Return ONLY a strict JSON array, one object per snippet, in the same order, with this shape:
-[{"index": 0, "offers": [{"orgName": "...", "qualifies": true, "title": "...", "requirementType": "giveaway", "isLocal": false, "expires": null}]}, ...]
+[{"index": 0, "offers": [{"orgName": "...", "qualifies": true, "title": "...", "requirementType": "giveaway", "minSpend": null, "isLocal": false, "expires": null}]}, ...]
 If a snippet is a roundup mentioning several companies/orgs, include one object per company/org inside that snippet's "offers" array. If nothing in a snippet qualifies, use an empty array for "offers".
 
 Snippets:
@@ -366,6 +450,10 @@ function parseClassifyResponse(text, results, category) {
     offers.forEach((o, oi) => {
       if (!o || !o.qualifies) return;
       const orgName = o.orgName || raw.title || hostname(raw.url);
+      const minSpend = o.requirementType === "min_purchase" && o.minSpend != null ? Number(o.minSpend) : null;
+      let price = null;
+      if (o.requirementType === "bogo") price = "BOGO Free";
+      else if (minSpend != null) price = `Free w/ $${minSpend.toFixed(2)} purchase`;
       items.push({
         id: `${raw.url}#${oi}`,
         title: o.title || raw.title || "Untitled offer",
@@ -376,6 +464,9 @@ function parseClassifyResponse(text, results, category) {
         isLocal: !!o.isLocal,
         requirementType: o.requirementType || "unknown",
         expires: o.expires || null,
+        price,
+        spendRequired: minSpend,
+        taxNote: taxMayExceedLimit(minSpend) ? `May exceed $${MAX_QUALIFYING_SPEND} once local sales tax is added — check before you check out.` : null,
         trustedSource: prioritySourceName(raw.url),
         category
       });

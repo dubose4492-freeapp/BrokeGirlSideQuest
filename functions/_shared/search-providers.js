@@ -1,40 +1,57 @@
 // functions/_shared/search-providers.js
 //
-// Shared search-provider layer. Two ways to use it:
+// Shared search-provider layer, built around a STRICT SEQUENTIAL TIER
+// system: only the currently-active tier's engines are ever called. The
+// next tier is never touched until the active tier's primary engine has
+// used up its free-tier quota — tracked for real in KV via quota.js, not
+// approximated. This replaced an earlier "fire every engine every scan"
+// design; that mode is gone, this is the whole search layer now.
 //
-// searchWithFallback() — cheap, sequential. Tries providers in order below,
-// stops at the first one that succeeds. Good for narrow, single-answer
-// lookups (e.g. "find this one company's official site").
+//   Tier 1 — Tavily + Gemini (grounded search) + OpenAI (web_search tool)
+//   Tier 2 — Serper.dev + OpenAI (web_search tool)          [once Tavily's quota is used up]
+//   Tier 3 — Exa + Gemini (grounded search) + OpenAI (web_search tool)  [once Serper's quota is used up]
+//   Tier 4 — DuckDuckGo (scrape) + Gemini + OpenAI          [once Exa's quota is used up — terminal, unlimited]
 //
-// searchAllSources() — the "run every engine every time" mode. Fires every
-// CONFIGURED provider in parallel on every call (not stop-at-first-success),
-// merges and de-duplicates the results by URL, and tags each one with which
-// engine(s) surfaced it. This is what freebies.js / restaurant-deals.js /
-// grocery-price.js / gas-price.js use for the main per-scan result list, so
-// every "run quest" scan freshly queries Tavily, Gemini (both the grounded-
-// search tool AND, separately, Gemini used as a sorter/classifier over in
-// llm-providers.js), OpenAI/ChatGPT's web search tool, Serper, Exa, and
-// DuckDuckGo — every single scan, no caching, exactly like re-running the
-// same question across every engine at once. The trade-off: this spends
-// every configured provider's quota on every scan instead of only the
-// cheapest one that works, so it costs more than searchWithFallback — that
-// cost is the price of the "always freshest, always cross-checked" result
-// this app is going for.
+// Each tier's engines are called IN PARALLEL and merged (same merge/dedupe
+// behavior the old searchAllSources() had) — it's only the tier-to-tier
+// progression that's sequential, not the calls within one tier. A tier is
+// skipped entirely if its primary engine isn't configured (no key set);
+// Gemini/OpenAI inside a tier are just cross-checking extras and are
+// silently dropped from that tier's parallel call if their own keys aren't
+// configured — they never block tier selection.
 //
-// Providers, in the order searchWithFallback tries them (searchAllSources
-// doesn't care about order — it fires all of them together):
-//   1. Tavily      (env.TAVILY_API_KEY)
-//   2. Gemini       (env.GOOGLE_AI_API_KEY) — Google Search grounding tool.
-//                    5,000 free grounded prompts/MONTH on Gemini 3.x
-//                    (renews monthly), then $14/1,000.
-//   3. Serper.dev  (env.SERPER_API_KEY)  — 2,500 queries, one-time free tier
-//   4. Exa         (env.EXA_API_KEY)     — $10 credit, one-time free tier
-//   5. OpenAI       (env.OPENAI_API_KEY) — ChatGPT's web_search tool via the
-//                    Responses API. Needs a real OpenAI platform API key
-//                    with billing enabled (platform.openai.com) — a
-//                    ChatGPT.com login is not usable here; this is a
-//                    server-to-server API call, not a browser session.
-//   6. DuckDuckGo HTML scrape           — no key, no signup, unlimited
+// Quota bookkeeping is keyed off each tier's PRIMARY engine only (Tavily,
+// Serper, Exa) — Gemini/OpenAI ride along in whichever tier is active
+// without being quota-tracked themselves, matching the tier spec above.
+// Caps, all overridable via env vars, with a conservative built-in default:
+//   TAVILY_MONTHLY_LIMIT  (default 1000)   — resets monthly
+//   SERPER_TOTAL_LIMIT    (default 2500)   — one-time free-tier total, never resets
+//   EXA_CALL_LIMIT        (default 1000)   — Exa's free tier is a one-time
+//     $10 CREDIT, not a call count, and there's no live "credit remaining"
+//     endpoint to check — this approximates it as a call-count budget.
+//     Set EXA_CALL_LIMIT explicitly once you know your actual Exa pricing
+//     if this default drifts from what $10 actually buys you.
+// See functions/_shared/quota.js for how usage is persisted (KV, fails
+// open — an unbound QUOTA_KV means the tier system can't track usage and
+// effectively stays on Tier 1 forever; see that file's header).
+//
+// Two entry points, same as before:
+//
+// searchWithFallback() — cheap, narrow, single-answer lookups (e.g. "find
+// this one company's official site"). Tries the active tier's engines in
+// order (primary first), and only spills into the NEXT tier if every
+// engine in the active tier fails outright — a resilience fallback for
+// real failures, distinct from (and never a substitute for) the
+// quota-driven tier advancement above. Only counts against quota when the
+// primary engine itself is the one that actually returns results.
+//
+// searchAllSources() — the main per-scan result list used by freebies.js /
+// restaurant-deals.js / grocery-price.js / gas-price.js. Fires the active
+// tier's engines in parallel, merges/de-dupes by URL same as before. If
+// that tier comes back completely empty, tries the next tier down as the
+// same kind of resilience fallback (never blocks a scan just because one
+// tier's engines all timed out), all the way down to the DuckDuckGo
+// terminal tier, which is always available.
 //
 // Every provider function returns the same normalized shape:
 //   [{ title, url, content, publishedDate }]
@@ -52,6 +69,8 @@
 //     requirement the way it used to. Gemini has no native `days`/
 //     `maxResults` knob for grounding — see geminiGroundedSearch below for
 //     how those are approximated instead.
+
+import { getQuotaUsage, incrementQuotaUsage } from "./quota.js";
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 
@@ -350,102 +369,86 @@ function stripTags(s) {
     .trim();
 }
 
-// Walks the provider chain in order, skipping unconfigured ones, and
-// returns { results, provider } from the first one that succeeds.
-// DuckDuckGo is always attempted last regardless of what's configured —
-// it's the one provider with zero setup cost, so it's the app's real
-// floor rather than an opt-in extra.
-//
-// If every provider fails, the thrown Error carries two things instead of
-// just one provider's raw message:
-//   - err.message        — a short summary of ALL providers tried and why
-//                           each failed (for server-side logs only, via
-//                           `wrangler pages deployment tail` — never send
-//                           this to the browser, it can contain account/
-//                           billing details from the upstream provider)
-//   - err.publicMessage  — a generic, safe-to-display sentence for the
-//                           end user, with no provider names or raw
-//                           upstream text in it
-// Callers in onRequestPost handlers should log err.message server-side and
-// respond to the client with err.publicMessage.
-export async function searchWithFallback(env, query, includeDomains, options = {}) {
-  const providers = [
-    { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
-    { name: "gemini", key: env.GOOGLE_AI_API_KEY, fn: geminiGroundedSearch },
-    { name: "serper", key: env.SERPER_API_KEY, fn: serperSearch },
-    { name: "exa", key: env.EXA_API_KEY, fn: exaSearch },
-    { name: "openai", key: env.OPENAI_API_KEY, fn: openaiSearch }
-  ].filter(p => p.key);
-
-  const failures = [];
-  console.log(`[search] "${query}" — trying: ${providers.map(p => p.name).join(", ") || "(none keyed)"}, then duckduckgo`);
-  for (const p of providers) {
-    try {
-      const results = await p.fn(env, query, includeDomains, options);
-      console.log(`[search] ${p.name} OK — ${results.length} results for "${query}"`);
-      return { results, provider: p.name };
-    } catch (err) {
-      console.warn(`[search] ${p.name} FAILED — ${err.message}`);
-      failures.push(`${p.name}: ${err.message}`);
-    }
+// ---------- Tier definitions ----------
+// `primaryEngine` is what quota is tracked against and what decides
+// whether this tier is "exhausted". `keyEnv` is the env var that must be
+// set for the primary engine (and therefore this tier) to be usable at
+// all — a tier with an unconfigured primary is skipped entirely, same as
+// how individual providers used to be skipped when unkeyed. `extraEngines`
+// are the cross-checking engines that ride along in this tier's parallel
+// call; each is only actually included if ITS OWN key is configured, but
+// their absence never disqualifies the tier itself.
+const TIER_DEFS = [
+  {
+    id: "tier1", primaryEngine: "tavily", keyEnv: "TAVILY_API_KEY",
+    extraEngines: ["gemini", "openai"],
+    capEnv: "TAVILY_MONTHLY_LIMIT", defaultCap: 1000, period: "monthly"
+  },
+  {
+    id: "tier2", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
+    extraEngines: ["openai"],
+    capEnv: "SERPER_TOTAL_LIMIT", defaultCap: 2500, period: "total"
+  },
+  {
+    id: "tier3", primaryEngine: "exa", keyEnv: "EXA_API_KEY",
+    extraEngines: ["gemini", "openai"],
+    capEnv: "EXA_CALL_LIMIT", defaultCap: 1000, period: "total"
+  },
+  {
+    id: "tier4", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
+    extraEngines: ["gemini", "openai"],
+    capEnv: null, defaultCap: Infinity, period: "total"
   }
+];
 
-  // Nothing keyed worked (or nothing keyed was configured at all) — fall
-  // back to the no-key DuckDuckGo scrape as the last resort.
-  try {
-    const results = await duckduckgoSearch(env, query, includeDomains, options);
-    console.log(`[search] duckduckgo OK — ${results.length} results for "${query}"`);
-    return { results, provider: "duckduckgo" };
-  } catch (ddgErr) {
-    console.warn(`[search] duckduckgo FAILED — ${ddgErr.message}`);
-    failures.push(`duckduckgo: ${ddgErr.message}`);
-    const err = new Error(`All search providers failed — ${failures.join(" | ")}`);
-    err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
-    throw err;
+const ENGINE_FN = { tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch, openai: openaiSearch, duckduckgo: duckduckgoSearch };
+const ENGINE_KEY_ENV = { tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY", openai: "OPENAI_API_KEY" };
+
+// This tier's primary engine, plus whichever of its extraEngines are
+// actually keyed — duckduckgo needs no key so it's always included when
+// it's the primary.
+function configuredEngines(env, tier) {
+  const engines = [];
+  if (tier.primaryEngine === "duckduckgo" || env[tier.keyEnv]) engines.push(tier.primaryEngine);
+  for (const name of tier.extraEngines) {
+    if (env[ENGINE_KEY_ENV[name]]) engines.push(name);
   }
+  return engines;
 }
 
-// Fires EVERY configured provider IN PARALLEL for the same query — Tavily,
-// Gemini's grounded search, Serper, Exa, OpenAI's web search, plus
-// DuckDuckGo every time (it needs no key, so it always runs alongside
-// whichever keyed providers are configured, rather than only as a last
-// resort). This is the "run it on every engine, every scan" mode: instead
-// of stopping at the first provider that answers, every one of them gets
-// asked fresh, so results reflect whatever's most current across all of
-// them right now, not just whichever provider happened to answer first.
-//
-// Results are merged and de-duplicated by URL. When the same URL comes
-// back from more than one provider, those results are combined into a
-// single entry — the longest `content` wins (whichever provider extracted
-// the most detail) and `sources` lists every provider that surfaced it, so
-// a listing multiple engines independently agree on can be treated as more
-// trustworthy downstream (e.g. by the sorter-AI classification step in
-// freebies.js / restaurant-deals.js).
-//
-// Costs more than searchWithFallback per call, on purpose — every
-// configured provider's quota gets spent on every single call instead of
-// just the cheapest one that works. Use this for the main per-scan result
-// list; keep narrow single-answer lookups (e.g. "find this one company's
-// site") on the cheaper searchWithFallback.
-export async function searchAllSources(env, query, includeDomains, options = {}) {
-  const providers = [
-    { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
-    { name: "gemini", key: env.GOOGLE_AI_API_KEY, fn: geminiGroundedSearch },
-    { name: "serper", key: env.SERPER_API_KEY, fn: serperSearch },
-    { name: "exa", key: env.EXA_API_KEY, fn: exaSearch },
-    { name: "openai", key: env.OPENAI_API_KEY, fn: openaiSearch }
-  ].filter(p => p.key);
-  // DuckDuckGo needs no key — always included, not just a last resort.
-  providers.push({ name: "duckduckgo", key: true, fn: duckduckgoSearch });
+// Index of the first tier that's both usable (primary engine configured)
+// and not yet quota-exhausted. Falls through to the terminal DuckDuckGo
+// tier (always usable, never exhausted) if every earlier tier is either
+// unconfigured or used up.
+async function resolveActiveTierIndex(env) {
+  for (let i = 0; i < TIER_DEFS.length - 1; i++) {
+    const tier = TIER_DEFS[i];
+    if (!env[tier.keyEnv]) continue; // primary engine not configured — skip this tier entirely
+    const cap = Number(env[tier.capEnv]) || tier.defaultCap;
+    const used = await getQuotaUsage(env, tier.primaryEngine, tier.period);
+    if (used < cap) return i;
+    console.log(`[search] ${tier.id} (${tier.primaryEngine}) exhausted — ${used}/${cap} — advancing`);
+  }
+  return TIER_DEFS.length - 1; // terminal tier
+}
 
-  console.log(`[search-all] "${query}" — firing in parallel: ${providers.map(p => p.name).join(", ")}`);
-  const settled = await Promise.allSettled(providers.map(p => p.fn(env, query, includeDomains, options)));
+// Fires one tier's configured engines in parallel, merges/de-dupes by URL
+// exactly like the old searchAllSources() did, and — only when the
+// PRIMARY engine is the one that actually succeeded — records one unit of
+// quota usage against it. Cross-checking extras (Gemini/OpenAI riding
+// along) are never quota-tracked themselves.
+async function runTierParallel(env, tier, query, includeDomains, options) {
+  const engines = configuredEngines(env, tier);
+  if (!engines.length) return { results: [], providers: [], failedProviders: [], tierId: tier.id };
+
+  console.log(`[search] ${tier.id} — firing in parallel: ${engines.join(", ")}`);
+  const settled = await Promise.allSettled(engines.map(name => ENGINE_FN[name](env, query, includeDomains, options)));
 
   const merged = new Map(); // url -> { title, url, content, publishedDate, sources: [] }
   const succeeded = [];
   const failures = [];
   settled.forEach((s, i) => {
-    const name = providers[i].name;
+    const name = engines[i];
     if (s.status === "fulfilled") {
       succeeded.push(name);
       for (const r of s.value) {
@@ -455,7 +458,6 @@ export async function searchAllSources(env, query, includeDomains, options = {})
           merged.set(r.url, { ...r, sources: [name] });
         } else {
           existing.sources.push(name);
-          // Keep whichever version has more extracted detail.
           if ((r.content || "").length > (existing.content || "").length) existing.content = r.content;
           existing.publishedDate = existing.publishedDate || r.publishedDate;
         }
@@ -465,13 +467,81 @@ export async function searchAllSources(env, query, includeDomains, options = {})
     }
   });
 
-  console.log(`[search-all] "${query}" — ${succeeded.join(", ") || "(none)"} succeeded, ${merged.size} unique results` + (failures.length ? ` | failed: ${failures.join(" | ")}` : ""));
-
-  if (!succeeded.length) {
-    const err = new Error(`All search providers failed — ${failures.join(" | ")}`);
-    err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
-    throw err;
+  if (succeeded.includes(tier.primaryEngine)) {
+    await incrementQuotaUsage(env, tier.primaryEngine, tier.period);
   }
 
-  return { results: Array.from(merged.values()), providers: succeeded, failedProviders: failures };
+  console.log(`[search] ${tier.id} — ${succeeded.join(", ") || "(none)"} succeeded, ${merged.size} unique results` + (failures.length ? ` | failed: ${failures.join(" | ")}` : ""));
+  return { results: Array.from(merged.values()), providers: succeeded, failedProviders: failures, tierId: tier.id };
+}
+
+// Tries a tier's engines one at a time (primary first) and returns the
+// first one that succeeds — used by searchWithFallback for cheap, narrow
+// single-answer lookups where firing every engine in the tier at once
+// would be wasteful.
+async function runTierSequential(env, tier, query, includeDomains, options) {
+  const engines = configuredEngines(env, tier);
+  const failures = [];
+  for (const name of engines) {
+    try {
+      const results = await ENGINE_FN[name](env, query, includeDomains, options);
+      if (name === tier.primaryEngine) await incrementQuotaUsage(env, tier.primaryEngine, tier.period);
+      return { results, provider: name, tierId: tier.id };
+    } catch (err) {
+      failures.push(`${name}: ${err.message}`);
+    }
+  }
+  return { results: [], provider: null, tierId: tier.id, failures };
+}
+
+// Narrow, single-answer lookups (e.g. "find this one company's official
+// site"). Uses the currently-active tier's engines, primary first; only
+// spills into the NEXT tier down if every engine in the active tier fails
+// outright — a resilience fallback for real failures, not a substitute for
+// the quota-driven tier advancement in resolveActiveTierIndex.
+//
+// err.message (server logs only) carries every failure seen; err.publicMessage
+// is the safe, generic string to show the end user — same contract as before.
+export async function searchWithFallback(env, query, includeDomains, options = {}) {
+  const startIndex = await resolveActiveTierIndex(env);
+  const failures = [];
+  for (let i = startIndex; i < TIER_DEFS.length; i++) {
+    const tier = TIER_DEFS[i];
+    if (!configuredEngines(env, tier).length) continue;
+    const outcome = await runTierSequential(env, tier, query, includeDomains, options);
+    if (outcome.failures) failures.push(...outcome.failures);
+    if (outcome.results.length) return { results: outcome.results, provider: outcome.provider };
+  }
+  const err = new Error(`All search tiers failed — ${failures.join(" | ") || "no engines configured"}`);
+  err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+  throw err;
+}
+
+// Main per-scan result list used by freebies.js / restaurant-deals.js /
+// grocery-price.js / gas-price.js. Fires the active tier's engines in
+// parallel and merges them (see runTierParallel). If the active tier comes
+// back completely empty, falls through to the next tier down as a
+// resilience measure for a single call — it does NOT advance the tier for
+// future calls; that's still governed purely by quota usage.
+export async function searchAllSources(env, query, includeDomains, options = {}) {
+  const startIndex = await resolveActiveTierIndex(env);
+  let lastFailures = [];
+  for (let i = startIndex; i < TIER_DEFS.length; i++) {
+    const tier = TIER_DEFS[i];
+    const outcome = await runTierParallel(env, tier, query, includeDomains, options);
+    if (outcome.results.length || i === TIER_DEFS.length - 1) {
+      if (!outcome.providers.length && !outcome.results.length && i === TIER_DEFS.length - 1) {
+        const err = new Error(`All search tiers failed — ${[...lastFailures, ...outcome.failedProviders].join(" | ")}`);
+        err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+        throw err;
+      }
+      return { results: outcome.results, providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+    }
+    lastFailures = outcome.failedProviders;
+  }
+  // Unreachable in practice (the loop always returns at the terminal tier
+  // above), but keeps the function's return type honest.
+  const err = new Error(`All search tiers failed — ${lastFailures.join(" | ")}`);
+  err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+  throw err;
 }

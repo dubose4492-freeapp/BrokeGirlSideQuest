@@ -24,7 +24,14 @@ encrypted secrets and proxy the requests server-side:
   by-mail. Every tab now works exactly like grocery: "Claim" always points
   at the actual company/org's own page, and if the offer was found on a
   third-party blog or news article, that source shows up as a separate
-  "See Details" link.
+  "See Details" link. Clothing, Toys, Accessories, Events, and Mail also
+  accept the same "spend $10 or less, get an item free" / BOGO rule
+  restaurant-deals.js already applies to food deals (Grocery and Community
+  are excluded — Grocery is priced item-by-item, Community resources are
+  already fully free). The Events tab additionally treats "isLocal" as a
+  drive-distance signal — only a real, physical, 100%-free event within
+  the radius the person set counts, not something nationwide/online with
+  no venue nearby.
 
 Both endpoints also now pull apart "roundup" posts — a blog listing deals
 at several different restaurants/stores in one article — into one card
@@ -48,63 +55,78 @@ noticeably more of your search quota than before — and potentially more
 still now that a single roundup post can produce several offers instead
 of one. Worth keeping an eye on if you're on a free tier.
 
-### Search: every engine, every scan
+### Search: strict tiers, not "every engine every scan"
 All four search-using endpoints (`freebies.js`, `restaurant-deals.js`,
 `grocery-price.js`, `gas-price.js`) share one provider layer in
-`functions/_shared/search-providers.js`, with six possible engines:
+`functions/_shared/search-providers.js`, built around four TIERS instead
+of firing every engine on every call:
 
-1. **Tavily** (`TAVILY_API_KEY`)
-2. **Gemini** (`GOOGLE_AI_API_KEY`) — Google Search grounding tool, 5,000
-   free grounded prompts/month
-3. **Serper.dev** (`SERPER_API_KEY`) — 2,500 queries, one-time free tier
-4. **Exa** (`EXA_API_KEY`) — $10 credit, one-time free tier
-5. **OpenAI / ChatGPT** (`OPENAI_API_KEY`) — ChatGPT's web_search tool via
-   the Responses API. This is a real OpenAI *platform* API key from
-   platform.openai.com with billing/credit attached — not a ChatGPT.com
-   login. No free tier, billed per call from the first request.
-6. **DuckDuckGo** — no key, no signup, effectively unlimited
+| Tier | Engines (parallel within the tier) | Advances once... |
+|---|---|---|
+| 1 | **Tavily** + Gemini + OpenAI/ChatGPT web search | Tavily's monthly quota is used up |
+| 2 | **Serper.dev** + OpenAI/ChatGPT web search | Serper's one-time 2,500-query total is used up |
+| 3 | **Exa** + Gemini + OpenAI/ChatGPT web search | Exa's one-time $10 credit (approximated as a call count) is used up |
+| 4 | **DuckDuckGo** (scrape) + Gemini + OpenAI/ChatGPT web search | never — this is the terminal, unlimited floor |
 
-The **main per-scan result list** on every one of the four endpoints calls
-`searchAllSources()` — this fires every one of the engines above that's
-configured, IN PARALLEL, on every single scan, instead of stopping at the
-first one that answers. Results are merged and de-duplicated by URL; a
-listing that shows up in more than one engine's results gets tagged with
-every engine that found it. So "run a scan" now means: query Tavily,
-Gemini's grounded search, Serper, Exa, OpenAI's web search, and DuckDuckGo
-all at once, every time, for the freshest possible combined picture —
-matching Gemini AND ChatGPT independently re-searching from scratch on
-every button-press rather than reusing anything cached.
+Only the ACTIVE tier's engines get called — Tier 2 is never touched while
+Tier 1 still has quota left. The bolded engine in each row is that tier's
+*primary*; quota is tracked only against it (via
+`functions/_shared/quota.js`, KV-backed — see setup below). Gemini and
+OpenAI ride along inside whichever tier is active as cross-checking
+extras and aren't quota-tracked themselves.
 
-The classification/"sorter AI" step right after search does the same
-thing on the model side: `chatWithEnsemble()` in `llm-providers.js` runs
-every configured LLM provider in parallel too, so with both
-`GOOGLE_AI_API_KEY` and `OPENAI_API_KEY` set, Gemini and ChatGPT each
-independently classify/sort the same raw search results and get
-cross-checked against each other before anything reaches the app.
+Within one tier, the main per-scan result list (`searchAllSources()`)
+fires that tier's engines in parallel and merges/de-dupes them by URL, a
+listing found by more than one engine gets tagged with all of them, same
+as before. If a whole tier's engines all fail outright on one call, it
+falls through to the next tier down as a one-off resilience measure —
+that never changes which tier is considered "active" for future calls,
+only quota usage does that.
 
 Narrower, single-answer lookups (e.g. "find this one company's official
-site" so the Claim button points somewhere real) still use the cheaper
-`searchWithFallback()` — stop at the first engine that answers — since
-ensembling six engines for a lookup with only one right answer doesn't buy
-anything extra.
+site" so the Claim button points somewhere real) use `searchWithFallback()`
+— tries the active tier's engines one at a time (primary first) instead of
+firing all of them, since a lookup with only one right answer doesn't need
+parallel cross-checking.
 
-**Cost note:** `searchAllSources()` spends every configured engine's quota
-on every scan instead of only the cheapest one that works, so it costs
-noticeably more than the old stop-at-first-success chain — especially on
-`grocery-price.js`, which runs this once per grocery item (~11 items) per
-scan. OpenAI has no free tier at all, so once `OPENAI_API_KEY` is set,
-every scan spends real money on it immediately. Worth watching your
-provider dashboards once this is live, particularly if traffic grows.
-Leaving any of the five keyed engines unset just skips that engine —
-nothing breaks, `searchAllSources()` still works with as few as zero keys
-configured (DuckDuckGo alone).
+The classification/"sorter AI" step right after search is unchanged:
+`chatWithEnsemble()` in `llm-providers.js` runs every configured LLM
+provider in parallel (OpenRouter, Groq, Cerebras, Mistral, Google AI
+Studio, Hugging Face, Cohere, OpenAI), so with two or more keyed, several
+models independently classify/sort the same raw search results and get
+cross-checked against each other before anything reaches the app.
 
-One caveat: DuckDuckGo has no official free web-search API, so that last
-step works by fetching and parsing DDG's plain HTML results page. It's
-the most fragile link in the chain — if DuckDuckGo changes their page
-markup, that step will start quietly returning fewer or zero results
+**Cost note:** because only one tier is ever active at a time, this
+spends noticeably less quota per scan than the old "fire every engine"
+design did — Tier 1 alone runs Tavily+Gemini+OpenAI, not all six engines.
+OpenAI's `web_search` tool rides along in every tier though, and OpenAI
+has no free tier at all, so once `OPENAI_API_KEY` is set it spends real
+money on every scan regardless of which tier is active. Worth watching
+your provider dashboards once this is live.
+
+One caveat: DuckDuckGo (Tier 4) has no official free web-search API, so
+that step works by fetching and parsing DDG's plain HTML results page.
+It's the most fragile engine in the whole chain — if DuckDuckGo changes
+their page markup, it'll start quietly returning fewer or zero results
 instead of erroring. It's meant as a "search still basically works"
-floor, not a long-term primary provider.
+floor once every paid/free-credit tier above it is exhausted, not a
+long-term primary provider.
+
+#### Setting up quota tracking (so tiers actually advance)
+Without a bound `QUOTA_KV` namespace, usage always reads as 0 used, so the
+app stays on Tier 1 forever (as long as `TAVILY_API_KEY` is set) instead
+of ever rotating to Serper/Exa/DuckDuckGo — same fail-open philosophy as
+rate limiting below, just means the tiers don't actually rotate until you
+set this up:
+
+1. `wrangler kv:namespace create QUOTA_KV` (use a namespace separate from
+   `RATE_LIMIT_KV` — they should never share keys)
+2. Copy the `id` it prints into `wrangler.toml`, uncommenting the second
+   `[[kv_namespaces]]` block and filling in `id = "..."`
+3. (Optional) Uncomment the `[vars]` block below it to override any tier's
+   default quota cap (`TAVILY_MONTHLY_LIMIT`, `SERPER_TOTAL_LIMIT`,
+   `EXA_CALL_LIMIT`) if your actual plan differs from the built-in defaults
+4. Redeploy
 
 ### Security: rate limiting, input limits, and a closed-off dead endpoint
 Three changes, all aimed at "real users can hit this as much as they want,
