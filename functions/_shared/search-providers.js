@@ -493,6 +493,39 @@ function isEngineConfigured(env, name) {
   return keyEnv ? !!env[keyEnv] : true;
 }
 
+// The frontend's category queries (freebies.js's callers) are written in a
+// long, comma-stuffed, natural-language style — e.g. "free toy giveaways
+// promotions, free toy drives, kids workshops, LOWES HOMEDEPOT MICHAELS
+// LEGO Hasbro toy drives near Nashville within 15 miles". Tavily/Serper/
+// Exa and the LLM-grounded Gemini/OpenAI tools all interpret intent behind
+// that kind of query fine — they're AI-native. DuckDuckGo/Google CSE/
+// Firecrawl are traditional keyword-matching search underneath, though,
+// and two things in a query like that actively hurt them:
+//   1. "within N miles" is literal text with no real webpage containing
+//      that exact phrase — a keyword engine tries to match it verbatim
+//      and gets nothing.
+//   2. The sheer length/comma-stuffing dilutes keyword overlap toward
+//      zero on a traditional AND-style match.
+// This strips the distance phrase and trims stacked commas/whitespace so
+// these three engines get a query shaped the way they actually search —
+// the sorter AIs downstream (llmClassify/llmExtract) still do the real
+// qualifying judgment either way, so simplifying the search string here
+// costs nothing on the classification side. Serper is deliberately left
+// out — it's Tier 2's primary only (never rides along in Tier 4), and
+// it's working fine on the original rich query as-is.
+const KEYWORD_ENGINES = new Set(["duckduckgo", "googlecse", "firecrawl"]);
+function simplifyQueryForKeywordEngines(query) {
+  return query
+    .replace(/\bwithin\s+\d+\s*(miles|mi)\b/gi, "")
+    .replace(/\s*,\s*,+/g, ",")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s*,\s*$/, "")
+    .trim();
+}
+function queryForEngine(name, query) {
+  return KEYWORD_ENGINES.has(name) ? simplifyQueryForKeywordEngines(query) : query;
+}
+
 // This tier's primary engine, plus whichever of its extraEngines are
 // actually keyed — duckduckgo needs no key so it's always included when
 // it's the primary.
@@ -531,7 +564,7 @@ async function runTierParallel(env, tier, query, includeDomains, options) {
   if (!engines.length) return { results: [], providers: [], failedProviders: [], tierId: tier.id };
 
   console.log(`[search] ${tier.id} — firing in parallel: ${engines.join(", ")}`);
-  const settled = await Promise.allSettled(engines.map(name => ENGINE_FN[name](env, query, includeDomains, options)));
+  const settled = await Promise.allSettled(engines.map(name => ENGINE_FN[name](env, queryForEngine(name, query), includeDomains, options)));
 
   const merged = new Map(); // url -> { title, url, content, publishedDate, sources: [] }
   const succeeded = [];
@@ -573,7 +606,7 @@ async function runTierSequential(env, tier, query, includeDomains, options) {
   const failures = [];
   for (const name of engines) {
     try {
-      const results = await ENGINE_FN[name](env, query, includeDomains, options);
+      const results = await ENGINE_FN[name](env, queryForEngine(name, query), includeDomains, options);
       if (name === tier.primaryEngine) await incrementQuotaUsage(env, tier.primaryEngine, tier.period);
       return { results, provider: name, tierId: tier.id };
     } catch (err) {
