@@ -45,6 +45,75 @@ const AGGREGATOR_CHAINS = new Set(["GasBuddy", "AAA"]);
 
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
+// ---------- Location relevance filter ----------
+// The bug this fixes: GAS_STATION_DOMAINS are national chain homepages
+// (shell.com, gasbuddy.com, etc.) — restricting a search to those domains
+// does NOT restrict it geographically, and the search engines used here
+// are keyword-matchers, not geocoders. A query stuffed with 22 chain names
+// plus "near Lafayette, TN" can easily come back with a real, current gas
+// price... for a station in Ohio, because the page matched on chain name
+// and the word "gas" and nothing enforced that Lafayette/TN actually
+// appears anywhere in the result. This filter rejects any result that
+// doesn't actually mention the target location before a price is ever
+// extracted from it, so "cheapest near you" can't silently resolve to
+// "cheapest anywhere Google could find."
+const STATE_ABBR = {
+  alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
+  colorado: "co", connecticut: "ct", delaware: "de", florida: "fl", georgia: "ga",
+  hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia",
+  kansas: "ks", kentucky: "ky", louisiana: "la", maine: "me", maryland: "md",
+  massachusetts: "ma", michigan: "mi", minnesota: "mn", mississippi: "ms",
+  missouri: "mo", montana: "mt", nebraska: "ne", nevada: "nv",
+  "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm", "new york": "ny",
+  "north carolina": "nc", "north dakota": "nd", ohio: "oh", oklahoma: "ok",
+  oregon: "or", pennsylvania: "pa", "rhode island": "ri", "south carolina": "sc",
+  "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
+  virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi",
+  wyoming: "wy"
+};
+// Words too generic to prove a result is actually about the target place
+// (a page can say "county" or "near" without being anywhere close).
+const LOCATION_STOPWORDS = new Set(["near", "county", "area", "city", "town", "usa", "us"]);
+
+// Pulls out the meaningful place-name tokens from whatever the client sent
+// as `location` (a city/state string, or just a raw ZIP) — e.g.
+// "Lafayette, TN" -> ["lafayette", "tn", "tennessee"]. Both the abbreviation
+// and full state name are included since either could show up in a result.
+function locationKeywords(location, zip) {
+  const tokens = new Set();
+  if (zip) tokens.add(zip.toLowerCase());
+  const parts = (location || "").split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean);
+  for (const part of parts) {
+    for (const word of part.split(/\s+/)) {
+      const clean = word.replace(/[^a-z0-9]/g, "");
+      if (clean.length >= 2 && !LOCATION_STOPWORDS.has(clean)) tokens.add(clean);
+    }
+    if (STATE_ABBR[part]) tokens.add(STATE_ABBR[part]);
+    for (const [full, abbr] of Object.entries(STATE_ABBR)) {
+      if (abbr === part) tokens.add(full.replace(/\s+/g, ""));
+    }
+  }
+  return [...tokens];
+}
+
+function resultMentionsLocation(r, keywords) {
+  if (!keywords.length) return true; // nothing usable to match against — don't over-filter
+  const text = ((r.title || "") + " " + (r.content || "") + " " + (r.url || "")).toLowerCase();
+  return keywords.some(kw => kw.length >= 3 && text.includes(kw));
+}
+
+// Keeps only results that actually mention the target location, so a
+// price can never be extracted from a page about some other state/city
+// just because it matched on chain name or the word "gas". Falls back to
+// the unfiltered list only when filtering would wipe out everything AND
+// the caller has no further tier to fall back to — callers here always
+// have tier 2, so in practice an empty filtered set just means "try the
+// open web next" rather than "trust an unrelated result."
+function filterByLocation(results, location, zip) {
+  const keywords = locationKeywords(location, zip);
+  return results.filter(r => resultMentionsLocation(r, keywords));
+}
+
 // Gas prices are commonly quoted to a third decimal (e.g. $3.199), unlike
 // grocery prices — the regex allows 2 or 3 decimal places accordingly.
 function extractLowestPriceRegex(results) {
@@ -75,11 +144,14 @@ function findChainName(text) {
   return null;
 }
 
-async function extractLowestPriceLLM(env, results, { ensemble = false } = {}) {
+async function extractLowestPriceLLM(env, results, { ensemble = false, location = null } = {}) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
     .join("\n\n");
-  const prompt = `You are finding the lowest real current price per gallon for regular unleaded gasoline, from these search result snippets. Ignore prices for premium/diesel unless that's all a snippet gives, ignore prices for unrelated products (snacks, car washes, other cities), and ignore vague "prices range from X to Y" statements unless a specific station price is given.
+  const locationGuard = location
+    ? ` Every snippet here has already been pre-filtered to mention "${location}" somewhere, but double check: only use a snippet if it's genuinely about a station in or near ${location}, not a different city/state that happens to share a chain name or a word.`
+    : "";
+  const prompt = `You are finding the lowest real current price per gallon for regular unleaded gasoline, from these search result snippets.${locationGuard} Ignore prices for premium/diesel unless that's all a snippet gives, ignore prices for unrelated products (snacks, car washes, other cities), and ignore vague "prices range from X to Y" statements unless a specific station price is given.
 
 For the winning snippet, identify the actual STATION BRAND the price is from (e.g. "Shell", "QuikTrip", "Costco") — read this out of the text itself, not the website's domain name. GasBuddy and AAA are price-tracking sites, not stations — if the underlying station brand is named in the text, use that instead. If a specific location is mentioned (e.g. a street or city), include it. If no station brand is stated anywhere, set store to null.
 
@@ -105,6 +177,7 @@ ${snippetText}`;
     if (parsedList.length === 1) return parsedList[0];
     return corroboratePrice(parsedList);
   }
+
 
   let text;
   try {
@@ -147,11 +220,11 @@ async function searchWithFallback(env, query, domains) {
   return sharedSearchWithFallback(env, query, domains, GAS_SEARCH_OPTS); // { results, provider }
 }
 
-async function extractBest(env, results, useEnsemble) {
+async function extractBest(env, results, useEnsemble, location) {
   if (!results.length) return null;
   if (anyLLMConfigured(env)) {
     try {
-      const llmBest = await extractLowestPriceLLM(env, results, { ensemble: useEnsemble });
+      const llmBest = await extractLowestPriceLLM(env, results, { ensemble: useEnsemble, location });
       if (llmBest) return llmBest;
     } catch (err) {
       // fall through to regex
@@ -175,9 +248,14 @@ async function findOfficialStationPage(env, chain) {
   }
 }
 
-async function getWebSearchGasPrice(env, location, radius) {
-  const chainList = GAS_CHAINS.join(", ");
-  const query = `cheapest regular unleaded gas price today near ${location} within ${radius} miles ${chainList}`;
+async function getWebSearchGasPrice(env, location, zip, radius) {
+  // Kept short and natural rather than stuffed with all 22 chain names —
+  // that bloat didn't buy relevance (tier 1 already restricts the domains
+  // being searched) and it drowned out the location terms that actually
+  // matter for a keyword-matching search engine to key in on ${location}.
+  // The ZIP is included explicitly since GasBuddy/AAA-style price pages
+  // are usually indexed by ZIP, not by city name alone.
+  const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
 
   // Tier 1 — known gas station chains + GasBuddy/AAA only.
   let officialResults = [], officialProvider = null;
@@ -186,8 +264,13 @@ async function getWebSearchGasPrice(env, location, radius) {
   } catch (err) {
     officialResults = [];
   }
+  // Domain-restricted != location-restricted (see filterByLocation above)
+  // — every result has to actually mention the target place before a
+  // price can be extracted from it, or "cheapest near you" can quietly
+  // resolve to "cheapest anywhere in the country."
+  officialResults = filterByLocation(officialResults, location, zip);
   const tier1Ensemble = officialProvider && officialProvider !== "tavily" && multipleLLMsConfigured(env);
-  let best = await extractBest(env, officialResults, tier1Ensemble);
+  let best = await extractBest(env, officialResults, tier1Ensemble, location);
   let usedProvider = best ? officialProvider : null;
   let usedEnsemble = best ? tier1Ensemble : false;
 
@@ -201,8 +284,9 @@ async function getWebSearchGasPrice(env, location, radius) {
     } catch (err) {
       openResults = [];
     }
+    openResults = filterByLocation(openResults, location, zip);
     const tier2Ensemble = openProvider && openProvider !== "tavily" && multipleLLMsConfigured(env);
-    best = await extractBest(env, openResults, tier2Ensemble);
+    best = await extractBest(env, openResults, tier2Ensemble, location);
     usedProvider = best ? openProvider : null;
     usedEnsemble = best ? tier2Ensemble : false;
   }
@@ -247,7 +331,7 @@ export async function onRequestGet({ request, env }) {
 
   let result;
   try {
-    result = await getWebSearchGasPrice(env, location, radius);
+    result = await getWebSearchGasPrice(env, location, zip, radius);
   } catch (err) {
     console.error("gas-price lookup failed:", err.message);
     return json({ error: "Gas price lookup is temporarily unavailable. Please try again in a few minutes." }, 502);
