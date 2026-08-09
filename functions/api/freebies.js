@@ -69,15 +69,6 @@ function prioritySourceName(url) {
 
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 function looksFree(text) { return /\bfree\b/i.test(text || ""); }
-// Regex-fallback-only check for the "By Mail" tab's no-shipping-cost rule
-// (the LLM path gets the same rule via CATEGORY_EXTRA_RULES.mail above).
-// Deliberately narrow — only trips on an explicit shipping/handling fee
-// mentioned near a dollar amount, so it doesn't false-positive on offers
-// that just happen to say "free shipping" or "shipping included".
-function requiresPaidShipping(text) {
-  return /\b(shipping|s\s?&\s?h|handling)\b[^.]{0,25}\$\s?\d/i.test(text || "") &&
-    !/\bfree\s+(shipping|s\s?&\s?h|handling)\b/i.test(text || "");
-}
 
 function extractRequirementType(text) {
   const t = (text || "").toLowerCase();
@@ -204,7 +195,7 @@ const CATEGORY_KEYWORDS = {
   // Home Depot Kids Workshop post often never uses the word "toy" at all
   // (it's a free build-a-craft-kit clinic), so the old toy-word-only regex
   // missed those even though they're exactly what the Toys tab is after.
-  toys: /\b(toys?|games?|action figures?|dolls?|lego|playset|toy drive|kids? workshop|build and grow|craft kit)\b/i,
+  toys: /\b(toys?|games?|action figures?|dolls?|lego|playset|toy drives?|kids?\s+workshops?|build and grow|craft kits?)\b/i,
   accessories: /\b(backpacks?|tote bags?|water bottles?|school suppl(?:y|ies)|accessor(?:y|ies)|bags?|sunglasses|jewelry|hat|scarf|glove|mitten|hair clip)\b/i,
   mail: /\b(sample|by mail|mail-?in|free sample)\b/i
 };
@@ -220,7 +211,6 @@ function regexClassify(results, category) {
     const combinedText = (raw.content || "") + " " + (raw.title || "");
     if (!ALWAYS_QUALIFIES.has(category) && !looksFree(combinedText)) continue;
     if (!matchesCategory(combinedText, category)) continue;
-    if (category === "mail" && requiresPaidShipping(combinedText)) continue;
 
     const expires = extractExpiry(raw.content);
     if (isExpired(expires)) continue;
@@ -274,12 +264,11 @@ const CATEGORY_HINTS = {
   community: "food pantries, community fridges, clothing closets, or other free community resources",
   mail: "free items (not just samples) available by mail"
 };
-// An extra qualifying rule appended only for categories where "free" alone
-// isn't the whole bar — right now just "By Mail", where the app is
-// specifically supposed to skip anything that's free-but-you-pay-shipping.
-const CATEGORY_EXTRA_RULES = {
-  mail: ` A "by mail" offer only counts as qualifying if there's no shipping/handling fee charged to get it — if the item itself is free but the offer requires paying for shipping, set qualifies to false.`
-};
+// Extra qualifying rules appended per-category, for categories where "free"
+// alone isn't the whole bar. Empty for now — the old By-Mail
+// no-shipping-fee rule was too strict (it choked off legitimate results
+// where a snippet just mentioned shipping in passing) and was removed.
+const CATEGORY_EXTRA_RULES = {};
 
 // Asks the model to return an "offers" array PER SNIPPET rather than one
 // object per snippet, so a roundup post naming several companies/orgs

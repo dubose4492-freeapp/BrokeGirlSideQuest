@@ -788,7 +788,7 @@ const CATEGORIES = {
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc, r) =>
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: "month", query: () =>
-    `free items by mail ${new Date().getFullYear()} no purchase necessary, no shipping cost` },
+    `free samples and free items by mail no purchase necessary` },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped
   // by renderList()/runFullScan()'s category loops (both filter on
