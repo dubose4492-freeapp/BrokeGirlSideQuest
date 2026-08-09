@@ -209,66 +209,7 @@ function stripTags(s) {
 //                           upstream text in it
 // Callers in onRequestPost handlers should log err.message server-side and
 // respond to the client with err.publicMessage.
-// ---------- Result cache (optional, fail-open) ----------
-//
-// Every call site (freebies.js, restaurant-deals.js, grocery-price.js) goes
-// through this one function, so caching here covers all of them without
-// touching any call site. Bound to a Cloudflare KV namespace called
-// SEARCH_CACHE in wrangler.toml — if that binding isn't set up, every cache
-// operation below throws or is skipped, gets caught, and the function
-// behaves exactly as it did before this cache existed: a live provider call
-// every time. Same "fail open, never let an optional layer break the core
-// feature" pattern the priority-source pass already uses further up this
-// file (and in freebies.js/restaurant-deals.js).
-//
-// Cache key includes query + domains + the options that actually change
-// the result set (maxResults, days) — so two calls that differ only in,
-// say, includeDomains never collide on the same key.
-// TTL is intentionally short (20 minutes): long enough that the handful of
-// searches a single "run quest" scan fires (general pass, priority-source
-// pass, per-offer official-site lookups) share one cached copy instead of
-// hitting the provider for near-duplicate queries seconds apart, and short
-// enough that it never meaningfully competes with the category freshness
-// windows already enforced in freebies.js/restaurant-deals.js (14–30 days).
-const SEARCH_CACHE_TTL_SECONDS = 20 * 60;
-
-function searchCacheKey(query, includeDomains, options) {
-  const domainsPart = (includeDomains && includeDomains.length) ? [...includeDomains].sort().join(",") : "";
-  const { maxResults = 10, days = "" } = options || {};
-  return `search:v1:${query}|domains:${domainsPart}|max:${maxResults}|days:${days}`;
-}
-
-async function getCachedSearch(env, key) {
-  if (!env.SEARCH_CACHE) return null;
-  try {
-    const raw = await env.SEARCH_CACHE.get(key);
-    return raw ? JSON.parse(raw) : null;
-  } catch (err) {
-    // Corrupt entry, KV outage, whatever — treat exactly like a cache miss.
-    console.warn(`[search-cache] read failed — ${err.message}`);
-    return null;
-  }
-}
-
-async function setCachedSearch(env, key, value) {
-  if (!env.SEARCH_CACHE) return;
-  try {
-    await env.SEARCH_CACHE.put(key, JSON.stringify(value), { expirationTtl: SEARCH_CACHE_TTL_SECONDS });
-  } catch (err) {
-    // Never let a failed cache write take down a search that already
-    // succeeded — just log it and move on.
-    console.warn(`[search-cache] write failed — ${err.message}`);
-  }
-}
-
 export async function searchWithFallback(env, query, includeDomains, options = {}) {
-  const cacheKey = searchCacheKey(query, includeDomains, options);
-  const cached = await getCachedSearch(env, cacheKey);
-  if (cached) {
-    console.log(`[search] cache HIT — "${query}" (${cached.results.length} results, originally ${cached.provider})`);
-    return cached;
-  }
-
   const providers = [
     { name: "tavily", key: env.TAVILY_API_KEY, fn: tavilySearch },
     { name: "serper", key: env.SERPER_API_KEY, fn: serperSearch },
@@ -281,9 +222,7 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     try {
       const results = await p.fn(env, query, includeDomains, options);
       console.log(`[search] ${p.name} OK — ${results.length} results for "${query}"`);
-      const outcome = { results, provider: p.name };
-      await setCachedSearch(env, cacheKey, outcome);
-      return outcome;
+      return { results, provider: p.name };
     } catch (err) {
       console.warn(`[search] ${p.name} FAILED — ${err.message}`);
       failures.push(`${p.name}: ${err.message}`);
@@ -295,16 +234,12 @@ export async function searchWithFallback(env, query, includeDomains, options = {
   try {
     const results = await duckduckgoSearch(env, query, includeDomains, options);
     console.log(`[search] duckduckgo OK — ${results.length} results for "${query}"`);
-    const outcome = { results, provider: "duckduckgo" };
-    await setCachedSearch(env, cacheKey, outcome);
-    return outcome;
+    return { results, provider: "duckduckgo" };
   } catch (ddgErr) {
     console.warn(`[search] duckduckgo FAILED — ${ddgErr.message}`);
     failures.push(`duckduckgo: ${ddgErr.message}`);
     const err = new Error(`All search providers failed — ${failures.join(" | ")}`);
     err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
     throw err;
-    // (Deliberately not cached — a failure is never worth serving back to
-    // the next request for 20 minutes.)
   }
 }

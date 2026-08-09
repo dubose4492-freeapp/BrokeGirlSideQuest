@@ -70,36 +70,6 @@ markup, that step will start quietly returning fewer or zero results
 instead of erroring. It's meant as a "search still basically works"
 floor, not a long-term primary provider.
 
-### Optional: caching search results
-`searchWithFallback()` (in `functions/_shared/search-providers.js`) can now
-cache results in a Cloudflare KV namespace for 20 minutes. This is **fully
-optional and fails open** — nothing else changed, no call site was touched,
-and if you never set up the KV namespace below, the app behaves exactly as
-it did before: a live provider call on every search, same as always.
-
-Why bother: a single "run quest" scan already fires several searches
-(general pass + priority-source pass per tab, plus one more per offer to
-resolve its real "Claim" link) — caching means near-duplicate queries fired
-seconds apart share one result instead of separately burning your Tavily/
-Serper/Exa quota, which is the scarce resource in this app's whole
-fallback-chain design.
-
-To turn it on:
-1. `wrangler kv:namespace create SEARCH_CACHE`
-2. Copy the `id` it prints into `wrangler.toml`, uncommenting the
-   `[[kv_namespaces]]` block and filling in `id = "..."`
-3. Redeploy
-
-To turn it off again, just remove/comment that block — no code change
-needed, `search-providers.js` checks for the binding and skips caching
-entirely if it isn't there.
-
-Note the cache is intentionally short-lived (20 minutes) and separate from
-the category freshness windows in `freebies.js`/`restaurant-deals.js`
-(14–30 days, which filter *how old the underlying offer is allowed to be*)
-— the cache just avoids re-fetching the *same* search twice in a short
-window, it doesn't change what counts as a stale offer.
-
 ### Errors are no longer shown to users verbatim
 Previously, if every provider in the chain failed, the raw upstream error
 text (e.g. Tavily's own "This request exceeds your plan's set usage
