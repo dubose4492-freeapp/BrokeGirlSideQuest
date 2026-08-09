@@ -24,6 +24,9 @@ import { searchWithFallback as sharedSearchWithFallback } from "../_shared/searc
 // extraction path instead of falling straight to the regex fallback).
 // Shared with freebies.js and restaurant-deals.js.
 import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
+// Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+// how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
@@ -336,6 +339,13 @@ async function getWebSearchPrice(env, item, location, radius) {
 
 // ---------- Entry point ----------
 export async function onRequestGet({ request, env }) {
+  // Higher limit than freebies/restaurant-deals: a single grocery scan
+  // fires one call PER item (11 items today, see GROCERY_ITEMS in
+  // index.html), so a normal person re-scanning a few times over 5 minutes
+  // legitimately generates more requests here than on the other tabs.
+  const rl = await checkRateLimit(env, request, "grocery-price", { limit: 150 });
+  if (!rl.allowed) return rateLimitResponse();
+
   const { searchParams } = new URL(request.url);
   const item = searchParams.get("item");
   const zip = searchParams.get("zip");
@@ -343,6 +353,9 @@ export async function onRequestGet({ request, env }) {
   const radius = Math.min(100, Math.max(1, parseInt(searchParams.get("radius") || "100", 10)));
 
   if (!item || !zip) return json({ error: "item and zip query params are required." }, 400);
+  if (item.length > 100 || zip.length > 20) {
+    return json({ error: "item or zip is invalid or too long." }, 400);
+  }
 
   const [krogerResult, webResult] = await Promise.allSettled([
     getKrogerPrice(env, item, zip, radius),

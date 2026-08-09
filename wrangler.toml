@@ -3,3 +3,12 @@ compatibility_date = "2026-08-04"
 
 [assets]
 directory = "./dist"
+
+# Optional per-IP rate limiting on the search-backed endpoints (see
+# DEPLOY_INSTRUCTIONS.md → "Security: rate limiting..."). If this binding
+# isn't set up, functions/_shared/rate-limit.js fails open — every request
+# is allowed — so nothing breaks either way, you just don't have the
+# protection turned on yet.
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "your-kv-namespace-id-here"

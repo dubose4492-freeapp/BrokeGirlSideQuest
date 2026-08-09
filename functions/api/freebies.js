@@ -23,6 +23,9 @@ import { searchWithFallback } from "../_shared/search-providers.js";
 // classification path instead of falling straight to the regex fallback).
 // Shared with restaurant-deals.js and grocery-price.js.
 import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
+// Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+// how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -392,10 +395,19 @@ async function findOfficialSite(env, name) {
 }
 
 export async function onRequestPost({ request, env }) {
+  const rl = await checkRateLimit(env, request, "freebies");
+  if (!rl.allowed) return rateLimitResponse();
+
   let body;
   try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
   const { category, query } = body;
   if (!category || !query) return json({ error: "category and query are required." }, 400);
+  // A real query typed/built by the app is always well under this — this
+  // just caps how much text one request can force through search + LLM
+  // classification, so it's not a free lever for wasting quota.
+  if (typeof query !== "string" || query.length > 300) {
+    return json({ error: "query is invalid or too long." }, 400);
+  }
 
   let results, provider;
   try {

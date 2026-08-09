@@ -20,6 +20,9 @@ import { searchWithFallback as sharedSearchWithFallback } from "../_shared/searc
 // classification path instead of falling straight to the regex fallback).
 // Shared with freebies.js and grocery-price.js.
 import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
+// Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+// how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 
 const MAX_QUALIFYING_PURCHASE = 10; // dollars — "$10 minimum purchase at most"
 
@@ -527,10 +530,16 @@ async function findOfficialSite(env, name) {
 }
 
 export async function onRequestPost({ request, env }) {
+  const rl = await checkRateLimit(env, request, "restaurant-deals");
+  if (!rl.allowed) return rateLimitResponse();
+
   let body;
   try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
   const { location, radius } = body;
   if (!location) return json({ error: "location is required." }, 400);
+  if (typeof location !== "string" || location.length > 200) {
+    return json({ error: "location is invalid or too long." }, 400);
+  }
 
   // Kept deliberately simple/natural rather than a boolean OR/quote
   // expression — that style works great on Tavily's semantic "advanced"

@@ -1,41 +1,26 @@
-// POST /api/search
-// Proxies to Tavily so the API key never reaches the browser.
-// The client sends the same body it used to send Tavily directly,
-// minus api_key — this function adds that from the server secret.
-export async function onRequestPost({ request, env }) {
-  let clientBody;
-  try {
-    clientBody = await request.json();
-  } catch {
-    return json({ error: "Invalid JSON body." }, 400);
-  }
-
-  if (!env.TAVILY_API_KEY) {
-    return json({ error: "Search isn't configured on the server yet (missing TAVILY_API_KEY secret)." }, 500);
-  }
-
-  const upstreamBody = { ...clientBody, api_key: env.TAVILY_API_KEY };
-
-  let upstream;
-  try {
-    upstream = await fetch("https://api.tavily.com/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(upstreamBody)
-    });
-  } catch (err) {
-    return json({ error: `Could not reach Tavily: ${err.message}` }, 502);
-  }
-
-  const text = await upstream.text();
-  // Pass Tavily's response straight through (status + body) so the
-  // front-end's existing error handling keeps working unchanged.
-  return new Response(text, {
-    status: upstream.status,
-    headers: { "Content-Type": "application/json" }
-  });
-}
-
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+// POST /api/search — DISABLED.
+//
+// This used to be a generic pass-through proxy to Tavily: it took whatever
+// JSON body a caller sent and forwarded it straight to Tavily with your
+// server-side API key attached. Nothing in the current app calls this
+// endpoint anymore (freebies.js, restaurant-deals.js, and grocery-price.js
+// all go through functions/_shared/search-providers.js instead, which adds
+// the provider fallback chain, freshness filtering, and rate limiting).
+//
+// Left live, an open unauthenticated proxy like this is a direct path for
+// anyone who finds the URL to spend your Tavily quota with completely
+// arbitrary queries — no rate limit could fully close that off since it
+// forwarded whatever the caller asked for. Since it's unused, the
+// straightforward fix is disabling it rather than hardening something
+// nothing needs.
+//
+// If you ever DO need a generic search proxy again, don't resurrect this —
+// build a new endpoint that goes through searchWithFallback() in
+// _shared/search-providers.js so it gets the same rate limiting and
+// caching every other endpoint has.
+export async function onRequestPost() {
+  return new Response(
+    JSON.stringify({ error: "This endpoint is no longer available." }),
+    { status: 410, headers: { "Content-Type": "application/json" } }
+  );
 }

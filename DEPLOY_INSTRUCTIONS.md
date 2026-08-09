@@ -70,6 +70,43 @@ markup, that step will start quietly returning fewer or zero results
 instead of erroring. It's meant as a "search still basically works"
 floor, not a long-term primary provider.
 
+### Security: rate limiting, input limits, and a closed-off dead endpoint
+Three changes, all aimed at "real users can hit this as much as they want,
+scripts/scrapers can't drain the API quota". No caching layer is included —
+search results are always fetched live, same as the app has always done.
+
+- **Per-IP rate limiting** on `freebies.js`, `restaurant-deals.js`, and
+  `grocery-price.js` (`functions/_shared/rate-limit.js`). Limits are
+  deliberately generous — sized so a person clicking through every tab and
+  re-scanning repeatedly for a long session never comes close, while a
+  script firing hundreds of requests a minute hits a wall fast. It needs
+  its own KV namespace (`RATE_LIMIT_KV`, see setup below) — if you never
+  bind it, this fails open (every request allowed), so nothing breaks
+  either way, you just don't have the protection until the namespace
+  exists.
+- **Basic input length checks** on `query`/`location`/`item` — rejects
+  absurdly long values before they ever reach a search or LLM call, since
+  those were previously unbounded.
+- **`functions/api/search.js` is now disabled** (returns 410). It was a
+  leftover generic proxy straight to Tavily using your key — nothing in
+  the current app calls it, but it was still live and would forward any
+  caller's arbitrary query using your quota. Since it's unused, disabling
+  it was simpler and safer than trying to lock it down.
+
+To turn rate limiting on:
+1. `wrangler kv:namespace create RATE_LIMIT_KV`
+2. Copy the `id` it prints into `wrangler.toml`, uncommenting the
+   `[[kv_namespaces]]` block and filling in `id = "..."`
+3. Redeploy
+
+To turn it off again, just remove/comment that block — no code change
+needed, `rate-limit.js` checks for the binding and allows every request
+through if it isn't there.
+
+None of this requires new dependencies or touches your existing search/
+classify/dedupe logic, and none of it changes what search results come
+back — it only controls how often one IP can ask for them.
+
 ### Errors are no longer shown to users verbatim
 Previously, if every provider in the chain failed, the raw upstream error
 text (e.g. Tavily's own "This request exceeds your plan's set usage
