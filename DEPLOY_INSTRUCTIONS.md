@@ -58,7 +58,7 @@ of one. Worth keeping an eye on if you're on a free tier.
 ### Search: strict tiers, not "every engine every scan"
 All four search-using endpoints (`freebies.js`, `restaurant-deals.js`,
 `grocery-price.js`, `gas-price.js`) share one provider layer in
-`functions/_shared/search-providers.js`, built around TWELVE TIERS instead
+`functions/_shared/search-providers.js`, built around FOURTEEN TIERS instead
 of firing every engine on every call — every free-tier, no-credit-card web
 search API worth wiring in, stacked so the app burns through generous
 renewing tiers first, then one-time allotments, and only falls back to the
@@ -72,25 +72,43 @@ always-on (but weaker) scrapers once every paid-adjacent free tier is spent:
 | 4 | **Exa** | ~1,000 calls/mo ($10 recurring credit, approximated) | quota used up (resets next month) |
 | 5 | **Linkup** | ~1,000 calls/mo ($5 recurring credit, approximated) | quota used up (resets next month) |
 | 6 | **Zenserp** | 50/mo | quota used up (resets next month) |
-| 7 | **Serper.dev** | 2,500 total | one-time allotment used up, never resets |
-| 8 | **Searlo** | 3,000 total | one-time allotment used up, never resets |
-| 9 | **SearchApi.io** | 100 total | one-time allotment used up, never resets |
-| 10 | **Value SERP** | 100 total | one-time allotment used up, never resets |
-| 11 | **Serpent API** | 10 total | one-time allotment used up, never resets |
-| 12 | **DuckDuckGo** (scrape) | unlimited | never — this is the terminal floor |
+| 7 | **Olostep** | 500 credits, ~100 searches assumed (unverified — see below) | quota used up (assumed to reset next month — unconfirmed) |
+| 8 | **Serper.dev** | 2,500 total | one-time allotment used up, never resets |
+| 9 | **Searlo** | 3,000 total | one-time allotment used up, never resets |
+| 10 | **Search1API** | 100 total | one-time allotment used up, never resets |
+| 11 | **SearchApi.io** | 100 total | one-time allotment used up, never resets |
+| 12 | **Value SERP** | 100 total | one-time allotment used up, never resets |
+| 13 | **Serpent API** | 10 total | one-time allotment used up, never resets |
+| 14 | **DuckDuckGo** (scrape) | unlimited | never — this is the terminal floor |
 
 Every tier also carries the same parallel "extras" as before — Gemini
 (grounded search), OpenAI/ChatGPT (web_search tool), and Google CSE — plus
 SearXNG (only if you self-host one, see `SEARXNG_URL` below) riding along
-in Tier 12 alongside DuckDuckGo. None of the extras are quota-tracked;
+in Tier 14 alongside DuckDuckGo. None of the extras are quota-tracked;
 only the bolded primary in each row is.
+
+**On Tier 7 (Olostep):** its request/response shape is confirmed against
+live docs, but its free-tier *cadence* is not — Olostep's own site
+describes it in one place as a plain "free plan" and in another as "500
+free monthly credits," while an independent comparison page calls it "a
+500-request one-time trial rather than a recurring monthly allotment."
+It's placed in the monthly-renewing group per the "monthly credits"
+wording, but if your credits stop resetting, move it to the one-time
+group in `TIER_DEFS` (`search-providers.js`) and change its `period` to
+`"total"`. Its per-search credit cost is also assumed (5 credits/search,
+~100 searches from 500 credits) rather than confirmed — Olostep only
+documents a per-request cost for its separate Answers endpoint (20
+credits), not for the Search endpoint this app calls. Check your Olostep
+dashboard after some real usage and set `OLOSTEP_MONTHLY_LIMIT`
+accordingly.
 
 **Not wired in, on purpose:** Parallel Search's free tier is MCP-protocol-
 only (no plain REST endpoint a `fetch()` call can hit), and InfoMesh is a
 decentralized P2P Python package (libp2p/Kademlia DHT) that needs real TCP
-sockets — neither can run inside a Cloudflare Worker. Search1API, Olostep,
-and NewsCatcher weren't verified against live docs before this was wired
-up; ask if you want any of those added next.
+sockets — neither can run inside a Cloudflare Worker. NewsCatcher was
+checked and skipped: its real News API (v3) has no free tier at all
+($50-500/mo), and the separate old "Free News API" is non-commercial-only
+and news-article-specific — a poor fit for giveaway/deal-finding queries.
 
 Only the ACTIVE tier's engines get called — a later tier is never touched
 while an earlier one still has quota left. The bolded engine in each row is
@@ -128,7 +146,7 @@ has no free tier at all, so once `OPENAI_API_KEY` is set it spends real
 money on every scan regardless of which tier is active. Worth watching
 your provider dashboards once this is live.
 
-One caveat: DuckDuckGo (Tier 12) has no official free web-search API, so
+One caveat: DuckDuckGo (Tier 14) has no official free web-search API, so
 that step works by fetching and parsing DDG's plain HTML results page.
 It's the most fragile engine in the whole chain — if DuckDuckGo changes
 their page markup, it'll start quietly returning fewer or zero results
@@ -269,7 +287,7 @@ wrangler login
    Optional — additional search engines. DuckDuckGo already works with
    none of these set, and every key below UNLOCKS ONE MORE TIER — it never
    fires on every scan, only once every tier above it in the table has run
-   out (see the 12-tier table above). Set as many or as few as you want;
+   out (see the 14-tier table above). Set as many or as few as you want;
    any tier whose key is missing is just skipped over.
    ```bash
    npx wrangler pages secret put CONTEXTWIRE_API_KEY --project-name=brokegirlsidequest
@@ -277,8 +295,10 @@ wrangler login
    npx wrangler pages secret put EXA_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put LINKUP_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put ZENSERP_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put OLOSTEP_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put SERPER_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put SEARLO_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put SEARCH1API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put SEARCHAPI_IO_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put VALUESERP_API_KEY --project-name=brokegirlsidequest
    npx wrangler pages secret put SERPENT_API_KEY --project-name=brokegirlsidequest
@@ -294,8 +314,13 @@ wrangler login
    - Exa — https://exa.ai
    - Linkup — https://linkup.so
    - Zenserp — https://zenserp.com
+   - Olostep — https://www.olostep.com (500 free credits — see
+     search-providers.js's header comment for an unresolved conflict in
+     Olostep's own docs over whether these renew monthly or are a
+     one-time trial; worth checking your dashboard before relying on it)
    - Serper.dev — https://serper.dev
    - Searlo — https://searlo.tech
+   - Search1API — https://www.search1api.com (100 free credits, one-time)
    - SearchApi.io — https://searchapi.io
    - Value SERP — https://valueserp.com
    - Serpent API — https://apiserpent.com
@@ -331,7 +356,7 @@ wrangler login
    `SEARXNG_URL` is different from every other key above: it's not a hosted
    API you sign up for, it's the URL of a SearXNG instance YOU run yourself
    (Docker, a free-tier VPS, etc. — see https://docs.searxng.org). If set,
-   it rides along as an extra in Tier 12 next to DuckDuckGo — genuinely
+   it rides along as an extra in Tier 14 next to DuckDuckGo — genuinely
    unlimited once it's running, since there's no vendor rate limit on your
    own server. Your instance needs `json` enabled under `search.formats` in
    its `settings.yml` (off by default) for this app to parse its results.

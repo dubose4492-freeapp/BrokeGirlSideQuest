@@ -7,7 +7,7 @@
 // approximated. This replaced an earlier "fire every engine every scan"
 // design; that mode is gone, this is the whole search layer now.
 //
-// Twelve tiers now, primaries in this order (each tier's parallel extras —
+// Fourteen tiers now, primaries in this order (each tier's parallel extras —
 // Gemini/OpenAI/Google CSE, plus SearXNG in the terminal tier — omitted
 // below for brevity, see TIER_DEFS for the exact list per tier):
 //   Monthly-renewing (resets automatically, tried first):
@@ -17,14 +17,28 @@
 //     Tier 4  — Exa           ($10/mo recurring credit, ~1,000 calls)
 //     Tier 5  — Linkup        ($5/mo recurring credit, ~1,000 calls, after a 4,000-query signup bonus)
 //     Tier 6  — Zenserp       (50/mo)
+//     Tier 7  — Olostep       (500 credits — see CAVEAT below, ~100 searches assumed)
 //   One-time (never resets — bump the *_LIMIT env var if you upgrade):
-//     Tier 7  — Serper.dev    (2,500 total)
-//     Tier 8  — Searlo        (3,000 total)
-//     Tier 9  — SearchApi.io  (100 total)
-//     Tier 10 — Value SERP    (100 total)
-//     Tier 11 — Serpent API   (10 total)
+//     Tier 8  — Serper.dev    (2,500 total)
+//     Tier 9  — Searlo        (3,000 total)
+//     Tier 10 — Search1API    (100 total)
+//     Tier 11 — SearchApi.io  (100 total)
+//     Tier 12 — Value SERP    (100 total)
+//     Tier 13 — Serpent API   (10 total)
 //   Terminal (no key, never exhausted):
-//     Tier 12 — DuckDuckGo (scrape) + SearXNG (only if self-hosted, see searxngSearch)
+//     Tier 14 — DuckDuckGo (scrape) + SearXNG (only if self-hosted, see searxngSearch)
+//
+// CAVEAT on Olostep's placement (tier 7, monthly group): sources conflict.
+// Olostep's own site says both "free plan" (no cadence stated) and, on a
+// different page, "500 free monthly credits" — but an independent
+// third-party comparison explicitly describes it as "a 500-request
+// one-time trial rather than a recurring monthly allotment." Placed here
+// per the "monthly credits" wording, NOT independently confirmed. If your
+// credits don't actually reset, move this entry down into the one-time
+// group and change its `period` to "total". Its defaultCap (100 searches)
+// is also an assumption — see olostepSearch's comment for details; check
+// your Olostep dashboard after some real usage and set
+// OLOSTEP_MONTHLY_LIMIT explicitly once you know the real number.
 //
 // Deliberately NOT wired in, and why:
 //   - Parallel Search's free tier is MCP-protocol-only (search.parallel.ai/mcp,
@@ -35,8 +49,13 @@
 //     Cloudflare Worker (V8 isolate, JS only) can do. Not portable here.
 //   - The "DuckDuckGo Python trick" (duckduckgo_search) is the same idea as
 //     duckduckgoSearch() below, just in Python — already covered.
-//   - Search1API, Olostep, NewsCatcher weren't verified against live docs
-//     before this was wired up — ask if you want any of them added next.
+//   - NewsCatcher — checked and skipped: its real News API (v3) is
+//     credit-based with no free tier ($50-500/mo plans); the separate old
+//     "Free News API" is non-commercial-only and news-article search
+//     specifically (keyword/topic/source filtering), a poor fit for
+//     giveaway/deal-finding queries even where it'd be usable.
+//   - Search1API and Olostep were verified against live docs and are now
+//     wired in below (tiers 10 and 7 respectively).
 //
 // Each tier's engines are called IN PARALLEL and merged (same merge/dedupe
 // behavior the old searchAllSources() had) — it's only the tier-to-tier
@@ -63,8 +82,10 @@
 //   EXA_CALL_LIMIT             (default 1000)  — resets monthly (approximated call-count budget, see below)
 //   LINKUP_MONTHLY_LIMIT       (default 1000)  — resets monthly (approximated call-count budget, same idea as Exa)
 //   ZENSERP_MONTHLY_LIMIT      (default 50)    — resets monthly
+//   OLOSTEP_MONTHLY_LIMIT      (default 100)   — resets monthly (assumed — see CAVEAT above)
 //   SERPER_TOTAL_LIMIT         (default 2500)  — one-time free-tier total, never resets
 //   SEARLO_TOTAL_LIMIT         (default 3000)  — one-time free-tier total, never resets
+//   SEARCH1API_TOTAL_LIMIT     (default 100)   — one-time free-tier total, never resets
 //   SEARCHAPI_IO_TOTAL_LIMIT   (default 100)   — one-time free-tier total, never resets
 //   VALUESERP_TOTAL_LIMIT      (default 100)   — one-time free-tier total, never resets
 //   SERPENT_API_TOTAL_LIMIT    (default 10)    — one-time free-tier total, never resets
@@ -579,6 +600,82 @@ export async function zenserpSearch(env, query, includeDomains, options = {}) {
   }));
 }
 
+// Olostep — hosted semantic web search (olostep.com/v1/searches), returns
+// deduplicated links with title/url/description under `result.links`.
+// Request/response shape confirmed against live docs. Free tier is 500
+// credits, no card required — see the CAVEAT in this file's header comment
+// about whether those credits actually renew monthly or are a one-time
+// trial; sources disagree. Per-search credit cost for THIS endpoint isn't
+// documented anywhere findable (Olostep confirms 20 credits/request only
+// for its separate /v1/answers endpoint) — the 100-search default cap
+// below assumes ~5 credits/search, which is unverified. Check your Olostep
+// dashboard after some real calls and set OLOSTEP_MONTHLY_LIMIT explicitly
+// once you know the actual number. Only ONE env var needed:
+// OLOSTEP_API_KEY.
+export async function olostepSearch(env, query, includeDomains, options = {}) {
+  const siteFilter = includeDomains && includeDomains.length
+    ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
+  const res = await fetch("https://api.olostep.com/v1/searches", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.OLOSTEP_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query: query + siteFilter })
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Olostep search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const links = data.result?.links || [];
+  return links.map(r => ({
+    title: r.title, url: r.url, content: r.description || "", publishedDate: null
+  }));
+}
+
+// Search1API — multi-engine search (search1api.com; Google/Bing/DuckDuckGo
+// and 10+ more behind one endpoint). Request/response shape confirmed
+// against live docs, including native `include_sites` and `time_range`
+// params (no manual site: filter or bucket math needed like the SERP
+// scrapers below). Free tier is 100 credits at signup, one-time, no card
+// required — 1 credit per basic search. Only ONE env var needed:
+// SEARCH1API_KEY.
+function daysToSearch1ApiRange(days) {
+  if (days <= 1) return "day";
+  if (days <= 7) return "week";
+  if (days <= 31) return "month";
+  return "year";
+}
+export async function search1ApiSearch(env, query, includeDomains, options = {}) {
+  const { maxResults = 10, days } = options;
+  const body = {
+    query,
+    search_service: "google",
+    max_results: maxResults,
+    crawl_results: 0,
+    ...(includeDomains && includeDomains.length ? { include_sites: includeDomains } : {}),
+    ...(days ? { time_range: daysToSearch1ApiRange(days) } : {})
+  };
+  const res = await fetch("https://api.search1api.com/search", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${env.SEARCH1API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw new Error(`Search1API search failed (${res.status}). ${errBody.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  const results = data.results || [];
+  return results.map(r => ({
+    title: r.title, url: r.link, content: r.content || r.snippet || "", publishedDate: null
+  }));
+}
+
 // SearchApi.io — multi-engine SERP scraper (Google/Bing/YouTube/Scholar).
 // Free tier is 100 queries at signup, one-time. Only ONE env var needed:
 // SEARCHAPI_IO_KEY (named with the _IO suffix so it can never collide with
@@ -712,32 +809,42 @@ const TIER_DEFS = [
     capEnv: "ZENSERP_MONTHLY_LIMIT", defaultCap: 50, period: "monthly"
   },
   {
-    id: "tier7", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
+    id: "tier7", primaryEngine: "olostep", keyEnv: "OLOSTEP_API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "OLOSTEP_MONTHLY_LIMIT", defaultCap: 100, period: "monthly" // 500 free credits, ~5/search assumed — UNVERIFIED, see header CAVEAT + olostepSearch
+  },
+  {
+    id: "tier8", primaryEngine: "serper", keyEnv: "SERPER_API_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "SERPER_TOTAL_LIMIT", defaultCap: 2500, period: "total"
   },
   {
-    id: "tier8", primaryEngine: "searlo", keyEnv: "SEARLO_API_KEY",
+    id: "tier9", primaryEngine: "searlo", keyEnv: "SEARLO_API_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "SEARLO_TOTAL_LIMIT", defaultCap: 3000, period: "total"
   },
   {
-    id: "tier9", primaryEngine: "searchapiio", keyEnv: "SEARCHAPI_IO_KEY",
+    id: "tier10", primaryEngine: "search1api", keyEnv: "SEARCH1API_KEY",
+    extraEngines: ["gemini", "openai", "googlecse"],
+    capEnv: "SEARCH1API_TOTAL_LIMIT", defaultCap: 100, period: "total"
+  },
+  {
+    id: "tier11", primaryEngine: "searchapiio", keyEnv: "SEARCHAPI_IO_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "SEARCHAPI_IO_TOTAL_LIMIT", defaultCap: 100, period: "total"
   },
   {
-    id: "tier10", primaryEngine: "valueserp", keyEnv: "VALUESERP_API_KEY",
+    id: "tier12", primaryEngine: "valueserp", keyEnv: "VALUESERP_API_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "VALUESERP_TOTAL_LIMIT", defaultCap: 100, period: "total"
   },
   {
-    id: "tier11", primaryEngine: "serpentapi", keyEnv: "SERPENT_API_KEY",
+    id: "tier13", primaryEngine: "serpentapi", keyEnv: "SERPENT_API_KEY",
     extraEngines: ["gemini", "openai", "googlecse"],
     capEnv: "SERPENT_API_TOTAL_LIMIT", defaultCap: 10, period: "total"
   },
   {
-    id: "tier12", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
+    id: "tier14", primaryEngine: "duckduckgo", keyEnv: null, // no key — always available, the terminal floor
     extraEngines: ["gemini", "openai", "googlecse", "searxng"],
     capEnv: null, defaultCap: Infinity, period: "total"
   }
@@ -747,12 +854,14 @@ const ENGINE_FN = {
   tavily: tavilySearch, gemini: geminiGroundedSearch, serper: serperSearch, exa: exaSearch,
   openai: openaiSearch, duckduckgo: duckduckgoSearch, googlecse: googleCseSearch, firecrawl: firecrawlSearch,
   linkup: linkupSearch, contextwire: contextwireSearch, searlo: searloSearch, zenserp: zenserpSearch,
+  olostep: olostepSearch, search1api: search1ApiSearch,
   searchapiio: searchApiIoSearch, valueserp: valueSerpSearch, serpentapi: serpentApiSearch, searxng: searxngSearch
 };
 const ENGINE_KEY_ENV = {
   tavily: "TAVILY_API_KEY", gemini: "GOOGLE_AI_API_KEY", serper: "SERPER_API_KEY", exa: "EXA_API_KEY",
   openai: "OPENAI_API_KEY", firecrawl: "FIRECRAWL_API_KEY", linkup: "LINKUP_API_KEY",
   contextwire: "CONTEXTWIRE_API_KEY", searlo: "SEARLO_API_KEY", zenserp: "ZENSERP_API_KEY",
+  olostep: "OLOSTEP_API_KEY", search1api: "SEARCH1API_KEY",
   searchapiio: "SEARCHAPI_IO_KEY", valueserp: "VALUESERP_API_KEY", serpentapi: "SERPENT_API_KEY",
   searxng: "SEARXNG_URL" // not a real API key, just an instance URL — see searxngSearch
 };
