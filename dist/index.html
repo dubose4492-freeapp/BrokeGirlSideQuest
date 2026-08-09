@@ -319,6 +319,18 @@
   .toast.show { opacity: 1; }
 
   .tips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-bottom: 24px; align-items: start; }
+  /* Tips & Tricks uses its own masonry-style column layout instead of the
+     plain grid above — its cards vary a LOT in height (a 2-line card next
+     to a 10-line one), and CSS grid lays items out in strict rows sized to
+     the tallest card in that row. On a wide desktop viewport that meant
+     short cards sat inside a much taller row slot, leaving big uneven gaps
+     underneath them. CSS multi-column layout instead packs each card into
+     whichever column has room, so cards sit flush against each other with
+     no dead space, the way a Pinterest-style board does. Order becomes
+     column-major (top-to-bottom per column) rather than row-major, which
+     is fine here since the cards aren't meant to be read in strict order. */
+  .tips-masonry { column-width: 300px; column-gap: 16px; margin-bottom: 24px; }
+  .tips-masonry .tip-card { break-inside: avoid; margin: 0 0 16px; }
   .tip-card { background: var(--panel); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--lav); padding: 16px; }
   .tip-card h3 { margin: 0 0 8px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
   .tip-card p { margin: 0 0 10px; font-size: 14px; }
@@ -1351,7 +1363,7 @@ function renderHelp() {
 }
 
 function renderTips() {
-  return `<div class="tips-grid">
+  return `<div class="tips-masonry">
     <div class="tip-card">
       <h3>📚 Free library apps</h3>
       <p>Your library card (free to get, even online in most counties) unlocks these — no extra cost:</p>
@@ -1506,7 +1518,9 @@ function renderAbout() {
         <li><b>Location, kept fuzzy.</b> If you use auto-detect location, your exact GPS spot is rounded down to roughly a half-mile before it's ever sent anywhere — plenty precise to find your ZIP, not precise enough to pin your exact doorstep.</li>
         <li><b>Locked-down by design.</b> API keys and credentials are kept server-side and are never exposed in the app itself, external links strip referrer data so other sites can't see you came from here, and the app enforces a strict content policy limiting exactly what it's allowed to load or connect to — closing the door on a lot of common ways an app like this could otherwise be abused.</li>
       </ul>
-      <p class="tip-note">Short version: this was built to actually help, and to treat your privacy the same way I'd want mine treated — with a lot less friction, and a lot less shame.</p>
+    </div>
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <p>Short version: this was built to actually help, and to treat your privacy the same way I'd want mine treated — with a lot less friction, and a lot less shame.</p>
     </div>
   </div>`;
 }
