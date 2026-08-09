@@ -9,6 +9,11 @@ encrypted secrets and proxy the requests server-side:
   compatibility; no tab calls this directly anymore)
 - `functions/api/grocery-price.js`  → does the whole Kroger OAuth + store
   lookup + product price flow, and just returns a price to the browser
+- `functions/api/gas-price.js`      → same response shape as
+  grocery-price.js, but for regular unleaded gas. No Kroger-style official
+  API for fuel exists, so this is web-search only: known gas station chain
+  sites + GasBuddy/AAA first, then the open web. Always the first card on
+  the Grocery tab, styled distinctly from the 11 grocery-staple cards
 - `functions/api/restaurant-deals.js` → searches the open web for
   free/BOGO restaurant deals, classifies them, and resolves a real
   "Claim" link (the chain's own site, or a found official site for
@@ -44,8 +49,8 @@ still now that a single roundup post can produce several offers instead
 of one. Worth keeping an eye on if you're on a free tier.
 
 ### Search now has a 4-deep fallback chain
-All three search-using endpoints (`freebies.js`, `restaurant-deals.js`,
-`grocery-price.js`) now share one provider chain:
+All four search-using endpoints (`freebies.js`, `restaurant-deals.js`,
+`grocery-price.js`, `gas-price.js`) now share one provider chain:
 
 1. **Tavily** (`TAVILY_API_KEY`)
 2. **Serper.dev** (`SERPER_API_KEY`) — 2,500 queries, one-time free tier
@@ -75,8 +80,9 @@ Three changes, all aimed at "real users can hit this as much as they want,
 scripts/scrapers can't drain the API quota". No caching layer is included —
 search results are always fetched live, same as the app has always done.
 
-- **Per-IP rate limiting** on `freebies.js`, `restaurant-deals.js`, and
-  `grocery-price.js` (`functions/_shared/rate-limit.js`). Limits are
+- **Per-IP rate limiting** on `freebies.js`, `restaurant-deals.js`,
+  `grocery-price.js`, and `gas-price.js` (`functions/_shared/rate-limit.js`).
+  Limits are
   deliberately generous — sized so a person clicking through every tab and
   re-scanning repeatedly for a long session never comes close, while a
   script firing hundreds of requests a minute hits a wall fast. It needs

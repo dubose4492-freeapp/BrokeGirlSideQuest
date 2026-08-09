@@ -187,6 +187,32 @@
   .item-price { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 17px; color: #0d5c3c; background: var(--mint-soft); padding: 3px 9px; border: 2px solid var(--ink); letter-spacing: -0.5px; }
   .item-price.paid { color: var(--ink); background: var(--pink-soft); }
   .cat-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun-soft); color: #5c4400; white-space: nowrap; }
+
+  /* ---- Gas price card — always the first card on the Grocery tab, styled
+     distinctly (warm gradient, coral shadow, pulsing glow, corner ribbon)
+     so it visually stands apart from the 11 plain grocery-staple cards. ---- */
+  .item-card.gas-card {
+    background: linear-gradient(165deg, #FFF7E6 0%, #FFE1CC 100%);
+    box-shadow: 6px 6px 0 var(--coral);
+    animation: gasGlow 2.4s ease-in-out infinite;
+  }
+  .item-card.gas-card:hover { transform: translate(-2px, -2px); box-shadow: 8px 8px 0 var(--coral); }
+  @keyframes gasGlow {
+    0%, 100% { box-shadow: 6px 6px 0 var(--coral); }
+    50% { box-shadow: 6px 6px 0 var(--coral), 0 0 16px 3px #ff6b6b66; }
+  }
+  .item-card.gas-card .item-media {
+    background: linear-gradient(165deg, var(--sun-soft), #FFD3A8);
+    position: relative;
+  }
+  .gas-can-icon { width: 40px; height: 40px; image-rendering: pixelated; }
+  .gas-ribbon {
+    position: absolute; top: 6px; left: 6px; z-index: 1;
+    font-family: 'Press Start 2P', monospace; font-size: 7.5px; letter-spacing: .5px;
+    background: var(--coral); color: #fff; padding: 4px 6px; border: 2px solid var(--ink);
+    box-shadow: 2px 2px 0 var(--ink); line-height: 1.4;
+  }
+  .gas-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun); color: var(--ink); white-space: nowrap; }
   .trusted-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: #e6f7ec; color: #14532d; white-space: nowrap; display: inline-block; margin-top: 4px; }
   .provider-note { font-size: 12.5px; font-weight: 700; color: #4a3d68; background: var(--lav-soft); border: 2px solid var(--ink); padding: 8px 12px; margin-bottom: 12px; }
   .provider-note.secondary { background: #fff3d6; color: #6b4e00; }
@@ -664,6 +690,38 @@
 
 // Target grocery staples only — per spec, nothing else is priced/searched.
 const GROCERY_ITEMS = ["Bread", "Eggs", "Chicken", "Ground beef", "Cheese", "Butter", "Milk", "Adobo seasoning", "Diapers", "Formula", "Baby food"];
+// Stable id for the gas card so scan/render code can single it out (always
+// slotted first, styled differently) instead of treating it as just
+// another entry in GROCERY_ITEMS — see searchGasItem()/searchGroceryCategory().
+const GAS_ITEM_ID = "grocery-gas";
+
+// Hand-drawn 16x16 pixel-grid gas can, built the same way as the browser-tab
+// favicon above (flat-fill rects + a dark ink outline, crisp-edged) so it
+// reads as part of this site's 8-bit aesthetic instead of a generic emoji.
+// Sun-gold body (the app's "attention" color) with a coral spout cap to tie
+// into the gas card's warm/coral highlight styling.
+const GAS_CAN_ICON = `<svg class="gas-can-icon" viewBox="0 0 16 16" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg">
+  <rect width="16" height="16" fill="none"/>
+  <!-- ink outline -->
+  <rect x="6" y="2" width="4" height="1" fill="#1B1330"/>
+  <rect x="5" y="3" width="1" height="2" fill="#1B1330"/>
+  <rect x="10" y="3" width="1" height="2" fill="#1B1330"/>
+  <rect x="12" y="4" width="1" height="1" fill="#1B1330"/>
+  <rect x="13" y="3" width="1" height="1" fill="#1B1330"/>
+  <rect x="3" y="5" width="9" height="1" fill="#1B1330"/>
+  <rect x="3" y="6" width="1" height="8" fill="#1B1330"/>
+  <rect x="12" y="6" width="1" height="7" fill="#1B1330"/>
+  <rect x="3" y="14" width="10" height="1" fill="#1B1330"/>
+  <!-- sun-gold body fill -->
+  <rect x="4" y="6" width="8" height="8" fill="#FFC93C"/>
+  <!-- coral spout cap -->
+  <rect x="13" y="4" width="1" height="1" fill="#ff6b6b"/>
+  <rect x="14" y="3" width="1" height="1" fill="#ff6b6b"/>
+  <!-- pixel shading highlight -->
+  <rect x="5" y="7" width="2" height="2" fill="#FFF3D6"/>
+  <!-- warning stripe label -->
+  <rect x="5" y="10" width="6" height="2" fill="#ff6b6b"/>
+</svg>`;
 
 let currentCharacterMascot = "/images/mascot.jpg";
 let currentCharacterAlt = "kawaii cat mascot";
@@ -955,15 +1013,25 @@ function itemCard(item) {
   const safeTitle = escapeHtml(item.title);
   const safeStore = escapeHtml(item.store);
 
-  return `<div class="item-card" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}">
-    <div class="item-media">${itemEmoji(item)}</div>
+  // Gas gets its own media (hand-drawn pixel gas-can instead of an emoji),
+  // a corner ribbon, a distinct badge, and the "gas-card" class that drives
+  // the highlighted border/shadow/glow in the stylesheet — see gasGlow —
+  // so it reads as different from the 11 plain grocery-staple cards, not
+  // just first among them.
+  const isGas = item.id === GAS_ITEM_ID;
+  const media = isGas ? GAS_CAN_ICON : itemEmoji(item);
+  const ribbon = isGas ? `<div class="gas-ribbon">⛽ TODAY'S<br>GAS PICK</div>` : "";
+  const badge = isGas ? `<span class="gas-badge">⛽ Cheapest Gas</span>` : `<span class="cat-badge">${cat.label}</span>`;
+
+  return `<div class="item-card${isGas ? " gas-card" : ""}" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}">
+    <div class="item-media">${ribbon}${media}</div>
     <div class="item-body">
       <p class="item-name">${safeTitle}</p>
       <div class="item-store">${safeStore}</div>
       ${item.trustedSource ? `<div class="trusted-badge">⭐ ${escapeHtml(item.trustedSource)}</div>` : ""}
       <div class="item-price-row">
         <span class="item-price ${item.isFree ? "" : "paid"}">${escapeHtml(priceLabel(item, cat))}</span>
-        <span class="cat-badge">${cat.label}</span>
+        ${badge}
       </div>
       <div class="item-meta">
         <span>${reqTypeLabel(item.requirementType)}${detailLinkInline}</span>
@@ -1629,10 +1697,44 @@ function recordGroceryProvider(provider, usedEnsemble) {
   if (usedEnsemble) state.ensembleUsed.grocery = true;
 }
 
+// ---------- Gas pricing — /functions/api/gas-price.js, same zip/radius as
+// the grocery lookups above, but its own endpoint (no Kroger-style official
+// API for fuel, so it's web-search only — see that file for the domain/
+// extraction details). Always fetched first and slotted as the first card
+// in the grocery tab's results, styled distinctly via GAS_ITEM_ID in
+// itemCard() so it reads as "today's gas pick," not just another staple.
+async function searchGasItem(signal) {
+  const params = new URLSearchParams({ zip: state.zip, location: state.zip, radius: state.radius });
+  const response = await fetch(`/api/gas-price?${params}`, { signal });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);
+  recordGroceryProvider(data.provider, data.usedEnsemble);
+  return {
+    id: GAS_ITEM_ID,
+    title: "Regular Unleaded Gas",
+    store: data.store || "No price found nearby",
+    url: data.url || "#",
+    productUrl: data.productUrl || null,
+    blogUrl: data.blogUrl || null,
+    price: data.price ? `$${data.price.toFixed(2)}/gal` : null,
+    isFree: false,
+    requirementType: "unknown",
+    expires: null,
+    category: "grocery"
+  };
+}
+
 async function searchGroceryCategory(signal) {
   const items = [];
   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
   state.ensembleUsed.grocery = false;
+  if (!state.stopRequested) {
+    try {
+      items.push(await searchGasItem(signal));
+    } catch (err) {
+      if (err.name !== "AbortError") recordFailure("grocery", err.message);
+    }
+  }
   for (const itemName of GROCERY_ITEMS) {
     if (state.stopRequested) break;
     try {
@@ -1735,7 +1837,7 @@ function buildAiPrompt() {
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
-      lines.push(`Current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
+      lines.push(`Cheapest regular unleaded gas price per gallon near ${state.zip} within ${state.radius} miles, plus the current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
     } else if (key === "restaurant") {
       lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count.`);
     } else if (key === "community") {
