@@ -68,7 +68,18 @@
 // Quota bookkeeping is keyed off each tier's PRIMARY engine only (Tavily,
 // Serper, Exa) — Gemini/OpenAI/Google CSE ride along in whichever tier is
 // active without being quota-tracked themselves, matching the tier spec
-// above. Google's Custom Search JSON API does have its own free-tier cap
+// above.
+//
+// By design: a primary engine that returns ZERO results on 3 CONSECUTIVE
+// calls is treated as quota-exhausted (jumps straight to its cap via
+// setQuotaExhausted in quota.js) — a single empty response just counts
+// as one normal used call and doesn't trigger this by itself, since a
+// genuinely narrow query can look identical to an exhausted quota. One
+// non-empty response clears the streak. See recordPrimaryOutcome and
+// quota.js's incrementZeroStreak/resetZeroStreak for the mechanics. This
+// applies ONLY to the searcher engines in this file — the sorter/LLM
+// fallback chain in llm-providers.js deliberately has no usage tracking
+// at all (see that file's header) and is unaffected by this rule. Google's Custom Search JSON API does have its own free-tier cap
 // (100 queries/DAY, then billed) — same as OpenAI having no free tier at
 // all — but since it's an unmetered ride-along rather than a tier's
 // primary, this app doesn't track that usage; a 429 once you're over it
@@ -133,7 +144,7 @@
 //     `maxResults` knob for grounding — see geminiGroundedSearch below for
 //     how those are approximated instead.
 
-import { getQuotaUsage, incrementQuotaUsage } from "./quota.js";
+import { getQuotaUsage, incrementQuotaUsage, setQuotaExhausted, incrementZeroStreak, resetZeroStreak, ZERO_STREAK_THRESHOLD } from "./quota.js";
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 
@@ -921,6 +932,38 @@ function configuredEngines(env, tier) {
   return engines;
 }
 
+// Records one real call against a tier's primary engine (SEARCHER-ONLY —
+// see quota.js header; never applied to the sorter/LLM chain). Always
+// counts the call itself toward normal quota usage — an empty response
+// still spent an actual outbound request. On top of that:
+//   - resultCount === 0 -> bumps this engine's zero-result streak; once
+//     it hits ZERO_STREAK_THRESHOLD (3) consecutive empty pulls, force-
+//     jumps the quota counter to cap (exhausted) and clears the streak.
+//   - resultCount > 0   -> clears any existing streak (one good pull
+//     undoes prior empty ones).
+async function recordPrimaryOutcome(env, tier, resultCount) {
+  await incrementQuotaUsage(env, tier.primaryEngine, tier.period);
+  if (resultCount === 0) {
+    const streak = await incrementZeroStreak(env, tier.primaryEngine);
+    console.log(`[search] ${tier.id} (${tier.primaryEngine}) returned 0 results — streak ${streak}/${ZERO_STREAK_THRESHOLD}`);
+    if (streak >= ZERO_STREAK_THRESHOLD) {
+      await setQuotaExhausted(env, tier.primaryEngine, tier.period, tierCap(env, tier));
+      await resetZeroStreak(env, tier.primaryEngine);
+    }
+  } else {
+    await resetZeroStreak(env, tier.primaryEngine);
+  }
+}
+
+// Resolves a tier's effective cap (env override, falling back to its
+// built-in default). Shared by resolveActiveTierIndex (checking usage
+// against the cap) and runTierParallel/runTierSequential (marking a tier
+// exhausted by jumping straight to this same number) so both sides always
+// agree on what "exhausted" means for a given tier.
+function tierCap(env, tier) {
+  return Number(env[tier.capEnv]) || tier.defaultCap;
+}
+
 // Index of the first tier that's both usable (primary engine configured)
 // and not yet quota-exhausted. Falls through to the terminal DuckDuckGo
 // tier (always usable, never exhausted) if every earlier tier is either
@@ -929,7 +972,7 @@ async function resolveActiveTierIndex(env) {
   for (let i = 0; i < TIER_DEFS.length - 1; i++) {
     const tier = TIER_DEFS[i];
     if (!env[tier.keyEnv]) continue; // primary engine not configured — skip this tier entirely
-    const cap = Number(env[tier.capEnv]) || tier.defaultCap;
+    const cap = tierCap(env, tier);
     const used = await getQuotaUsage(env, tier.primaryEngine, tier.period);
     if (used < cap) return i;
     console.log(`[search] ${tier.id} (${tier.primaryEngine}) exhausted — ${used}/${cap} — advancing`);
@@ -952,10 +995,12 @@ async function runTierParallel(env, tier, query, includeDomains, options) {
   const merged = new Map(); // url -> { title, url, content, publishedDate, sources: [] }
   const succeeded = [];
   const failures = [];
+  let primaryOwnResultCount = null; // null = primary didn't run/succeed this call
   settled.forEach((s, i) => {
     const name = engines[i];
     if (s.status === "fulfilled") {
       succeeded.push(name);
+      if (name === tier.primaryEngine) primaryOwnResultCount = s.value.length;
       for (const r of s.value) {
         if (!r.url) continue;
         const existing = merged.get(r.url);
@@ -972,8 +1017,12 @@ async function runTierParallel(env, tier, query, includeDomains, options) {
     }
   });
 
-  if (succeeded.includes(tier.primaryEngine)) {
-    await incrementQuotaUsage(env, tier.primaryEngine, tier.period);
+  // Searcher-only rule (by design — never applied to the sorter/LLM chain
+  // in llm-providers.js): see recordPrimaryOutcome for the 3-strike
+  // zero-result exhaustion logic. Only runs if the primary engine was
+  // actually one of the ones fired in this tier this call.
+  if (primaryOwnResultCount !== null) {
+    await recordPrimaryOutcome(env, tier, primaryOwnResultCount);
   }
 
   console.log(`[search] ${tier.id} — ${succeeded.join(", ") || "(none)"} succeeded, ${merged.size} unique results` + (failures.length ? ` | failed: ${failures.join(" | ")}` : ""));
@@ -990,7 +1039,11 @@ async function runTierSequential(env, tier, query, includeDomains, options) {
   for (const name of engines) {
     try {
       const results = await ENGINE_FN[name](env, queryForEngine(name, query), includeDomains, options);
-      if (name === tier.primaryEngine) await incrementQuotaUsage(env, tier.primaryEngine, tier.period);
+      if (name === tier.primaryEngine) {
+        // Same searcher-only 3-strike exhaustion rule as runTierParallel —
+        // see recordPrimaryOutcome.
+        await recordPrimaryOutcome(env, tier, results.length);
+      }
       return { results, provider: name, tierId: tier.id };
     } catch (err) {
       failures.push(`${name}: ${err.message}`);

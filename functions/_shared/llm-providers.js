@@ -24,6 +24,19 @@
 // only signed up for, say, Groq and Mistral still gets LLM-quality
 // results instead of only ever falling back to regex.
 //
+// BY DESIGN, unlike search-providers.js: this "sorter" chain has NO usage
+// tracking of any kind — no KV counters, no *_LIMIT env vars, and no
+// equivalent of search-providers.js's "zero results = exhausted, jump to
+// next tier" rule. A provider only gets skipped here if it actually
+// errors on a given call (bad key, rate-limited, down, etc.) — an empty
+// or low-quality response that isn't an error is just returned as-is, it
+// does NOT trigger a fallback to the next provider. This is intentional:
+// the "searchers" above are tracked by call/credit quota because that's
+// how those APIs bill; these "sorters" are token-metered instead, and
+// this app does not track token usage against any of the seven
+// providers' daily/monthly budgets. Do not add tier-style quota tracking
+// here without an explicit decision to do so.
+//
 // Every provider function shares the same (env, prompt, options) ->
 // { text, provider } shape. `options` supports { temperature, maxTokens }
 // (both optional). Callers are expected to write prompts that instruct
