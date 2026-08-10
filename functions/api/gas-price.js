@@ -256,6 +256,71 @@ async function findOfficialStationPage(env, chain) {
   }
 }
 
+// ---------- OilPriceAPI (state-average LAST-RESORT fallback) ----------
+// Free tier confirmed against oilpriceapi.com/pricing (Aug 2026): 200
+// requests/month, no credit card. Deliberately called ONLY when the web
+// search below finds nothing usable — never run in parallel on every scan
+// the way Kroger's real per-item price is in grocery-price.js. Two reasons:
+//   1. 200/month is a small budget; spending it on every single scan
+//      regardless of whether web search already succeeded would burn
+//      through it in days for an app with any real traffic.
+//   2. This is a STATE-LEVEL RETAIL AVERAGE (GASOLINE_RETAIL_STATE_<XX>_USD),
+//      not a specific station's price the way web search finds. It's a
+//      "here's roughly what gas costs in your state" backstop when nothing
+//      else turns up anything at all — never compared against a real found
+//      price the way Kroger's number competes with web search's number,
+//      since an average being lower than someone's real local price
+//      wouldn't mean it's actually available anywhere nearby.
+// Contract confirmed directly against OilPriceAPI's docs (GET
+// /v1/prices/latest?by_code=..., `Authorization: Token <key>` header,
+// response shape { status, data: { price, ... } }).
+// Attribution requirement: this specific series is EIA-sourced and public
+// domain to redisplay, but OilPriceAPI's terms require crediting
+// "Source: U.S. EIA" wherever it's shown — see `sourceAttribution` below;
+// surface it on the card if this fallback is the one that answers.
+function deriveStateAbbr(location) {
+  // Reuses the STATE_ABBR map above. Only works if `location` names a
+  // state/city (e.g. "Lafayette, TN") — a bare ZIP alone (what the client
+  // falls back to sending when no location text is set) can't be resolved
+  // to a state this way without a ZIP->state lookup table, which isn't
+  // wired in here. In that case this returns null and the fallback simply
+  // has nothing to offer, same as if it weren't configured at all.
+  const parts = (location || "").split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean);
+  for (const part of parts) {
+    if (STATE_ABBR[part]) return STATE_ABBR[part];
+    for (const [full, abbr] of Object.entries(STATE_ABBR)) {
+      if (abbr === part) return abbr;
+    }
+  }
+  return null;
+}
+
+async function getOilPriceApiPrice(env, location) {
+  if (!env.OILPRICEAPI_KEY) return null; // not configured — skip, don't fail the whole request
+  const stateAbbr = deriveStateAbbr(location);
+  if (!stateAbbr) return null; // couldn't tell which state from what the client sent
+
+  const code = `GASOLINE_RETAIL_STATE_${stateAbbr.toUpperCase()}_USD`;
+  const res = await fetch(`https://api.oilpriceapi.com/v1/prices/latest?by_code=${code}`, {
+    headers: { Authorization: `Token ${env.OILPRICEAPI_KEY}` }
+  });
+  if (!res.ok) throw new Error(`OilPriceAPI lookup failed (${res.status}) for ${code}.`);
+  const data = await res.json();
+  const price = data && data.data && data.data.price;
+  if (typeof price !== "number" || isNaN(price)) return null;
+  return {
+    price,
+    store: `${stateAbbr.toUpperCase()} state average`,
+    url: "https://www.oilpriceapi.com",
+    productUrl: null,
+    blogUrl: null,
+    provider: "oilpriceapi",
+    usedEnsemble: false,
+    isStateAverage: true, // client should label this distinctly from a real per-station price
+    sourceAttribution: "Source: U.S. EIA"
+  };
+}
+
 async function getWebSearchGasPrice(env, location, zip, radius) {
   // Kept short and natural rather than stuffed with all 22 chain names —
   // that bloat didn't buy relevance (tier 1 already restricts the domains
@@ -344,6 +409,19 @@ export async function onRequestGet({ request, env }) {
   } catch (err) {
     console.error("gas-price lookup failed:", err.message);
     return json({ error: "Gas price lookup is temporarily unavailable. Please try again in a few minutes." }, 502);
+  }
+
+  // Last-resort fallback only — see getOilPriceApiPrice's header comment for
+  // why this never competes with a real web-search-found price, only fills
+  // in when web search found nothing at all.
+  if (!result) {
+    try {
+      result = await getOilPriceApiPrice(env, location);
+    } catch (err) {
+      console.error("OilPriceAPI fallback failed:", err.message);
+      // fall through to the "nothing found" response below — never surface
+      // a 502 just because the LAST-RESORT fallback also came up empty
+    }
   }
 
   return json(result || { price: null, store: null, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });

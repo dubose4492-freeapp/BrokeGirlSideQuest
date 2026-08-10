@@ -573,6 +573,73 @@ async function searchAllSources(env, query, includeDomains) {
 // extra search to find their real site — kept to the final, deduped list
 // so this doesn't multiply into a search per raw result (it's now per
 // distinct offer, since roundup posts can yield several).
+// ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
+// UNVERIFIED CONTRACT — same caveat treatment as olostepSearch in
+// search-providers.js. Foursquare is mid-migration off its legacy V3 API
+// (deprecated May 15, 2026) onto a new "FSQ OS Places"-powered Places API,
+// and their own docs are inconsistent about the new shape as of this
+// writing. The endpoint/headers below are confirmed against one real
+// working example (a third-party blog post showing an actual successful
+// call), NOT Foursquare's own reference docs directly:
+//   GET https://places-api.foursquare.com/places/search?...
+//   Authorization: Bearer <key>
+//   X-Places-Api-Version: 2025-06-17
+// What's NOT confirmed: exact response field names beyond fsq_place_id/
+// latitude/longitude (seen in a real sample response), and whether `near`
+// (free-text location) is accepted the same way it was on the legacy API
+// vs requiring `ll` (lat,lng) instead. This function is written
+// defensively — ANY unexpected shape or failure just returns null rather
+// than throwing, so a wrong guess here can only mean "no Foursquare
+// verification for this item," never a broken request. Confirm the real
+// shape against your own Foursquare dashboard/playground once you have a
+// key, and tighten this up — the X-Places-Api-Version date in particular
+// may need bumping as Foursquare revs it.
+//
+// Free tier: Foursquare's own pricing pages disagree on the exact number
+// (100 free Pro calls/month per one page, 500 free Pro calls/month per
+// their "Upcoming Changes" doc effective June 1, 2026, 10,000 as a
+// separate "developer sandbox" test allowance per another) — check your
+// own dashboard for the real current cap rather than trusting a hardcoded
+// number here. FOURSQUARE_API_KEY simply isn't called if unset, so this
+// costs nothing extra to leave wired in even before you've confirmed it.
+//
+// Purpose: your existing chain-matching (CHAIN_DOMAINS above) already
+// gives a confident "Claim" link for known chains, and findOfficialSite
+// below does a plain web search for independent spots — neither actually
+// confirms a branch exists within the user's radius. This adds that one
+// missing check: does Foursquare know of a place by this name near this
+// location at all? If yes, the real address it returns is far more useful
+// to someone deciding whether to drive there than a chain's generic
+// homepage link.
+async function verifyNearbyWithFoursquare(env, name, location, radius) {
+  if (!env.FOURSQUARE_API_KEY || !name || !location) return null;
+  try {
+    const radiusMeters = Math.min(100000, Math.round(radius * 1609)); // miles -> meters, Foursquare caps around 100km
+    const params = new URLSearchParams({ query: name, near: location, radius: String(radiusMeters), limit: "1" });
+    const res = await fetch(`https://places-api.foursquare.com/places/search?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${env.FOURSQUARE_API_KEY}`,
+        "X-Places-Api-Version": "2025-06-17",
+        accept: "application/json"
+      }
+    });
+    if (!res.ok) return null; // don't throw — see header comment, this is best-effort only
+    const data = await res.json();
+    const place = data && Array.isArray(data.results) && data.results[0];
+    if (!place) return null;
+    // Field names beyond fsq_place_id/latitude/longitude are a best guess
+    // (formatted_address is the common shape across Foursquare's various
+    // APIs, but not directly confirmed for this specific new endpoint).
+    const address = place.location && (place.location.formatted_address || place.location.address);
+    const mapsUrl = (typeof place.latitude === "number" && typeof place.longitude === "number")
+      ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
+      : null;
+    return { verifiedNearby: true, address: address || null, mapsUrl };
+  } catch (err) {
+    return null; // never let an unverified integration break a real card
+  }
+}
+
 async function findOfficialSite(env, name) {
   if (!name) return null;
   try {
@@ -678,10 +745,22 @@ export async function onRequestPost({ request, env }) {
 
   let finalResults = dedupeItems(classified);
   finalResults = await Promise.all(finalResults.map(async item => {
-    if (item.claimUrl) return item; // already resolved to a known chain or its own domain
-    const officialUrl = await findOfficialSite(env, item.store);
-    item.claimUrl = officialUrl || item.url;
-    item.blogUrl = officialUrl ? item.url : null;
+    if (!item.claimUrl) {
+      const officialUrl = await findOfficialSite(env, item.store);
+      item.claimUrl = officialUrl || item.url;
+      item.blogUrl = officialUrl ? item.url : null;
+    }
+    // Best-effort, additive only — see verifyNearbyWithFoursquare's header
+    // comment on why this never blocks or alters claimUrl/blogUrl above,
+    // only adds an address/maps-link when Foursquare confirms a real
+    // nearby branch exists (or silently adds nothing if not configured,
+    // not found, or the unverified contract doesn't match).
+    const nearby = await verifyNearbyWithFoursquare(env, item.store, location, radius);
+    if (nearby) {
+      item.verifiedNearby = nearby.verifiedNearby;
+      item.address = nearby.address;
+      item.mapsUrl = nearby.mapsUrl;
+    }
     return item;
   }));
 
