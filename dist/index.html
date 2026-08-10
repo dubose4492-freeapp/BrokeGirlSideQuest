@@ -1929,6 +1929,40 @@ async function searchRestaurantCategory(signal) {
 // Builds one combined plain-text prompt covering every tab's search, meant
 // to be pasted into Chrome's built-in Ask Gemini panel by hand (see the
 // "How this app looks for deals" card and copyGeminiPrompt() below).
+// Rule text mirrors, as closely as plain English allows, the actual
+// qualification logic the server applies during classification
+// (functions/api/freebies.js's SPEND_RULE_TEXT/MAIL_SPEND_RULE_TEXT/
+// TOYS_WORKSHOP_RULE_TEXT/CATEGORY_MAX_AGE_DAYS and restaurant-deals.js's
+// equivalent). Keep these in sync if those server-side constants change —
+// this is a manual copy, not a shared import, since this file has to run
+// standalone in Gemini's own web chat.
+const MAX_QUALIFYING_SPEND = 10; // dollars — TOTAL cost cap, tax included
+const ESTIMATED_SALES_TAX_RATE = 0.09;
+// $10 minus the ~9% buffer, i.e. the real usable pre-tax ceiling.
+const PRE_TAX_CEILING = (MAX_QUALIFYING_SPEND / (1 + ESTIMATED_SALES_TAX_RATE)).toFixed(2);
+
+const AI_SPEND_RULE_TEXT = ` A BOGO ("buy one get one") free offer also qualifies. So does an item ` +
+  `that's free or added at no extra cost when you spend $${MAX_QUALIFYING_SPEND} or less TOTAL, TAX ` +
+  `INCLUDED (e.g. "free tote bag with any $10 purchase") — since a stated spend amount is usually ` +
+  `pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~` +
+  `${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ` +
+  `ceiling, not $${MAX_QUALIFYING_SPEND} itself. An offer requiring more than that does not qualify ` +
+  `on that basis alone.`;
+const AI_MAIL_SPEND_RULE_TEXT = AI_SPEND_RULE_TEXT + ` This also applies to shipping: if the free ` +
+  `item requires paying for shipping/handling, that cost counts toward the same $${MAX_QUALIFYING_SPEND} ` +
+  `tax-inclusive total — e.g. "free" item + $6 shipping is fine, "free" item + $12 shipping is not. A ` +
+  `plain free-by-mail offer that doesn't mention a purchase price or shipping cost at all still ` +
+  `qualifies normally.`;
+const AI_TOYS_WORKSHOP_RULE_TEXT = ` Recurring in-store kids' craft/build workshops from these specific ` +
+  `known programs ALWAYS count as free toys whenever mentioned, even without an explicit "free" or ` +
+  `"no purchase" statement: Lowe's Build and Grow, Home Depot Kids Workshop, Michaels Make Break (Make ` +
+  `Break Take), JCPenney/Kohl's kids' events, and Barnes & Noble kids' story/craft events. Only exclude ` +
+  `one of these if the source explicitly says it's been discontinued/ended or now requires a purchase.`;
+function aiFreshnessNote(maxDays) {
+  return ` Only include offers that are still currently running — skip anything whose source page looks ` +
+    `more than about ${maxDays} days old or otherwise stale.`;
+}
+
 function buildAiPrompt() {
   const lines = [
     `Find today's real, currently-active deals for someone in ${state.zip || "[ZIP not set]"} ` +
@@ -1945,9 +1979,17 @@ function buildAiPrompt() {
     if (key === "grocery") {
       lines.push(`Cheapest regular unleaded gas price per gallon near ${state.zip} within ${state.radius} miles, plus the current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
     } else if (key === "restaurant") {
-      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count.`);
+      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count. The $${MAX_QUALIFYING_SPEND} cap is a TOTAL, TAX-INCLUDED figure — since a stated purchase amount is usually pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ceiling, not $${MAX_QUALIFYING_SPEND} itself.`);
     } else if (key === "community") {
       lines.push(`${cat.query(state.zip, state.radius)}. These are ongoing resources, not time-limited deals — don't skip one just because the page describing it looks old; only skip it if it explicitly says closed or discontinued.`);
+    } else if (key === "clothing" || key === "accessories") {
+      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(30));
+    } else if (key === "toys") {
+      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + AI_TOYS_WORKSHOP_RULE_TEXT + aiFreshnessNote(30));
+    } else if (key === "events") {
+      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(14));
+    } else if (key === "mail") {
+      lines.push(cat.query(state.zip, state.radius) + "." + AI_MAIL_SPEND_RULE_TEXT);
     } else {
       lines.push(cat.query(state.zip, state.radius));
     }
