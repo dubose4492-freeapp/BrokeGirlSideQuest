@@ -66,16 +66,23 @@ const ALWAYS_QUALIFIES = new Set(["events", "community"]);
 // threshold doesn't apply there) and community (food pantries/fridges/
 // closets are already fully free, no spend threshold is relevant).
 const SPEND_TO_FREE_CATEGORIES = new Set(["clothing", "toys", "accessories", "events", "mail"]);
-const MAX_QUALIFYING_SPEND = 10; // dollars — "spend $10 or less, get an item free"
-// Rough US-average sales tax, used only to flag when a stated PRE-TAX spend
-// requirement is close enough to $MAX_QUALIFYING_SPEND that tax could push
-// the actual checkout total over it — not a substitute for the real local
-// rate (which would need a ZIP-to-tax-rate lookup this app doesn't have).
-// Offers still qualify on their stated pre-tax amount; this only adds a
-// `taxMayExceedLimit` flag so the client can show a heads-up.
+const MAX_QUALIFYING_SPEND = 10; // dollars — TOTAL cost cap, tax included (see below)
+// The $10 cap is a TOTAL-cost cap, not a pre-tax one — an offer only
+// qualifies if the final checkout total (item cost + tax) stays at or
+// under $MAX_QUALIFYING_SPEND. Since this app has no ZIP-to-tax-rate
+// lookup, it can't compute the real local rate, so it uses a rough
+// US-average estimate as a safety buffer: a stated PRE-TAX spend amount
+// only qualifies if it would stay under the cap even after adding this
+// estimated rate. This intentionally trades away some borderline offers
+// in low/no-sales-tax areas (a $9.80 item in Oregon would truly total
+// $9.80, but this app can't tell that from the snippet text) in exchange
+// for never showing something that turns out to ring up over $10 at
+// checkout in a typical-tax area — the app is deliberately conservative
+// here since the user set explicitly wants "including tax" enforced, not
+// just flagged.
 const ESTIMATED_SALES_TAX_RATE = 0.09;
-function taxMayExceedLimit(spend) {
-  return spend != null && spend <= MAX_QUALIFYING_SPEND && spend * (1 + ESTIMATED_SALES_TAX_RATE) > MAX_QUALIFYING_SPEND;
+function withinTaxAdjustedCap(spend) {
+  return spend != null && spend * (1 + ESTIMATED_SALES_TAX_RATE) <= MAX_QUALIFYING_SPEND;
 }
 
 // Looks for "spend/with a purchase of/minimum purchase of $X" style phrasing
@@ -276,7 +283,7 @@ function regexClassify(results, category) {
     // A spend requirement only qualifies alongside "free" language in the
     // same snippet (a plain "$8 tote bag" isn't a freebie just because it
     // happens to be under $10) — mirrors restaurant-deals.js's rule.
-    const qualifiesMinSpend = minSpend != null && minSpend <= MAX_QUALIFYING_SPEND && looksFree(combinedText);
+    const qualifiesMinSpend = minSpend != null && withinTaxAdjustedCap(minSpend) && looksFree(combinedText);
     // A dollar amount anywhere in the text disqualifies the plain-free
     // bucket for spend-eligible categories — "free scarf when you spend
     // $45" should NOT slip through just because the word "free" appears;
@@ -306,7 +313,10 @@ function regexClassify(results, category) {
     } else if (qualifiesMinSpend) {
       price = `Free w/ $${minSpend.toFixed(2)} purchase`;
       spendRequired = minSpend;
-      if (taxMayExceedLimit(minSpend)) taxNote = `May exceed $${MAX_QUALIFYING_SPEND} once local sales tax is added — check before you check out.`;
+      // qualifiesMinSpend above already required this to clear the cap
+      // WITH estimated tax included — this note just makes that visible
+      // to the client rather than implying it might not hold.
+      taxNote = `Estimated total with tax stays at or under $${MAX_QUALIFYING_SPEND} — actual local tax rate may vary slightly.`;
     }
 
     const baseItem = {
@@ -359,21 +369,25 @@ const CATEGORY_HINTS = {
   // online/nationwide with no venue near the person, and not a mail-in
   // program (that belongs on the Mail tab, not Events).
   events: "100% free events happening at a real physical location — charity events, giveaways, festivals, concerts, community gatherings, or a business/venue's free promotions — near the person and within the distance they said they're willing to drive",
-  community: "food pantries, community fridges, clothing closets, or other free community resources",
+  community: "food pantries, food banks, food drives, clothing drives, clothing closets, community fridges, soup kitchens, shelters, or other completely free charitable resources for people in need — no purchase or spend threshold applies to this category at all",
   mail: "free items (not just samples) available by mail — no local/radius matching applies here since these ship anywhere"
 };
 // Extra qualifying rules appended per-category, for categories where "free"
 // alone isn't the whole bar. Every SPEND_TO_FREE_CATEGORIES category also
 // accepts a BOGO or "spend $X or less, get an item free" offer — same rule
-// restaurant-deals.js applies to food deals — with a rough sales-tax
-// heads-up since the stated spend amount is usually pre-tax.
-const SPEND_RULE_TEXT = ` A BOGO ("buy one get one") free offer also qualifies. So does an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_SPEND} or less (e.g. "free tote bag with any $10 purchase") — note that's usually a PRE-TAX amount, so flag it if tax could push the real checkout total over $${MAX_QUALIFYING_SPEND}. An offer requiring MORE than $${MAX_QUALIFYING_SPEND} spend does not qualify on that basis alone.`;
+// restaurant-deals.js applies to food deals. The $10 cap is tax-INCLUSIVE:
+// the model is told to treat it as the final checkout total, not a
+// pre-tax figure, and to disqualify (not just flag) anything that would
+// likely exceed it once typical sales tax is added.
+const SPEND_RULE_TEXT = ` A BOGO ("buy one get one") free offer also qualifies. So does an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_SPEND} or less TOTAL, TAX INCLUDED (e.g. "free tote bag with any $10 purchase") — if the snippet's stated spend amount is pre-tax and is close enough to $${MAX_QUALIFYING_SPEND} that adding a typical ~9% sales tax would push the real checkout total over it, it does NOT qualify (treat roughly $${MAX_QUALIFYING_SPEND} minus that ~9% buffer as the real usable pre-tax ceiling). An offer requiring MORE than that does not qualify on that basis alone.`;
+const MAIL_SPEND_RULE_TEXT = SPEND_RULE_TEXT + ` This also applies to SHIPPING: if the free item requires paying for shipping/handling, that shipping cost counts toward the same $${MAX_QUALIFYING_SPEND} tax-inclusive total — e.g. "free" item + $6 shipping is fine, but "free" item + $12 shipping does not qualify. A snippet that doesn't mention a purchase price or shipping cost at all (a plain free-by-mail offer) still qualifies normally.`;
+const TOYS_WORKSHOP_RULE_TEXT = ` Recurring in-store kids' craft/build workshops from these specific known programs ALWAYS qualify as free toys whenever a snippet mentions them, even if the snippet doesn't explicitly restate "free" or a purchase requirement — treat these as free, no-purchase, recurring events by default: Lowe's Build and Grow, Home Depot Kids Workshop, Michaels Make Break (Make Break Take), JCPenney/Kohl's kids' events, and Barnes & Noble kids' story/craft events. Still disqualify one of these ONLY if the snippet explicitly says it's been discontinued/ended or requires a purchase.`;
 const CATEGORY_EXTRA_RULES = {
   clothing: SPEND_RULE_TEXT,
-  toys: SPEND_RULE_TEXT,
+  toys: SPEND_RULE_TEXT + TOYS_WORKSHOP_RULE_TEXT,
   accessories: SPEND_RULE_TEXT,
   events: SPEND_RULE_TEXT,
-  mail: SPEND_RULE_TEXT
+  mail: MAIL_SPEND_RULE_TEXT
 };
 
 // Asks the model to return an "offers" array PER SNIPPET rather than one
@@ -485,7 +499,15 @@ function parseClassifyResponse(text, results, category) {
         expires: o.expires || null,
         price,
         spendRequired: minSpend,
-        taxNote: taxMayExceedLimit(minSpend) ? `May exceed $${MAX_QUALIFYING_SPEND} once local sales tax is added — check before you check out.` : null,
+        // The prompt already instructs the model to only mark qualifies:true
+        // when the spend clears $MAX_QUALIFYING_SPEND WITH estimated tax
+        // included — this is a confirming note in the normal case, and a
+        // safety-net warning (rather than silently trusting the model) if
+        // a spend amount slipped through that doesn't actually clear the
+        // tax-adjusted cap on a second check here.
+        taxNote: minSpend == null ? null : (withinTaxAdjustedCap(minSpend)
+          ? `Estimated total with tax stays at or under $${MAX_QUALIFYING_SPEND} — actual local tax rate may vary slightly.`
+          : `May exceed $${MAX_QUALIFYING_SPEND} once tax is added — double-check before you check out.`),
         trustedSource: prioritySourceName(raw.url),
         category
       });

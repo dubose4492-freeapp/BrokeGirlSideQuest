@@ -33,7 +33,16 @@ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfi
 // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 
-const MAX_QUALIFYING_PURCHASE = 10; // dollars — "$10 minimum purchase at most"
+const MAX_QUALIFYING_PURCHASE = 10; // dollars — TOTAL cost cap, tax included (see below)
+// Same tax-inclusive treatment as freebies.js's MAX_QUALIFYING_SPEND: the
+// $10 cap is the final checkout total, not a pre-tax figure. No ZIP-to-
+// tax-rate lookup exists, so a rough US-average estimate is used as a
+// safety buffer — a stated pre-tax purchase amount only qualifies if it
+// would still clear the cap after adding this estimated rate.
+const ESTIMATED_SALES_TAX_RATE = 0.09;
+function withinTaxAdjustedCap(spend) {
+  return spend != null && spend * (1 + ESTIMATED_SALES_TAX_RATE) <= MAX_QUALIFYING_PURCHASE;
+}
 
 // Chain name -> official domain, so a known chain's "Claim" link always
 // goes straight to their real site instead of whatever blog/article the
@@ -357,7 +366,7 @@ function regexClassify(results) {
     const isBogo = looksBogo(combinedText);
     const minPurchase = extractMinPurchase(combinedText);
     const qualifiesFree = looksFree(combinedText) && !/\$\s?\d+(\.\d{2})?/.test(combinedText.replace(/free/gi, ""));
-    const qualifiesMinPurchase = minPurchase != null && minPurchase <= MAX_QUALIFYING_PURCHASE && looksFree(combinedText);
+    const qualifiesMinPurchase = minPurchase != null && withinTaxAdjustedCap(minPurchase) && looksFree(combinedText);
     if (!isBogo && !qualifiesFree && !qualifiesMinPurchase) continue;
 
     const expires = extractExpiry(raw.content);
@@ -439,8 +448,8 @@ For EACH snippet below, return an "offers" array (empty if nothing in it qualifi
 - qualifies: true ONLY if the offer is one of:
   (a) a genuinely FREE item with no purchase required,
   (b) a BOGO ("buy one get one") free offer, or
-  (c) an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_PURCHASE} or less (e.g. "free dessert with any $10 purchase").
-  A plain discount, a percentage off, a priced combo, a regular menu mention, an offer requiring MORE than $${MAX_QUALIFYING_PURCHASE} spend, or an offer whose stated end date is before today does NOT qualify.
+  (c) an item that's free/added at no extra cost when you spend $${MAX_QUALIFYING_PURCHASE} or less TOTAL, TAX INCLUDED (e.g. "free dessert with any $10 purchase") — if the snippet's stated spend amount is pre-tax and is close enough to $${MAX_QUALIFYING_PURCHASE} that adding a typical ~9% sales tax would push the real checkout total over it, it does NOT qualify (treat roughly $${MAX_QUALIFYING_PURCHASE} minus that ~9% buffer as the real usable pre-tax ceiling).
+  A plain discount, a percentage off, a priced combo, a regular menu mention, an offer requiring MORE than that, or an offer whose stated end date is before today does NOT qualify.
   For a NATIONAL CHAIN (present at locations nationwide), don't reject it on location grounds — it's reasonable to assume they have or will have a nearby location. For an INDEPENDENT/LOCAL restaurant, qualifies is also false if the snippet states or clearly implies it's in a different city, region, or state than ${location} and outside a ${radius}-mile drive — a snippet with no location detail at all should NOT be disqualified on that basis alone (assume it's local to the search area unless it says otherwise).
 - title: a short clean description of that specific offer.
 - requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "unknown".
