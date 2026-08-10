@@ -1052,34 +1052,6 @@ async function runTierSequential(env, tier, query, includeDomains, options) {
   return { results: [], provider: null, tierId: tier.id, failures };
 }
 
-// Diagnostic snapshot of every tier's real state — used by /api/status's
-// debug mode so you can see which tier is currently active and confirm
-// nothing (e.g. a newly-added engine) got silently skipped or exhausted
-// early. Read-only: never increments anything, just reads quota.js's
-// stored counters the same way resolveActiveTierIndex does.
-export async function getTierStatus(env) {
-  const activeIndex = await resolveActiveTierIndex(env);
-  const tiers = [];
-  for (let i = 0; i < TIER_DEFS.length; i++) {
-    const tier = TIER_DEFS[i];
-    const configured = tier.primaryEngine === "duckduckgo" || !!env[tier.keyEnv];
-    const cap = tierCap(env, tier);
-    const used = configured ? await getQuotaUsage(env, tier.primaryEngine, tier.period) : 0;
-    tiers.push({
-      id: tier.id,
-      primaryEngine: tier.primaryEngine,
-      configured,
-      used,
-      cap: cap === Infinity ? "unlimited" : cap,
-      exhausted: configured && cap !== Infinity && used >= cap,
-      period: tier.period,
-      active: i === activeIndex,
-      extraEnginesConfigured: tier.extraEngines.filter(name => isEngineConfigured(env, name))
-    });
-  }
-  return { activeTier: TIER_DEFS[activeIndex].id, tiers };
-}
-
 // Narrow, single-answer lookups (e.g. "find this one company's official
 // site"). Uses the currently-active tier's engines, primary first; only
 // spills into the NEXT tier down if every engine in the active tier fails

@@ -13,19 +13,7 @@
 //
 // It reports binding presence only — never any secret values, key
 // contents, or counts (this is a status check, not a diagnostics dump).
-//
-// Optional: curl "https://<your-app>.pages.dev/api/status?debug=<STATUS_DEBUG_KEY>"
-// additionally returns the full tier table (per-tier: configured?, used,
-// cap, exhausted?, which tier is currently active, which extra engines
-// are riding along) via search-providers.js's getTierStatus(). Gated
-// behind a shared secret (STATUS_DEBUG_KEY env var) since usage counts
-// are still internal info, just not as sensitive as actual key values.
-// If STATUS_DEBUG_KEY isn't set, the debug param is ignored entirely
-// (fails closed — no accidental exposure just because someone guesses
-// ?debug=1).
-import { getTierStatus } from "../_shared/search-providers.js";
-
-export async function onRequestGet({ env, request }) {
+export async function onRequestGet({ env }) {
   const rateLimitBound = !!env.RATE_LIMIT_KV;
   const quotaBound = !!env.QUOTA_KV;
 
@@ -41,23 +29,15 @@ export async function onRequestGet({ env, request }) {
     );
   }
 
-  const body = {
-    ok: warnings.length === 0,
-    bindings: {
-      RATE_LIMIT_KV: rateLimitBound,
-      QUOTA_KV: quotaBound
-    },
-    warnings
-  };
-
-  const url = new URL(request.url);
-  const debugKey = url.searchParams.get("debug");
-  if (debugKey && env.STATUS_DEBUG_KEY && debugKey === env.STATUS_DEBUG_KEY) {
-    body.tierStatus = await getTierStatus(env);
-  }
-
   return new Response(
-    JSON.stringify(body, null, 2),
+    JSON.stringify({
+      ok: warnings.length === 0,
+      bindings: {
+        RATE_LIMIT_KV: rateLimitBound,
+        QUOTA_KV: quotaBound
+      },
+      warnings
+    }, null, 2),
     { status: 200, headers: { "Content-Type": "application/json" } }
   );
 }
