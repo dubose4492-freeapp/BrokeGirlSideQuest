@@ -1294,7 +1294,7 @@ function renderDashboard() {
     </div>` : "";
 
   return `
-    ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap <b>Run Quest</b> up top to start today's live search for your area.</div>`}
+    ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap a quest card below, then hit <b>scan</b> to start today's live search for that section — search works best one section at a time.</div>`}
     <div class="quest-board-head">QUEST BOARD <span class="dash-line"></span></div>
     <div class="quest-board">${boardCards}</div>
     ${questComplete}`;
@@ -1999,6 +1999,10 @@ function buildAiPrompt() {
   return lines.join("\n");
 }
 
+// No longer called from the dashboard button (see handleScanClick) — the
+// 8-category-in-a-row sweep this runs was the thing failing. Left in place
+// unused for now rather than deleted, in case a "scan everything" entry
+// point is wanted again later (e.g. behind an explicit confirm dialog).
 async function runFullScan() {
   if (state.scanning) return;
 
@@ -2136,7 +2140,14 @@ async function scanSingleCategory(key) {
 function handleScanClick() {
   if (state.scanning) return;
   maybeShowA2HSBanner();
-  if (state.tab === "dashboard") { runFullScan(); return; }
+  // Dashboard no longer triggers runFullScan() (the old 8-category-in-a-row
+  // sweep) — running every section back to back reliably burned through
+  // search/LLM quota partway through and surfaced as a failure with no
+  // clear next step. Telling the person to scan one section at a time
+  // (scanSingleCategory, already used by every non-dashboard tab) is more
+  // reliable and makes the quota usage visible per section instead of
+  // hidden inside one long chained request.
+  if (state.tab === "dashboard") { showToast("Open a section below and tap scan there — scanning one section at a time works best."); return; }
   const cat = CATEGORIES[state.tab];
   if (!cat || cat.static) return; // tips — nothing to scan
   scanSingleCategory(state.tab);
@@ -2229,7 +2240,7 @@ function updateScanButton() {
   if (!btn || !label || state.scanning) return;
   if (state.tab === "dashboard") {
     btn.disabled = false;
-    label.textContent = "run quest";
+    label.textContent = "pick a section"; // dashboard no longer runs all 8 categories at once — see handleScanClick
     return;
   }
   const cat = CATEGORIES[state.tab];
