@@ -2426,38 +2426,30 @@ async function searchGasItem(signal) {
 }
 
 async function searchGroceryCategory(signal) {
-  const items = [];
   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
   state.ensembleUsed.grocery = false;
 
-  // Gas is fired off but NEVER awaited here — it previously still held up
-  // this function's return (and therefore the rest of the scan queue in
-  // runFullScan, which awaits one category before starting the next) any
-  // time gas itself was the slower of the two, which defeats the point of
-  // running it concurrently. Now the item loop below returns as soon as
-  // it's done, full stop, and gas patches itself into state.results.grocery
-  // — wherever that array is by the time it resolves, even after this
-  // category (and possibly the whole scan) is already finished — and
-  // triggers its own render() so the card just pops in whenever it's ready
-  // instead of ever blocking anything after it.
-  if (!state.stopRequested) {
-    searchGasItem(signal).then(gasItem => {
-      const bucket = state.results.grocery;
-      if (Array.isArray(bucket) && !bucket.some(it => it.id === GAS_ITEM_ID)) {
-        bucket.unshift(gasItem);
-        render();
-      }
-    }).catch(err => {
-      if (err.name === "AbortError") return;
-      recordFailure("grocery", err.message);
-      // The scan-wide error banner is normally built once, right after
-      // runFullScan's category loop finishes — which may already have
-      // happened by the time a backgrounded gas fetch fails. Surface it
-      // as a toast instead so a late failure is never silently dropped.
-      if (!state.scanning) showToast(`Gas price: ${err.message}`);
-    });
-  }
+  // Gas fires concurrently with the item loop below (so its latency
+  // overlaps the loop instead of stacking in front of it), but this
+  // function does NOT return until BOTH are done, and gas is folded into
+  // the same `items` array that gets returned. This used to background
+  // gas entirely (fire it, never await it, let it patch itself into
+  // state.results.grocery whenever it happened to resolve) — that made
+  // the gas card pop in early, then get wiped out the moment the item
+  // loop finished, because the loop's return value (a *different* array)
+  // overwrote whatever gas had patched into state.results.grocery. Gas
+  // and groceries need to land in the exact same array so the caller's
+  // one assignment — state.results.grocery = await searchGroceryCategory(...)
+  // — carries both, and the whole tab updates in one single render, all
+  // together, not gas-then-groceries or groceries-then-gas.
+  const gasPromise = state.stopRequested
+    ? null
+    : searchGasItem(signal).catch(err => {
+        if (err.name !== "AbortError") recordFailure("grocery", err.message);
+        return null;
+      });
 
+  const items = [];
   for (const itemName of GROCERY_ITEMS) {
     if (state.stopRequested) break;
     try {
@@ -2466,6 +2458,11 @@ async function searchGroceryCategory(signal) {
       if (err.name === "AbortError") break;
       recordFailure("grocery", err.message);
     }
+  }
+
+  if (gasPromise) {
+    const gasItem = await gasPromise;
+    if (gasItem) items.unshift(gasItem);
   }
   return items;
 }
