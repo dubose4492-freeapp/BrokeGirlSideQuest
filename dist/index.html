@@ -848,6 +848,24 @@ const CATEGORIES = {
   // as the "tips" tab below.
   tube: { label: "Watch & Chill", icon: "📺", static: true },
   game: { label: "Coin Dash", icon: "🎮", static: true },
+  // Static content tab — no search/API call of its own. Instead of
+  // fetching anything new, renderWallet() builds a "get to Friday" plan
+  // out of whatever's already sitting in state.results from prior scans
+  // (real grocery prices, real free/no-purchase finds) — never invents
+  // deals or prices the app hasn't actually seen. Handled via
+  // renderWallet() in render(), same static-tab pattern as "help" below;
+  // also skipped by runFullScan()/computeStats()'s category loops.
+  // Placed before "dashboard" so My Wallet is the first tab in the nav.
+  // Static content tab — no search/API call. A simple zero-based monthly
+  // budget: prefilled common categories (rent, utilities, groceries, etc.)
+  // the person fills in their own numbers for, same idea as the
+  // "give every dollar a job" style budget apps use. Placed right before
+  // "wallet" per request so the flow reads Budget (the whole month) ->
+  // Wallet (get-to-Friday, day-to-day). Handled via renderBudget() in
+  // render(); kept out of the scan/category loops the same way "wallet" is
+  // (see those exclusion filters elsewhere in this file).
+  budget: { label: "Monthly Budget", icon: "📊", static: true },
+  wallet: { label: "My Wallet", icon: "👛", static: true },
   dashboard: { label: "Dashboard" },
   restaurant: { label: "Restaurant Deals", icon: "🍔" },
   grocery: { label: "Grocery", icon: "🛒", timeRange: "week", isPriced: true, groceryItems: GROCERY_ITEMS },
@@ -870,14 +888,6 @@ const CATEGORIES = {
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: null, query: () =>
     `free samples and free items by mail no purchase necessary` },
-  // Static content tab — no search/API call of its own. Instead of
-  // fetching anything new, renderWallet() builds a "get to Friday" plan
-  // out of whatever's already sitting in state.results from prior scans
-  // (real grocery prices, real free/no-purchase finds) — never invents
-  // deals or prices the app hasn't actually seen. Handled via
-  // renderWallet() in render(), same static-tab pattern as "help" above;
-  // also skipped by runFullScan()/computeStats()'s category loops.
-  wallet: { label: "My Wallet", icon: "👛", static: true },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped
   // by renderList()/runFullScan()'s category loops (both filter on
@@ -996,6 +1006,13 @@ let state = {
   // so the plan is still there next visit, same pattern as zip/radius.
   walletBudget: lsGet("dff_wallet_budget") || "",
   walletDays: lsGet("dff_wallet_days") || "",
+  // Monthly Budget tab — monthly income, amounts per prefilled category
+  // (object keyed by BUDGET_CATEGORIES' .key), and any custom categories
+  // the person added on top of those. All persisted the same way as the
+  // wallet inputs above so the budget survives a reload.
+  budgetIncome: lsGet("dff_budget_income") || "",
+  budgetAmounts: JSON.parse(lsGet("dff_budget_amounts") || "{}"),
+  budgetExtras: JSON.parse(lsGet("dff_budget_extras") || "[]"),
   results: {},
   filters: {}, // per-category active requirement-type filter
   saved: new Set(JSON.parse(lsGet("dff_saved") || "[]")),
@@ -1062,7 +1079,7 @@ function bumpCharLevel(id) {
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet") state.results[k] = []; });
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget") state.results[k] = []; });
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -1239,7 +1256,7 @@ function itemCard(item) {
     <div class="item-actions">
       <button class="save-btn ${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
       <button class="dir-btn">📍 Directions</button>
-      <button class="claim-btn${state.claimedLog[item.id] ? " claimed" : ""}"${claimUrl ? "" : " disabled"}>${state.claimedLog[item.id] ? "✅ Claimed" : "🔗 Claim"}</button>
+      <button class="claim-btn${state.claimedLog[item.id] ? " claimed" : ""}"${claimUrl ? "" : " disabled"} title="${state.claimedLog[item.id] ? "Tap to undo — didn't work out? Un-claim so it doesn't count toward your total" : ""}">${state.claimedLog[item.id] ? "✅ Claimed ↺" : "🔗 Claim"}</button>
       <button class="share-btn">📤 Share</button>
     </div>
   </div>`;
@@ -1258,7 +1275,13 @@ document.getElementById("content").addEventListener("click", (e) => {
   const { id, title, store, claim } = card.dataset;
   if (e.target.closest(".save-btn")) toggleSave(id);
   else if (e.target.closest(".dir-btn")) openDirections(`${store} ${state.zip}`);
-  else if (e.target.closest(".claim-btn")) { if (claim) { markClaimed(id); window.open(claim, "_blank", "noopener"); render(); } }
+  else if (e.target.closest(".claim-btn")) {
+    // Already claimed -> this click is the undo, not a re-claim. Doesn't
+    // reopen the link (they've already been there); just pulls it back
+    // out of the log so it stops counting toward the monthly total.
+    if (state.claimedLog[id]) { unclaimItem(id); render(); }
+    else if (claim) { markClaimed(id); window.open(claim, "_blank", "noopener"); render(); }
+  }
   else if (e.target.closest(".share-btn")) shareItem(title, claim);
 });
 
@@ -1341,7 +1364,7 @@ function providerNoteHtml(key) {
 // this is a gamified estimate, not a receipt), and how many of the 8
 // searchable categories have been scanned at least once this run.
 function computeStats() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget");
   let totalFound = 0, estValue = 0, scannedCount = 0;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1364,7 +1387,7 @@ function computeStats() {
 // beyond what computeStats already uses elsewhere in the HUD, so the
 // highlighted item's implied value always matches what's shown there.
 function findBestDeal() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget");
   let best = null, bestValue = -1, bestFresh = false;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1394,7 +1417,7 @@ function renderHud() {
 
 function renderDashboard() {
   const stats = computeStats();
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget");
   const bestDeal = findBestDeal();
 
   const boardCards = catKeys.map(k => {
@@ -1418,10 +1441,10 @@ function renderDashboard() {
 
   const bestDealHtml = bestDeal ? `
     <div class="quest-board-head">🔥 BEST DEAL TODAY <span class="dash-line"></span></div>
-    ${itemCard(bestDeal.item)}` : "";
+    <div style="margin-bottom:24px;">${itemCard(bestDeal.item)}</div>` : "";
 
   const claimedStats = claimedStatsThisMonth();
-  const claimedSummaryHtml = claimedStats.count > 0 ? `<div class="quest-complete" style="margin-bottom:12px;">
+  const claimedSummaryHtml = claimedStats.count > 0 ? `<div class="quest-complete" style="margin-bottom:18px;">
       <div class="quest-complete-xp">💰</div>
       <div class="quest-complete-text"><b>Total saved this month: ~$${claimedStats.total.toFixed(2)}</b><br>${claimedStats.count} quest${claimedStats.count === 1 ? "" : "s"} claimed</div>
     </div>` : "";
@@ -1430,7 +1453,7 @@ function renderDashboard() {
     ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap a quest card below, then hit <b>scan</b> to start today's live search for that section — search works best one section at a time.</div>`}
     ${claimedSummaryHtml}
     ${bestDealHtml}
-    <div class="quest-board-head">QUEST BOARD <span class="dash-line"></span></div>
+    <div class="quest-board-head" style="margin-top:22px;">QUEST BOARD <span class="dash-line"></span></div>
     <div class="quest-board">${boardCards}</div>
     ${questComplete}`;
 }
@@ -1575,6 +1598,146 @@ function renderHelp() {
   </div>`;
 }
 
+// ---------- Monthly Budget tab ----------
+// Prefilled zero-based-style budget categories (the "give every dollar a
+// job" idea, same territory as Dave Ramsey/EveryDollar-style apps) — the
+// person just fills in their own numbers next to each. Common enough
+// categories that most people can start typing immediately instead of
+// facing a blank sheet; anything that doesn't fit can go in the custom
+// "add your own" row further down.
+const BUDGET_CATEGORIES = [
+  { key: "rent", label: "Rent / Mortgage", icon: "🏠" },
+  { key: "utilities", label: "Utilities (electric, water, gas)", icon: "💡" },
+  { key: "internetPhone", label: "Internet & Phone", icon: "📶" },
+  { key: "groceries", label: "Groceries", icon: "🛒" },
+  { key: "transportation", label: "Transportation / Gas", icon: "⛽" },
+  { key: "insurance", label: "Insurance", icon: "🛡️" },
+  { key: "debt", label: "Debt Payments", icon: "💳" },
+  { key: "subscriptions", label: "Subscriptions", icon: "📺" },
+  { key: "savings", label: "Savings", icon: "🐷" },
+  { key: "personal", label: "Personal / Misc", icon: "🎒" }
+];
+
+function budgetNum(v) {
+  const n = parseFloat(v);
+  return isNaN(n) ? 0 : n;
+}
+
+function setBudgetIncome(val) {
+  state.budgetIncome = String(Math.max(0, budgetNum(val)));
+  lsSet("dff_budget_income", state.budgetIncome);
+  renderBudgetTotalsOnly();
+}
+
+function setBudgetAmount(key, val) {
+  state.budgetAmounts[key] = String(Math.max(0, budgetNum(val)));
+  lsSet("dff_budget_amounts", JSON.stringify(state.budgetAmounts));
+  renderBudgetTotalsOnly();
+}
+
+function setBudgetExtraAmount(idx, val) {
+  if (!state.budgetExtras[idx]) return;
+  state.budgetExtras[idx].amount = String(Math.max(0, budgetNum(val)));
+  lsSet("dff_budget_extras", JSON.stringify(state.budgetExtras));
+  renderBudgetTotalsOnly();
+}
+
+function addBudgetExtra() {
+  const labelEl = document.getElementById("budgetExtraLabel");
+  const amountEl = document.getElementById("budgetExtraAmount");
+  const label = (labelEl.value || "").trim();
+  if (!label) { labelEl.focus(); return; }
+  state.budgetExtras.push({ label, amount: String(Math.max(0, budgetNum(amountEl.value))) });
+  lsSet("dff_budget_extras", JSON.stringify(state.budgetExtras));
+  render();
+}
+
+function removeBudgetExtra(idx) {
+  state.budgetExtras.splice(idx, 1);
+  lsSet("dff_budget_extras", JSON.stringify(state.budgetExtras));
+  render();
+}
+
+function budgetTotals() {
+  const income = budgetNum(state.budgetIncome);
+  const catTotal = BUDGET_CATEGORIES.reduce((sum, c) => sum + budgetNum(state.budgetAmounts[c.key]), 0);
+  const extraTotal = state.budgetExtras.reduce((sum, e) => sum + budgetNum(e.amount), 0);
+  const totalBudgeted = catTotal + extraTotal;
+  return { income, totalBudgeted, remaining: income - totalBudgeted };
+}
+
+// Every category/extra input re-renders just the totals banner on
+// keystroke (not the whole tab) so typing in one box doesn't fight the
+// browser for focus the way a full render() would on every keystroke.
+// Structural changes (add/remove a custom category) still call the
+// regular render().
+function renderBudgetTotalsOnly() {
+  const el = document.getElementById("budgetTotals");
+  if (el) el.outerHTML = budgetTotalsHtml();
+}
+
+function budgetTotalsHtml() {
+  const t = budgetTotals();
+  let cls = "quest-complete", note;
+  if (t.income <= 0) {
+    note = "Enter your monthly income above to see how your categories stack up against it.";
+  } else if (Math.abs(t.remaining) < 0.005) {
+    note = `<b>🎯 Every dollar has a job.</b><br>$${t.income.toFixed(2)} in, $${t.totalBudgeted.toFixed(2)} assigned — that's zero-based.`;
+  } else if (t.remaining > 0) {
+    note = `<b>$${t.remaining.toFixed(2)} left to assign.</b><br>Give it a job — savings, extra debt payment, or a category above — before the month starts.`;
+  } else {
+    note = `<b>$${Math.abs(t.remaining).toFixed(2)} over budget.</b><br>Your categories add up to more than your income — trim something before the month starts, not mid-month.`;
+    cls = "help-banner";
+  }
+  return cls === "help-banner"
+    ? `<div id="budgetTotals" class="help-banner" style="margin-bottom:20px;"><h2>⚠️ Over budget</h2><p>${note}</p></div>`
+    : `<div id="budgetTotals" class="quest-complete" style="margin-bottom:20px;"><div class="quest-complete-xp">$${t.income.toFixed(2)}/mo</div><div class="quest-complete-text">${note}</div></div>`;
+}
+
+function renderBudget() {
+  const rows = BUDGET_CATEGORIES.map(c => `
+    <div class="search-field" style="min-width:0;">
+      <label for="budgetCat_${c.key}">${c.icon} ${escapeHtml(c.label)}</label>
+      <input id="budgetCat_${c.key}" type="number" min="0" step="1" placeholder="$0"
+        value="${escapeHtml(state.budgetAmounts[c.key] || "")}"
+        onchange="setBudgetAmount('${c.key}', this.value)" />
+    </div>`).join("");
+
+  const extraRows = state.budgetExtras.map((e, idx) => `
+    <div class="search-field" style="min-width:0;">
+      <label>➕ ${escapeHtml(e.label)} <span style="cursor:pointer;" onclick="removeBudgetExtra(${idx})" title="Remove">✕</span></label>
+      <input type="number" min="0" step="1" placeholder="$0" value="${escapeHtml(e.amount || "")}"
+        onchange="setBudgetExtraAmount(${idx}, this.value)" />
+    </div>`).join("");
+
+  return `
+  <div class="help-banner">
+    <h2>📊 Monthly Budget</h2>
+    <p>Give every dollar a job before the month starts. Fill in your income and what each category actually costs — nothing here leaves your browser.</p>
+    <div class="search-bar" style="margin-top:8px;">
+      <div class="search-field">
+        <label for="budgetIncomeInput">Monthly income ($)</label>
+        <input id="budgetIncomeInput" type="number" min="0" step="1" placeholder="e.g. 2200" value="${escapeHtml(state.budgetIncome)}" onchange="setBudgetIncome(this.value)" />
+      </div>
+    </div>
+  </div>
+  ${budgetTotalsHtml()}
+  <div class="quest-board-head">CATEGORIES <span class="dash-line"></span></div>
+  <div class="search-bar">${rows}${extraRows}</div>
+  <div class="quest-board-head" style="margin-top:22px;">ADD YOUR OWN <span class="dash-line"></span></div>
+  <div class="search-bar">
+    <div class="search-field">
+      <label for="budgetExtraLabel">Category name</label>
+      <input id="budgetExtraLabel" type="text" placeholder="e.g. Pet care" />
+    </div>
+    <div class="search-field">
+      <label for="budgetExtraAmount">Amount ($)</label>
+      <input id="budgetExtraAmount" type="number" min="0" step="1" placeholder="$0" />
+    </div>
+    <button class="help-hotline-btn" style="align-self:flex-end; border:none; cursor:pointer;" onclick="addBudgetExtra()">➕ Add category</button>
+  </div>`;
+}
+
 // Builds a "get to <days> from now" plan purely out of whatever's already
 // sitting in state.results from prior scans — never fetches anything new
 // and never invents a price or deal the app hasn't actually seen. Two
@@ -1586,7 +1749,7 @@ function renderHelp() {
 function buildWalletPlan(budget, days) {
   const freeCatKeys = Object.keys(CATEGORIES).filter(k =>
     k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
-    k !== "tube" && k !== "about" && k !== "wallet" && k !== "grocery");
+    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "grocery");
   const freeFinds = [];
   freeCatKeys.forEach(k => {
     (state.results[k] || []).forEach(it => { if (it.isFree || !it.price) freeFinds.push(it); });
@@ -1772,15 +1935,25 @@ function renderTips() {
       <p class="tip-note">Amazon Prime members also get Prime Gaming — free monthly game claims and in-game loot, included if you already have Prime.</p>
     </div>
     <div class="tip-card">
-      <h3>🍔 Food delivery apps &amp; BOGO deals</h3>
-      <p>These delivery apps regularly run free-delivery, BOGO, and % off promos — worth having a few installed to compare:</p>
+      <h3>🍔 Delivery apps — emergencies only</h3>
+      <p class="provider-note secondary" style="margin-bottom:10px;">⚠️ Delivery fees, service fees, and tipping add up fast — DoorDash/Uber Eats/Grubhub are genuinely expensive for regular use. Reach for one when you actually can't get food any other way: you can't drive, you're too sick to cook, or there's just nothing in the house tonight. For everyday eating, the Restaurant Deals and Grocery tabs (or picking up from a fast food app yourself, below) will save you more.</p>
+      <p>When it IS one of those nights, these run free-delivery, BOGO, and % off promos worth checking before you order:</p>
       <ul>
         <li><a href="https://www.doordash.com" target="_blank" rel="noopener noreferrer">DoorDash</a> — check the "Deals" tab for BOGO &amp; $0 delivery fee offers</li>
         <li><a href="https://www.ubereats.com" target="_blank" rel="noopener noreferrer">Uber Eats</a> — frequent promo codes and restaurant-funded BOGO deals</li>
         <li><a href="https://www.grubhub.com" target="_blank" rel="noopener noreferrer">Grubhub</a> — "Perks" tab plus Grubhub+ trial windows</li>
-        <li>Individual restaurant apps (Chipotle, Wendy's, Taco Bell, Panera, etc.) — often cheaper than delivery-app pricing and run their own rewards/BOGO deals</li>
       </ul>
       <p class="tip-note">Comparing 2–3 apps for the same order can turn up very different delivery fees and promo codes — worth a quick check before ordering.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🌮 Fast food chain apps — often free just for signing up</h3>
+      <p>These are free downloads, no delivery fee if you pick up yourself, and most give new accounts a one-time welcome offer — a free item, a free entrée with your first order, or a flat discount just for signing up. That's usually a bigger saving than any day-to-day promo, so it's worth using on your first order instead of letting it expire unused. Worth having a few installed:</p>
+      <ul>
+        <li>McDonald's, Burger King, Wendy's, Taco Bell — check the app's "Rewards"/"Deals" tab right after signing up for the welcome offer</li>
+        <li>Chick-fil-A, Sonic, Arby's, Popeyes, Bojangles</li>
+        <li>Chipotle, Panera — rewards points plus frequent app-only offers</li>
+      </ul>
+      <p class="tip-note">Welcome offers and terms change often and vary by app/region — check what's currently offered in-app before you order rather than assuming a specific deal.</p>
     </div>
     <div class="tip-card">
       <h3>📱 Carrier freebies</h3>
@@ -1865,13 +2038,14 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
   else if (state.tab === "wallet") content.innerHTML = renderWallet();
+  else if (state.tab === "budget") content.innerHTML = renderBudget();
   else if (state.tab === "tips") content.innerHTML = renderTips();
   else if (state.tab === "about") content.innerHTML = renderAbout();
   else if (state.tab === "tube") content.innerHTML = renderTube();
@@ -1915,6 +2089,19 @@ function markClaimed(id) {
   const value = !isNaN(priceNum) ? priceNum : 5;
   state.claimedLog[id] = { value, monthKey: monthKey(new Date()), ts: Date.now() };
   lsSet("dff_claimed_log", JSON.stringify(state.claimedLog));
+}
+
+// Reverses a claim — changed your mind, deal turned out to be expired/
+// unavailable, whatever. Fully removes the entry (not a soft "cancelled"
+// flag) so claimedStatsThisMonth() just doesn't see it anymore and the
+// monthly total/quest count both drop back down automatically. Button
+// reverts to "🔗 Claim" on next render, so it can be re-claimed later if
+// it turns out it was actually valid.
+function unclaimItem(id) {
+  if (!state.claimedLog[id]) return;
+  delete state.claimedLog[id];
+  lsSet("dff_claimed_log", JSON.stringify(state.claimedLog));
+  showToast("Un-claimed — removed from your saved total");
 }
 
 // Totals for the current calendar month only — old months' entries stay
@@ -2247,7 +2434,7 @@ function buildAiPrompt() {
   ];
 
   for (const key of Object.keys(CATEGORIES)) {
-    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "wallet") continue;
+    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "wallet" || key === "budget") continue;
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
@@ -2294,7 +2481,7 @@ async function runFullScan() {
   stopBtn.style.display = "flex";
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget");
   for (let i = 0; i < categoryKeys.length; i++) {
     if (state.stopRequested) break;
     const key = categoryKeys[i];
@@ -2359,7 +2546,7 @@ function stopScan() {
 // currentAbortController/state.results slot. Triggered via
 // handleScanClick() — never call this directly for "dashboard" or "tips".
 async function scanSingleCategory(key) {
-  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "wallet") return;
+  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "wallet" || key === "budget") return;
 
   state.scanning = true;
   state.scanningKey = key;
