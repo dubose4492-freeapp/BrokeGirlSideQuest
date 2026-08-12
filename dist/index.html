@@ -386,15 +386,23 @@
   /* Tips & Tricks uses its own masonry-style column layout instead of the
      plain grid above — its cards vary a LOT in height (a 2-line card next
      to a 10-line one), and CSS grid lays items out in strict rows sized to
-     the tallest card in that row. On a wide desktop viewport that meant
-     short cards sat inside a much taller row slot, leaving big uneven gaps
-     underneath them. CSS multi-column layout instead packs each card into
-     whichever column has room, so cards sit flush against each other with
-     no dead space, the way a Pinterest-style board does. Order becomes
+     the tallest card in that row, leaving big uneven gaps under short
+     cards on a wide viewport. CSS multi-column (column-width) was tried
+     next, but it has its own gap bug: it estimates one column height up
+     front, and since break-inside:avoid never lets a card split, a card
+     that doesn't quite fit the bottom of a column jumps whole to the next
+     column — leaving the rest of that column blank. So instead the cards
+     get distributed into real column <div>s in JS (initTipsMasonry,
+     rerun on resize): each card's actual rendered height is measured,
+     then it's placed into whichever column is currently shortest, so
+     columns land close to level with no leftover holes. Order becomes
      column-major (top-to-bottom per column) rather than row-major, which
      is fine here since the cards aren't meant to be read in strict order. */
-  .tips-masonry { column-width: 300px; column-gap: 16px; margin-bottom: 24px; }
-  .tips-masonry .tip-card { break-inside: avoid; margin: 0 0 16px; }
+  .tips-masonry { margin-bottom: 24px; }
+  .tips-masonry-cols { display: flex; align-items: flex-start; gap: 16px; }
+  .tips-masonry-col { flex: 1; min-width: 0; }
+  .tips-masonry-col .tip-card { margin: 0 0 16px; }
+  .tips-masonry-col .tip-card:last-child { margin-bottom: 0; }
   .tip-card { background: var(--panel); border: 3px solid var(--ink); box-shadow: 5px 5px 0 var(--lav); padding: 16px; }
   .tip-card h3 { margin: 0 0 8px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
   .tip-card p { margin: 0 0 10px; font-size: 14px; }
@@ -1696,7 +1704,7 @@ function budgetTotalsHtml() {
 
 function renderBudget() {
   const rows = BUDGET_CATEGORIES.map(c => `
-    <div class="search-field" style="min-width:0;">
+    <div class="search-field">
       <label for="budgetCat_${c.key}">${c.icon} ${escapeHtml(c.label)}</label>
       <input id="budgetCat_${c.key}" type="number" min="0" step="1" placeholder="$0"
         value="${escapeHtml(state.budgetAmounts[c.key] || "")}"
@@ -1704,7 +1712,7 @@ function renderBudget() {
     </div>`).join("");
 
   const extraRows = state.budgetExtras.map((e, idx) => `
-    <div class="search-field" style="min-width:0;">
+    <div class="search-field">
       <label>➕ ${escapeHtml(e.label)} <span style="cursor:pointer;" onclick="removeBudgetExtra(${idx})" title="Remove">✕</span></label>
       <input type="number" min="0" step="1" placeholder="$0" value="${escapeHtml(e.amount || "")}"
         onchange="setBudgetExtraAmount(${idx}, this.value)" />
@@ -1840,7 +1848,7 @@ function renderWallet() {
 }
 
 function renderTips() {
-  return `<div class="tips-masonry">
+  return `<div class="tips-masonry" id="tipsMasonry"><div id="tipsMasonryCards">
     <div class="tip-card">
       <h3>📚 Free library apps</h3>
       <p>Your library card (free to get, even online in most counties) unlocks these — no extra cost:</p>
@@ -1976,8 +1984,57 @@ function renderTips() {
       </ul>
       <p class="tip-note">Consider using a dedicated email address for these sign-ups to keep the freebie offers from burying your main inbox — and only give your real birthday to brands you trust, since some will sell/share that data.</p>
     </div>
-  </div>`;
+  </div></div>`;
 }
+
+// Distributes the tip cards (already sitting in #tipsMasonryCards, stacked
+// in normal document order so their real rendered heights are available)
+// into however many ~300px columns fit the current viewport, always
+// dropping the next card into whichever column is shortest so far. See
+// the .tips-masonry comment above for why this replaced CSS columns.
+// Runs right after the innerHTML swap for the tips tab, before the
+// browser paints, so there's no flash of the un-columned stack; also
+// reruns (debounced) on resize since the column count is width-based.
+function tipsMasonryColumnCount(container) {
+  const width = container.clientWidth || window.innerWidth;
+  return Math.max(1, Math.floor((width + 16) / (300 + 16)));
+}
+
+function initTipsMasonry() {
+  const container = document.getElementById("tipsMasonry");
+  const cardsWrap = document.getElementById("tipsMasonryCards");
+  if (!container || !cardsWrap) return;
+
+  const cards = Array.from(cardsWrap.children);
+  const columnCount = tipsMasonryColumnCount(container);
+  const heights = cards.map(c => c.offsetHeight);
+
+  const cols = Array.from({ length: columnCount }, () => {
+    const el = document.createElement("div");
+    el.className = "tips-masonry-col";
+    return { el, height: 0 };
+  });
+
+  cards.forEach((card, i) => {
+    const shortest = cols.reduce((a, b) => (b.height < a.height ? b : a));
+    shortest.el.appendChild(card);
+    shortest.height += heights[i] + 16; // + column gap
+  });
+
+  const row = document.createElement("div");
+  row.className = "tips-masonry-cols";
+  cols.forEach(c => row.appendChild(c.el));
+
+  container.innerHTML = "";
+  container.appendChild(row);
+}
+
+let tipsResizeTimer = null;
+window.addEventListener("resize", () => {
+  if (state.tab !== "tips") return;
+  clearTimeout(tipsResizeTimer);
+  tipsResizeTimer = setTimeout(() => render(), 150);
+});
 
 function renderAbout() {
   return `<div class="tips-grid">
@@ -2046,7 +2103,7 @@ function render() {
   else if (state.tab === "help") content.innerHTML = renderHelp();
   else if (state.tab === "wallet") content.innerHTML = renderWallet();
   else if (state.tab === "budget") content.innerHTML = renderBudget();
-  else if (state.tab === "tips") content.innerHTML = renderTips();
+  else if (state.tab === "tips") { content.innerHTML = renderTips(); initTipsMasonry(); }
   else if (state.tab === "about") content.innerHTML = renderAbout();
   else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
