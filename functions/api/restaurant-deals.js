@@ -327,6 +327,31 @@ function getEffectiveDate(r) {
   return r.publishedDate || extractMentionedDate(r.content) || extractMentionedDate(r.title);
 }
 
+// Extra safety net specific to restaurant-deals.js: catches a snippet that
+// explicitly names a year earlier than the current one, even when it's
+// nowhere near the narrower "expires/through/until/ends" phrase
+// extractExpiry looks for, and even when there's no publish-date metadata
+// or "posted/updated/as of" cue for getEffectiveDate/isStale to catch (a
+// roundup post with neither signal was slipping straight through both of
+// those checks). Two patterns:
+//   - a full date-like mention naming a year ("December 2025",
+//     "12/31/2025", "Dec 5, 2025")
+//   - a bare year sitting right next to deal/date vocabulary ("valid
+//     through 2025", "this 2025 promo")
+// Deliberately NOT exempted for chain-own-domain results the way the
+// isStale check below is — a promo page that itself says "valid through
+// Dec 2025" is stale content no matter how recently the domain resolved.
+function mentionsPastYearDeal(text) {
+  const currentYear = new Date().getFullYear();
+  const t = text || "";
+  const dateLike = t.match(/\b(?:[A-Za-z]{3,9}\.?\s+\d{1,2},?\s*|\d{1,2}\/\d{1,2}\/|[A-Za-z]{3,9}\.?\s+)(20\d{2})\b/g) || [];
+  const contextual = t.match(/\b(?:expires?|valid|through|until|ends?|promo|deal|offer|posted|updated|published)\b[^.]{0,20}\b(20\d{2})\b/gi) || [];
+  return [...dateLike, ...contextual].some(m => {
+    const y = m.match(/20\d{2}/);
+    return y && parseInt(y[0], 10) < currentYear;
+  });
+}
+
 // Drop stale results and sort freshest-first, so if the LLM or regex path
 // ever has to pick among near-duplicate offers, it favors the newer one.
 // Uses real metadata when available, falling back to a date read out of
@@ -337,10 +362,12 @@ function getEffectiveDate(r) {
 // a chain's own deals/rewards page IS the current offer by definition,
 // the same way food pantries/community fridges are exempt from freebies.js's
 // freshness filter. Only third-party blog/roundup posts, which really can
-// go stale, get checked against maxDays.
+// go stale, get checked against maxDays. The mentionsPastYearDeal check
+// above runs first and applies to EVERY result, chain-domain or not.
 function filterAndSortByFreshness(results, maxDays) {
   return results
     .map(r => ({ ...r, effectiveDate: getEffectiveDate(r) }))
+    .filter(r => !mentionsPastYearDeal((r.content || "") + " " + (r.title || "")))
     .filter(r => DOMAIN_TO_CHAIN_KEY[hostname(r.url)] || !isStale(r.effectiveDate, maxDays))
     .sort((a, b) => {
       if (!a.effectiveDate) return 1;
