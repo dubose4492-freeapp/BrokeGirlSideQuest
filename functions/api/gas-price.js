@@ -16,6 +16,9 @@
 import { searchWithFallback as sharedSearchWithFallback, searchAllSources as sharedSearchAllSources } from "../_shared/search-providers.js";
 import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+// Wraps the OilPriceAPI call in an 8s timeout — the Foursquare call below
+// already had its own (see FOURSQUARE_TIMEOUT_MS), this one didn't.
+import { fetchWithTimeout } from "../_shared/fetch-timeout.js";
 
 // Real gas station chains, mapped to their own domain so results can be
 // restricted to a station's actual site — plus GasBuddy and AAA, which
@@ -384,7 +387,7 @@ async function getOilPriceApiPrice(env, location) {
   if (!stateAbbr) return null; // couldn't tell which state from what the client sent
 
   const code = `GASOLINE_RETAIL_STATE_${stateAbbr.toUpperCase()}_USD`;
-  const res = await fetch(`https://api.oilpriceapi.com/v1/prices/latest?by_code=${code}`, {
+  const res = await fetchWithTimeout(`https://api.oilpriceapi.com/v1/prices/latest?by_code=${code}`, {
     headers: { Authorization: `Token ${env.OILPRICEAPI_KEY}` }
   });
   if (!res.ok) throw new Error(`OilPriceAPI lookup failed (${res.status}) for ${code}.`);

@@ -1022,7 +1022,7 @@ let state = {
   // general "near me" web search — falls back to whatever was saved under
   // the old two-box setup so existing users don't lose their saved value.
   zip: lsGet("dff_zip") || lsGet("dff_kroger_zip") || "",
-  radius: lsGet("dff_radius") || "100",
+  radius: lsGet("dff_radius") || "25", // matches autoFillLocationFromGeo()'s own default — closest-to-user out of the box
   // Resolved "City, ST" for the current zip — every search call sends
   // this (via searchLocation() below) instead of the bare zip digits, so
   // the LLM classifier and search engines have a real place name to judge
@@ -1060,7 +1060,12 @@ let state = {
   claimedLog: JSON.parse(lsGet("dff_claimed_log") || "{}"),
   lastScan: lsGet("dff_last_scan") || null,
   scanning: false,
-  scanningKey: null, // set to a category key while a single-section scan (not the full "Run Quest") is in flight
+  scanningKey: null, // set to the category currently being scanned — during a full "Run Quest" sweep too, not just a single-tab scan, so the tab itself can show which one is active
+  // Live item-by-item progress for the grocery scan specifically (11
+  // sequential items + gas), so the tab can show "Scanning 4 of 12..."
+  // instead of just three dots for however long the whole thing takes.
+  // Reset to {done:0, total:0} at the start of every grocery scan.
+  groceryProgress: { done: 0, total: 0 },
   error: null,
   failedCategories: new Set(), // which tabs failed on the last run — used to
                                // show the "this quest line failed" empty
@@ -1342,6 +1347,20 @@ function renderList(key) {
   if (filtered.length === 0) {
     if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit the scan button again.</div>`;
     else if (!state.lastScan && !(state.scanning && state.scanningKey === key)) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap <b>scan ${cat.label.toLowerCase()}</b> up top to pull today's loot for this section.</div>`;
+    else if (state.scanning && state.scanningKey === key && key === "grocery" && state.groceryProgress.total > 0) {
+      const { done, total } = state.groceryProgress;
+      // ~2.5s/item is a rough average across Kroger + web-search + LLM
+      // extraction for one item — good enough for a "roughly how much
+      // longer" estimate, not a promise. Never shows negative/zero once
+      // the last item or two is still resolving.
+      const secsLeft = Math.max(1, Math.round((total - done) * 2.5));
+      body = `<div class="empty-state">Scanning groceries<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span><br>
+        <div style="margin-top:8px;font-size:0.9em;opacity:0.85">Item ${Math.min(done + 1, total)} of ${total} &middot; about ${secsLeft}s left</div>
+        <div style="margin-top:6px;height:6px;border-radius:3px;background:rgba(255,255,255,0.15);overflow:hidden;max-width:220px;margin-left:auto;margin-right:auto">
+          <div style="height:100%;width:${Math.round((done / total) * 100)}%;background:currentColor;transition:width 0.3s ease"></div>
+        </div>
+      </div>`;
+    }
     else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span></div>`;
     else body = `<div class="empty-state">No results match this filter.</div>`;
   } else {
@@ -2367,7 +2386,7 @@ async function searchGroceryItem(itemName, signal) {
     location: searchLocation(),
     radius: state.radius
   });
-  const response = await fetch(`/api/grocery-price?${params}`, { signal });
+  const response = await fetch(`/api/grocery-price?${params}`, { signal, cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Grocery lookup failed (${response.status}) for ${itemName}.`);
   recordGroceryProvider(data.provider, data.usedEnsemble);
@@ -2412,7 +2431,7 @@ function recordGroceryProvider(provider, usedEnsemble) {
 // itemCard() so it reads as "today's gas pick," not just another staple.
 async function searchGasItem(signal) {
   const params = new URLSearchParams({ zip: state.zip, location: searchLocation(), radius: state.radius });
-  const response = await fetch(`/api/gas-price?${params}`, { signal });
+  const response = await fetch(`/api/gas-price?${params}`, { signal, cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);
   recordGroceryProvider(data.provider, data.usedEnsemble);
@@ -2434,6 +2453,11 @@ async function searchGasItem(signal) {
 async function searchGroceryCategory(signal) {
   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
   state.ensembleUsed.grocery = false;
+  // +1 for the gas lookup, which runs concurrently with the item loop
+  // below and ticks the counter too — see the two spots that bump
+  // .done and call render() so the "Scanning X of Y" text (in the
+  // renderList empty-state) actually moves as results come in.
+  state.groceryProgress = { done: 0, total: GROCERY_ITEMS.length + 1 };
 
   // Gas fires concurrently with the item loop below (so its latency
   // overlaps the loop instead of stacking in front of it), but this
@@ -2450,7 +2474,13 @@ async function searchGroceryCategory(signal) {
   // together, not gas-then-groceries or groceries-then-gas.
   const gasPromise = state.stopRequested
     ? null
-    : searchGasItem(signal).catch(err => {
+    : searchGasItem(signal).then(item => {
+        state.groceryProgress.done++;
+        render();
+        return item;
+      }).catch(err => {
+        state.groceryProgress.done++;
+        render();
         if (err.name !== "AbortError") recordFailure("grocery", err.message);
         return null;
       });
@@ -2463,6 +2493,9 @@ async function searchGroceryCategory(signal) {
     } catch (err) {
       if (err.name === "AbortError") break;
       recordFailure("grocery", err.message);
+    } finally {
+      state.groceryProgress.done++;
+      render(); // live-updates the "Scanning X of Y" counter after every item, success or failure
     }
   }
 
@@ -2652,6 +2685,8 @@ async function runFullScan() {
     const key = categoryKeys[i];
     label.textContent = `Scanning ${CATEGORIES[key].label} (${i + 1}/${categoryKeys.length})`;
     state.results[key] = []; // clear before this category's fetch so failures never show stale data
+    state.scanningKey = key; // lets the tab itself show "Scanning..." (and grocery's live counter) during a full sweep, not just a single-tab scan
+    render(); // reflect the clear + scanningKey immediately, instead of leaving the previous scan's results on screen for this category's whole fetch
     try {
       state.results[key] = key === "grocery" ? await searchGroceryCategory(currentAbortController.signal)
         : key === "restaurant" ? await searchRestaurantCategory(currentAbortController.signal)
@@ -2685,6 +2720,7 @@ async function runFullScan() {
 
   state.scanning = false;
   state.stopRequested = false;
+  state.scanningKey = null;
   currentAbortController = null;
   btn.disabled = false;
   stopBtn.style.display = "none";

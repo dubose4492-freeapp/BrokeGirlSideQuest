@@ -53,13 +53,15 @@
 // all-or-nothing dependency, the other six keep the feature working
 // either way.
 
+import { fetchWithTimeout } from "./fetch-timeout.js";
+
 const DEFAULT_MAX_TOKENS = 2000;
 const DEFAULT_TEMPERATURE = 0;
 
 // ---------- OpenAI-compatible providers (OpenRouter, Groq, Cerebras, Mistral, Hugging Face) ----------
 async function openaiCompatibleChat(url, apiKey, model, prompt, options, providerName) {
   const { temperature = DEFAULT_TEMPERATURE, maxTokens = DEFAULT_MAX_TOKENS } = options;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -143,7 +145,7 @@ export async function geminiChat(env, prompt, options = {}) {
   // so it's not a great long-lived default.
   const model = env.GOOGLE_AI_MODEL || "gemini-3.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_AI_API_KEY}`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -166,7 +168,7 @@ export async function geminiChat(env, prompt, options = {}) {
 export async function cohereChat(env, prompt, options = {}) {
   const { temperature = DEFAULT_TEMPERATURE, maxTokens = DEFAULT_MAX_TOKENS } = options;
   const model = env.COHERE_MODEL || "command-r";
-  const res = await fetch("https://api.cohere.com/v2/chat", {
+  const res = await fetchWithTimeout("https://api.cohere.com/v2/chat", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.COHERE_API_KEY}`,

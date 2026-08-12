@@ -145,6 +145,7 @@
 //     how those are approximated instead.
 
 import { getQuotaUsage, incrementQuotaUsage, setQuotaExhausted, incrementZeroStreak, resetZeroStreak, ZERO_STREAK_THRESHOLD } from "./quota.js";
+import { fetchWithTimeout } from "./fetch-timeout.js";
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 
@@ -171,7 +172,7 @@ export async function tavilySearch(env, query, includeDomains, options = {}) {
     ...(includeDomains && includeDomains.length ? { include_domains: includeDomains } : {}),
     ...(days ? { days } : {})
   };
-  const res = await fetch("https://api.tavily.com/search", {
+  const res = await fetchWithTimeout("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
@@ -218,7 +219,7 @@ export async function geminiGroundedSearch(env, query, includeDomains, options =
     days ? `Only include information from roughly the last ${days} days.` : ""
   ].filter(Boolean).join(" ");
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -283,7 +284,7 @@ export async function openaiSearch(env, query, includeDomains, options = {}) {
     days ? `Only include information from roughly the last ${days} days.` : ""
   ].filter(Boolean).join(" ");
 
-  const res = await fetch("https://api.openai.com/v1/responses", {
+  const res = await fetchWithTimeout("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
@@ -327,7 +328,7 @@ export async function serperSearch(env, query, includeDomains, options = {}) {
   const { maxResults = 10, days } = options;
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
-  const res = await fetch("https://google.serper.dev/search", {
+  const res = await fetchWithTimeout("https://google.serper.dev/search", {
     method: "POST",
     headers: { "X-API-KEY": env.SERPER_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -352,7 +353,7 @@ export async function serperSearch(env, query, includeDomains, options = {}) {
 // result the way a plain links-only search would require.
 export async function exaSearch(env, query, includeDomains, options = {}) {
   const { maxResults = 10, days } = options;
-  const res = await fetch("https://api.exa.ai/search", {
+  const res = await fetchWithTimeout("https://api.exa.ai/search", {
     method: "POST",
     headers: { "x-api-key": env.EXA_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -390,7 +391,7 @@ export async function duckduckgoSearch(env, query, includeDomains, options = {})
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const dfParam = days ? `&df=${daysToGoogleBucket(days)}` : "";
-  const res = await fetch(`${DDG_HTML_URL}?q=${encodeURIComponent(query + siteFilter)}${dfParam}`, {
+  const res = await fetchWithTimeout(`${DDG_HTML_URL}?q=${encodeURIComponent(query + siteFilter)}${dfParam}`, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -471,7 +472,7 @@ export async function googleCseSearch(env, query, includeDomains, options = {}) 
     num: String(Math.min(maxResults, 10)) // CSE hard-caps at 10 results per request, no way to ask for more in one call
   });
   if (days) params.set("dateRestrict", `d${days}`);
-  const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params.toString()}`);
+  const res = await fetchWithTimeout(`https://www.googleapis.com/customsearch/v1?${params.toString()}`);
   if (!res.ok) {
     const errBody = await res.text();
     throw new Error(`Google Custom Search failed (${res.status}). ${errBody.slice(0, 150)}`);
@@ -498,7 +499,7 @@ export async function firecrawlSearch(env, query, includeDomains, options = {}) 
     sources: [{ type: "web" }]
   };
   if (includeDomains && includeDomains.length) body.includeDomains = includeDomains;
-  const res = await fetch("https://api.firecrawl.dev/v2/search", {
+  const res = await fetchWithTimeout("https://api.firecrawl.dev/v2/search", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.FIRECRAWL_API_KEY}`,
@@ -524,7 +525,7 @@ export async function firecrawlSearch(env, query, includeDomains, options = {}) 
 // AI-native engines (Tavily/Exa) most closely.
 export async function linkupSearch(env, query, includeDomains, options = {}) {
   const { maxResults = 10 } = options;
-  const res = await fetch("https://api.linkup.so/v1/search", {
+  const res = await fetchWithTimeout("https://api.linkup.so/v1/search", {
     method: "POST",
     headers: { "Authorization": `Bearer ${env.LINKUP_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -552,7 +553,7 @@ export async function contextwireSearch(env, query, includeDomains, options = {}
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const params = new URLSearchParams({ q: query + siteFilter });
-  const res = await fetch(`https://contextwire.dev/api/search?${params.toString()}`, {
+  const res = await fetchWithTimeout(`https://contextwire.dev/api/search?${params.toString()}`, {
     headers: { "Authorization": `Bearer ${env.CONTEXTWIRE_API_KEY}` }
   });
   if (!res.ok) {
@@ -575,7 +576,7 @@ export async function searloSearch(env, query, includeDomains, options = {}) {
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const params = new URLSearchParams({ q: query + siteFilter, num: String(Math.min(maxResults, 10)) });
-  const res = await fetch(`https://api.searlo.tech/api/v1/search/web?${params.toString()}`, {
+  const res = await fetchWithTimeout(`https://api.searlo.tech/api/v1/search/web?${params.toString()}`, {
     headers: { "X-API-Key": env.SEARLO_API_KEY }
   });
   if (!res.ok) {
@@ -596,7 +597,7 @@ export async function zenserpSearch(env, query, includeDomains, options = {}) {
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const params = new URLSearchParams({ q: query + siteFilter });
-  const res = await fetch(`https://app.zenserp.com/api/v2/search?${params.toString()}`, {
+  const res = await fetchWithTimeout(`https://app.zenserp.com/api/v2/search?${params.toString()}`, {
     headers: { "apikey": env.ZENSERP_API_KEY }
   });
   if (!res.ok) {
@@ -625,7 +626,7 @@ export async function zenserpSearch(env, query, includeDomains, options = {}) {
 export async function olostepSearch(env, query, includeDomains, options = {}) {
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
-  const res = await fetch("https://api.olostep.com/v1/searches", {
+  const res = await fetchWithTimeout("https://api.olostep.com/v1/searches", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.OLOSTEP_API_KEY}`,
@@ -667,7 +668,7 @@ export async function search1ApiSearch(env, query, includeDomains, options = {})
     ...(includeDomains && includeDomains.length ? { include_sites: includeDomains } : {}),
     ...(days ? { time_range: daysToSearch1ApiRange(days) } : {})
   };
-  const res = await fetch("https://api.search1api.com/search", {
+  const res = await fetchWithTimeout("https://api.search1api.com/search", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${env.SEARCH1API_KEY}`,
@@ -694,7 +695,7 @@ export async function searchApiIoSearch(env, query, includeDomains, options = {}
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const params = new URLSearchParams({ engine: "google", q: query + siteFilter, api_key: env.SEARCHAPI_IO_KEY });
-  const res = await fetch(`https://www.searchapi.io/api/v1/search?${params.toString()}`);
+  const res = await fetchWithTimeout(`https://www.searchapi.io/api/v1/search?${params.toString()}`);
   if (!res.ok) {
     const errBody = await res.text();
     throw new Error(`SearchApi.io search failed (${res.status}). ${errBody.slice(0, 150)}`);
@@ -712,7 +713,7 @@ export async function valueSerpSearch(env, query, includeDomains, options = {}) 
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const params = new URLSearchParams({ api_key: env.VALUESERP_API_KEY, q: query + siteFilter });
-  const res = await fetch(`https://api.valueserp.com/search?${params.toString()}`);
+  const res = await fetchWithTimeout(`https://api.valueserp.com/search?${params.toString()}`);
   if (!res.ok) {
     const errBody = await res.text();
     throw new Error(`Value SERP search failed (${res.status}). ${errBody.slice(0, 150)}`);
@@ -733,7 +734,7 @@ export async function serpentApiSearch(env, query, includeDomains, options = {})
   const siteFilter = includeDomains && includeDomains.length
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const params = new URLSearchParams({ q: query + siteFilter, engine: "google" });
-  const res = await fetch(`https://apiserpent.com/api/search/quick?${params.toString()}`, {
+  const res = await fetchWithTimeout(`https://apiserpent.com/api/search/quick?${params.toString()}`, {
     headers: { "X-API-Key": env.SERPENT_API_KEY }
   });
   if (!res.ok) {
@@ -761,7 +762,7 @@ export async function searxngSearch(env, query, includeDomains, options = {}) {
     ? ` (${includeDomains.map(d => `site:${d}`).join(" OR ")})` : "";
   const base = env.SEARXNG_URL.replace(/\/$/, "");
   const params = new URLSearchParams({ q: query + siteFilter, format: "json" });
-  const res = await fetch(`${base}/search?${params.toString()}`);
+  const res = await fetchWithTimeout(`${base}/search?${params.toString()}`);
   if (!res.ok) {
     const errBody = await res.text();
     throw new Error(`SearXNG search failed (${res.status}). ${errBody.slice(0, 150)}`);
