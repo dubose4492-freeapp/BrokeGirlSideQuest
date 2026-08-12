@@ -1066,6 +1066,13 @@ let state = {
   // instead of just three dots for however long the whole thing takes.
   // Reset to {done:0, total:0} at the start of every grocery scan.
   groceryProgress: { done: 0, total: 0 },
+  // Hard wall-clock budget for a scan (see SCAN_TIMEOUT_MS) — deadline is
+  // the timestamp the in-flight scan gets aborted at, so the UI can show a
+  // real countdown instead of the old rough "~2.5s/item" guess. Both null
+  // whenever nothing is scanning.
+  scanDeadline: null,
+  countdownTimer: null,
+  timedOut: false,
   error: null,
   failedCategories: new Set(), // which tabs failed on the last run — used to
                                // show the "this quest line failed" empty
@@ -1349,19 +1356,14 @@ function renderList(key) {
     else if (!state.lastScan && !(state.scanning && state.scanningKey === key)) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap <b>scan ${cat.label.toLowerCase()}</b> up top to pull today's loot for this section.</div>`;
     else if (state.scanning && state.scanningKey === key && key === "grocery" && state.groceryProgress.total > 0) {
       const { done, total } = state.groceryProgress;
-      // ~2.5s/item is a rough average across Kroger + web-search + LLM
-      // extraction for one item — good enough for a "roughly how much
-      // longer" estimate, not a promise. Never shows negative/zero once
-      // the last item or two is still resolving.
-      const secsLeft = Math.max(1, Math.round((total - done) * 2.5));
       body = `<div class="empty-state">Scanning groceries<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span><br>
-        <div style="margin-top:8px;font-size:0.9em;opacity:0.85">Item ${Math.min(done + 1, total)} of ${total} &middot; about ${secsLeft}s left</div>
+        <div style="margin-top:8px;font-size:0.9em;opacity:0.85">Item ${Math.min(done + 1, total)} of ${total}${countdownHtml()}</div>
         <div style="margin-top:6px;height:6px;border-radius:3px;background:rgba(255,255,255,0.15);overflow:hidden;max-width:220px;margin-left:auto;margin-right:auto">
           <div style="height:100%;width:${Math.round((done / total) * 100)}%;background:currentColor;transition:width 0.3s ease"></div>
         </div>
       </div>`;
     }
-    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span></div>`;
+    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span>${countdownHtml("<br><div style='margin-top:8px;font-size:0.9em;opacity:0.85'>", "</div>")}</div>`;
     else body = `<div class="empty-state">No results match this filter.</div>`;
   } else {
     body = filtered.map(itemCard).join("");
@@ -2376,6 +2378,73 @@ function recordFailure(key, message) {
 // runFullScan from starting any further categories.
 let currentAbortController = null;
 
+// Hard ceiling on any single scan (grocery+gas, restaurant, or a freebies
+// category): once this elapses the in-flight AbortController is aborted
+// and whatever items already resolved are shown, instead of the old
+// behavior of just waiting on however slow the current search/LLM
+// provider tier happened to be (which could run for many minutes on a
+// bad tier — see the sequential-loop comment below for the other half of
+// this fix). "Start scan" -> results (partial if needed) within this
+// window, always.
+const SCAN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+// Renders "about M:SS left" against state.scanDeadline, wrapped in
+// `before`/`after` (so callers can drop it inline or on its own line).
+// Returns "" whenever there's no active deadline to show — callers don't
+// need to check state.scanning themselves.
+function countdownHtml(before = " &middot; about ", after = " left") {
+  if (!state.scanDeadline) return "";
+  const msLeft = state.scanDeadline - Date.now();
+  if (msLeft <= 0) return `${before}wrapping up&hellip;${after}`;
+  const totalSecs = Math.ceil(msLeft / 1000);
+  const m = Math.floor(totalSecs / 60);
+  const s = totalSecs % 60;
+  return `${before}${m}:${String(s).padStart(2, "0")}${after}`;
+}
+
+// Ticks the on-screen countdown once a second while a scan is running.
+// Only re-renders (not a full state recompute) — cheap enough to call
+// every second, and render() itself is what actually reads scanDeadline.
+function startCountdown(deadline) {
+  stopCountdown();
+  state.scanDeadline = deadline;
+  state.countdownTimer = setInterval(() => {
+    if (!state.scanning || !state.scanDeadline) { stopCountdown(); return; }
+    render();
+  }, 1000);
+}
+function stopCountdown() {
+  if (state.countdownTimer) clearInterval(state.countdownTimer);
+  state.countdownTimer = null;
+  state.scanDeadline = null;
+}
+
+// Runs `fn` over `items` with at most `limit` in flight at once, instead
+// of either "all sequential" (slow — this is what made grocery scans take
+// up to ~10 minutes: 11 items, each with its own multi-tier search +
+// Kroger + LLM round trip, one after another) or "all at once" (which can
+// trip provider rate limits harder than they need to be). Preserves input
+// order in the returned array. Never throws — a per-item failure resolves
+// to `undefined` at that slot so one bad item can't take down the batch;
+// callers already treat a missing/falsy result as "no price found."
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      // fn is expected to handle its own errors (it always does at every
+      // call site below — same try/catch/finally each item already had
+      // in the old sequential loop, just moved inside the callback) and
+      // resolve to undefined rather than reject, so one bad item can
+      // never take down the other in-flight workers.
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 // ---------- Grocery pricing — fully server-side now. /functions/api/grocery-price.js
 // checks Kroger's official price AND a Tavily+OpenRouter web search in parallel,
 // then returns whichever is actually cheaper (with its real source labeled).
@@ -2485,19 +2554,31 @@ async function searchGroceryCategory(signal) {
         return null;
       });
 
-  const items = [];
-  for (const itemName of GROCERY_ITEMS) {
-    if (state.stopRequested) break;
+  // Used to run one item after another — 11 sequential round trips, each
+  // its own Kroger + multi-tier web search + LLM extraction, was the main
+  // reason a grocery scan could take up to ~10 minutes. Now runs up to
+  // GROCERY_CONCURRENCY at once instead, so the wall-clock cost is roughly
+  // (item count / concurrency) round trips instead of all 11 stacked back
+  // to back. Combined with the scan-wide SCAN_TIMEOUT_MS deadline (see
+  // scanSingleCategory/runFullScan), this is what keeps "start scan" to
+  // "results within 5 minutes" instead of "however long the slowest
+  // search tier feels like taking."
+  const GROCERY_CONCURRENCY = 4;
+  const itemResults = await mapWithConcurrency(GROCERY_ITEMS, GROCERY_CONCURRENCY, async (itemName) => {
+    if (state.stopRequested || signal.aborted) return undefined;
+    let item;
     try {
-      items.push(await searchGroceryItem(itemName, signal));
+      item = await searchGroceryItem(itemName, signal);
     } catch (err) {
-      if (err.name === "AbortError") break;
-      recordFailure("grocery", err.message);
+      if (err.name !== "AbortError") recordFailure("grocery", err.message);
+      item = undefined;
     } finally {
       state.groceryProgress.done++;
       render(); // live-updates the "Scanning X of Y" counter after every item, success or failure
     }
-  }
+    return item;
+  });
+  const items = itemResults.filter(Boolean);
 
   if (gasPromise) {
     const gasItem = await gasPromise;
@@ -2670,7 +2751,16 @@ async function runFullScan() {
   state.error = null;
   state.failedCategories = new Set();
   scanFailureMessages = new Set();
+  state.timedOut = false;
   currentAbortController = new AbortController();
+  // Hard-abort the whole sweep if it's still running after SCAN_TIMEOUT_MS
+  // — see that constant's comment. Cleared in the finally-equivalent
+  // cleanup below whichever way the scan actually ends.
+  const scanTimeoutId = setTimeout(() => {
+    state.timedOut = true;
+    if (currentAbortController) currentAbortController.abort();
+  }, SCAN_TIMEOUT_MS);
+  startCountdown(Date.now() + SCAN_TIMEOUT_MS);
   const btn = document.getElementById("refreshBtn");
   const stopBtn = document.getElementById("stopBtn");
   const icon = document.getElementById("refreshIcon");
@@ -2681,7 +2771,7 @@ async function runFullScan() {
 
   const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget");
   for (let i = 0; i < categoryKeys.length; i++) {
-    if (state.stopRequested) break;
+    if (state.stopRequested || state.timedOut) break;
     const key = categoryKeys[i];
     label.textContent = `Scanning ${CATEGORIES[key].label} (${i + 1}/${categoryKeys.length})`;
     state.results[key] = []; // clear before this category's fetch so failures never show stale data
@@ -2698,7 +2788,9 @@ async function runFullScan() {
     render();
   }
 
-  if (state.stopRequested) {
+  if (state.timedOut) {
+    showToast("Hit the 5-minute limit — showing what was found so far");
+  } else if (state.stopRequested) {
     showToast("Scan stopped — kept whatever loot was already found");
   } else if (state.failedCategories.size) {
     const labels = [...state.failedCategories].map(k => CATEGORIES[k].label).join(", ");
@@ -2718,8 +2810,11 @@ async function runFullScan() {
     console.warn("[scan] bumpCharLevel failed:", e);
   }
 
+  clearTimeout(scanTimeoutId);
+  stopCountdown();
   state.scanning = false;
   state.stopRequested = false;
+  state.timedOut = false;
   state.scanningKey = null;
   currentAbortController = null;
   btn.disabled = false;
@@ -2752,7 +2847,19 @@ async function scanSingleCategory(key) {
   state.scanning = true;
   state.scanningKey = key;
   state.stopRequested = false;
+  state.timedOut = false;
   currentAbortController = new AbortController();
+  // Hard-abort this single-category scan if it's still running after
+  // SCAN_TIMEOUT_MS — same reasoning as runFullScan's identical block.
+  // For "grocery" this is what actually guarantees the "results within 5
+  // minutes" ask: combined with mapWithConcurrency above, most scans will
+  // finish well under this, but a bad search/LLM provider tier can no
+  // longer stretch the wait out indefinitely.
+  const scanTimeoutId = setTimeout(() => {
+    state.timedOut = true;
+    if (currentAbortController) currentAbortController.abort();
+  }, SCAN_TIMEOUT_MS);
+  startCountdown(Date.now() + SCAN_TIMEOUT_MS);
   state.failedCategories.delete(key);
   const btn = document.getElementById("refreshBtn");
   const stopBtn = document.getElementById("stopBtn");
@@ -2774,7 +2881,8 @@ async function scanSingleCategory(key) {
     }
   }
 
-  if (state.stopRequested) showToast("Scan stopped");
+  if (state.timedOut) showToast("Hit the 5-minute limit — showing what was found so far");
+  else if (state.stopRequested) showToast("Scan stopped");
 
   state.lastScan = new Date().toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
   // Storage writes are best-effort — Safari Private Browsing, blocked
@@ -2789,9 +2897,12 @@ async function scanSingleCategory(key) {
     console.warn("[scan] bumpCharLevel failed:", e);
   }
 
+  clearTimeout(scanTimeoutId);
+  stopCountdown();
   state.scanning = false;
   state.scanningKey = null;
   state.stopRequested = false;
+  state.timedOut = false;
   currentAbortController = null;
   if (btn) btn.disabled = false;
   if (stopBtn) stopBtn.style.display = "none";
