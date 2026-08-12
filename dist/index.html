@@ -270,6 +270,13 @@
   }
   .gas-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: var(--sun); color: var(--ink); white-space: nowrap; }
   .trusted-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); background: #e6f7ec; color: #14532d; white-space: nowrap; display: inline-block; margin-top: 4px; }
+  .status-badge { font-size: 11px; font-weight: 800; padding: 3px 8px; border: 2px solid var(--ink); white-space: nowrap; display: inline-block; margin-top: 4px; margin-right: 4px; }
+  .status-badge.status-green { background: #e6f7ec; color: #14532d; }
+  .status-badge.status-yellow { background: #fff6da; color: #6b4e00; }
+  .status-badge.status-red { background: #fde8e8; color: #7a1414; }
+  .status-badge.status-upcoming { background: #e9e5fa; color: #3a2a7a; }
+  .verified-note { font-size: 10px; color: var(--ink-soft, #6b6b6b); margin-top: 2px; }
+  .extra-tag { font-size: 10px; font-weight: 700; padding: 2px 6px; border: 1px solid var(--ink); white-space: nowrap; display: inline-block; margin: 2px 4px 0 0; background: var(--paper, #fff); }
   .provider-note { font-size: 12.5px; font-weight: 700; color: #4a3d68; background: var(--lav-soft); border: 2px solid var(--ink); padding: 8px 12px; margin-bottom: 12px; }
   .provider-note.secondary { background: #fff3d6; color: #6b4e00; }
   .provider-note.backup { background: var(--sun-soft); color: #5c4400; }
@@ -901,6 +908,59 @@ const REQ_TYPES = {
 // the "unknown" label instead of printing literal "undefined".
 function reqTypeLabel(key) { return REQ_TYPES[key] || REQ_TYPES.unknown; }
 
+// --- Status badge + "last verified" (Clara's feedback item #1/#7) --------
+//
+// The backend already filters out anything it can positively identify as
+// expired (see isExpired() in freebies.js) before an item ever reaches the
+// client, so a client-side "🔴 Expired" state would almost never fire on
+// real data — it's kept here anyway as a defensive fallback in case a
+// saved/cached item's expiry date has quietly passed since it was scanned.
+// The real day-to-day signal for a "broke and can't afford a wasted trip"
+// audience is freshness: how long ago this category was actually scanned,
+// since that's the honest thing the app can vouch for.
+const SCAN_FRESH_MS = 6 * 60 * 60 * 1000; // 6 hours — scanned within this window reads "verified today"
+
+function timeAgo(ms) {
+  if (!ms) return null;
+  const diff = Date.now() - ms;
+  if (diff < 60 * 1000) return "just now";
+  if (diff < 60 * 60 * 1000) return `${Math.round(diff / 60000)}m ago`;
+  if (diff < 24 * 60 * 60 * 1000) return `${Math.round(diff / 3600000)}h ago`;
+  return `${Math.round(diff / 86400000)}d ago`;
+}
+
+// Returns { emoji, label, cls } for the item's category scan recency.
+// Expiry-date parsing already lives server-side (freebies.js); this is
+// intentionally just a freshness signal, not a re-implementation of that
+// date logic — an item with no expires field and a fresh scan is exactly
+// what "verified today" should mean.
+function statusBadge(item) {
+  const scannedAt = state.scannedAt[item.category];
+  if (item.expires && /\bstarts?\b|\bopens?\b|\bbeginning\b/i.test(item.expires)) {
+    return { emoji: "📅", label: item.expires, cls: "status-upcoming" };
+  }
+  if (!scannedAt) return { emoji: "🟡", label: "Likely active — verify before going", cls: "status-yellow" };
+  const fresh = Date.now() - scannedAt < SCAN_FRESH_MS;
+  return fresh
+    ? { emoji: "🟢", label: "Verified today", cls: "status-green" }
+    : { emoji: "🟡", label: "Likely active — verify before going", cls: "status-yellow" };
+}
+
+// Lightweight keyword tags layered on top of requirementType — catches a
+// few common restriction phrasings (app-only, birthday, new-customer-only)
+// that requirementType's fixed enum doesn't distinguish on its own. Purely
+// additive and best-effort: a miss here just means one fewer tag shown,
+// never a wrong one, since it only ever ADDS a tag on a keyword hit.
+function extraTags(item) {
+  const text = `${item.title || ""} ${item.taxNote || ""}`.toLowerCase();
+  const tags = [];
+  if (/\bapp\b|\bdownload the app\b/.test(text)) tags.push("📱 App required");
+  if (/\bbirthday\b/.test(text)) tags.push("🎂 Birthday only");
+  if (/\bnew (customer|member|account)s?\b|\bfirst[- ]time\b/.test(text)) tags.push("👤 New customers only");
+  if (item.requirementType === "loyalty" && !tags.some(t => t.includes("App"))) tags.push("💳 Membership required");
+  return tags;
+}
+
 // localStorage can throw instead of just being empty — Safari Private
 // Browsing, a browser/extension setting that blocks site storage, or a
 // full quota all do this on read AND write. Every localStorage call in
@@ -945,7 +1005,13 @@ let state = {
   // cross-checked) classification — only true when search fell back to
   // DuckDuckGo AND 2+ LLM providers were configured server-side to
   // cross-check each other against its thinner snippets.
-  ensembleUsed: {}
+  ensembleUsed: {},
+  // Epoch ms timestamp of each category's last successful scan — drives
+  // the per-item "Verified today"/"Likely active" status badge and the
+  // "Last verified: X ago" note (Clara's feedback, item #1/#7). A whole
+  // category shares one scan timestamp rather than per-item, since every
+  // item in a category was pulled in the same request.
+  scannedAt: {}
 };
 // Level = number of completed scans run under the currently selected
 // character. Tracked per character (not per browser visit) and
@@ -979,6 +1045,10 @@ Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && 
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
+} catch (e) {}
+try {
+  const savedScannedAt = JSON.parse(lsGet("dff_scanned_at") || "null");
+  if (savedScannedAt) state.scannedAt = savedScannedAt;
 } catch (e) {}
 
 // hostname() is still used by itemCard() to label the "See Details" link
@@ -1112,6 +1182,10 @@ function itemCard(item) {
   const safeTitle = escapeHtml(item.title);
   const safeStore = escapeHtml(item.store);
 
+  const sBadge = statusBadge(item);
+  const verifiedAgo = timeAgo(state.scannedAt[item.category]);
+  const tags = extraTags(item);
+
   // Gas gets its own media (hand-drawn pixel gas-can instead of an emoji),
   // a corner ribbon, a distinct badge, and the "gas-card" class that drives
   // the highlighted border/shadow/glow in the stylesheet — see gasGlow —
@@ -1132,6 +1206,9 @@ function itemCard(item) {
         <span class="item-price ${item.isFree ? "" : "paid"}">${escapeHtml(priceLabel(item, cat))}</span>
         ${badge}
       </div>
+      <div><span class="status-badge ${sBadge.cls}">${sBadge.emoji} ${escapeHtml(sBadge.label)}</span></div>
+      ${verifiedAgo ? `<div class="verified-note">Last verified: ${escapeHtml(verifiedAgo)}</div>` : ""}
+      ${tags.length ? `<div>${tags.map(t => `<span class="extra-tag">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
       <div class="item-meta">
         <span>${reqTypeLabel(item.requirementType)}${detailLinkInline}</span>
         ${item.expires ? `<span>${escapeHtml(item.expires)}</span>` : ""}
@@ -2030,6 +2107,7 @@ async function runFullScan() {
       state.results[key] = key === "grocery" ? await searchGroceryCategory(currentAbortController.signal)
         : key === "restaurant" ? await searchRestaurantCategory(currentAbortController.signal)
         : await searchFreebiesCategory(key, currentAbortController.signal);
+      state.scannedAt[key] = Date.now();
     } catch (err) {
       if (err.name !== "AbortError") recordFailure(key, err.message);
     }
@@ -2049,6 +2127,7 @@ async function runFullScan() {
   // must run regardless so the button doesn't get stuck disabled forever.
   lsSet("dff_last_scan", state.lastScan);
   lsSet("dff_results", JSON.stringify(state.results));
+  lsSet("dff_scanned_at", JSON.stringify(state.scannedAt));
   try {
     bumpCharLevel(selectedCharacterId);
   } catch (e) {
@@ -2101,6 +2180,7 @@ async function scanSingleCategory(key) {
     state.results[key] = key === "grocery" ? await searchGroceryCategory(currentAbortController.signal)
       : key === "restaurant" ? await searchRestaurantCategory(currentAbortController.signal)
       : await searchFreebiesCategory(key, currentAbortController.signal);
+    state.scannedAt[key] = Date.now();
     state.error = null;
   } catch (err) {
     if (err.name !== "AbortError") {
@@ -2117,6 +2197,7 @@ async function scanSingleCategory(key) {
   // must run regardless so the button doesn't get stuck disabled forever.
   lsSet("dff_last_scan", state.lastScan);
   lsSet("dff_results", JSON.stringify(state.results));
+  lsSet("dff_scanned_at", JSON.stringify(state.scannedAt));
   try {
     bumpCharLevel(selectedCharacterId);
   } catch (e) {
