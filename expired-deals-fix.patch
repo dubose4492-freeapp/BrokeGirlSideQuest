@@ -1,0 +1,380 @@
+diff --git a/functions/api/freebies.js b/functions/api/freebies.js
+index f3507fc..333d885 100644
+--- a/functions/api/freebies.js
++++ b/functions/api/freebies.js
+@@ -164,11 +164,17 @@ function parseExpiryDate(text) {
+   const md = cleaned.match(/([A-Za-z]{3,9})\s+(\d{1,2})/);
+   if (md) {
+     const now = new Date();
++    // Stay in the scan's own year — do NOT roll a past-seeming date
++    // forward to next year. A bare "expires August 15" almost always
++    // means the year the offer/article was actually posted in (i.e. this
++    // scan's year), so if that date has already passed, the offer really
++    // is expired and isExpired() below should catch it. Bumping to next
++    // year here used to un-expire genuinely stale deals (an "expires
++    // August 15" snippet scraped in October would silently become "valid
++    // until next August"), which is how expired listings were slipping
++    // through to the results.
+     const guess = new Date(`${md[1]} ${md[2]}, ${now.getFullYear()}`);
+-    if (!isNaN(guess.getTime())) {
+-      if (guess < now) guess.setFullYear(now.getFullYear() + 1);
+-      return guess;
+-    }
++    if (!isNaN(guess.getTime())) return guess;
+   }
+   return null;
+ }
+diff --git a/functions/api/restaurant-deals.js b/functions/api/restaurant-deals.js
+index c018795..d10ad2e 100644
+--- a/functions/api/restaurant-deals.js
++++ b/functions/api/restaurant-deals.js
+@@ -248,11 +248,18 @@ function parseExpiryDate(text) {
+   const md = cleaned.match(/([A-Za-z]{3,9})\s+(\d{1,2})/);
+   if (md) {
+     const now = new Date();
++    // Stay in the scan's own year — do NOT roll a past-seeming date
++    // forward to next year. A bare "expires August 15" almost always
++    // means the year the offer/article was actually posted in (i.e. this
++    // scan's year), so if that date has already passed, the offer really
++    // is expired and isExpired() below should catch it. Bumping to next
++    // year here used to un-expire genuinely stale deals (an "expires
++    // August 15" snippet scraped in October would silently become "valid
++    // until next August"), which is how expired listings were slipping
++    // through to the results.
++    // (Same fix as freebies.js's copy of this function.)
+     const guess = new Date(`${md[1]} ${md[2]}, ${now.getFullYear()}`);
+-    if (!isNaN(guess.getTime())) {
+-      if (guess < now) guess.setFullYear(now.getFullYear() + 1);
+-      return guess;
+-    }
++    if (!isNaN(guess.getTime())) return guess;
+   }
+   return null;
+ }
+diff --git a/gas-scan-fixes.patch b/gas-scan-fixes.patch
+index 1053f58..50fbb9f 100644
+--- a/gas-scan-fixes.patch
++++ b/gas-scan-fixes.patch
+@@ -81,73 +81,73 @@ index 70c30db..054f88d 100644
+ --- a/functions/_shared/search-providers.js
+ +++ b/functions/_shared/search-providers.js
+ @@ -435,12 +435,11 @@ function unwrapDdgRedirect(href) {
+- }
+- 
+- function stripTags(s) {
+--  return s
+--    .replace(/<[^>]+>/g, "")
+--    .replace(/&amp;/g, "&")
+--    .replace(/&#x27;/g, "'")
+--    .replace(/&quot;/g, '"')
+--    .trim();
+-+  // Entity decoding used to happen here too, but that only covered DDG —
+-+  // every other engine's title/snippet text passed through undecoded.
+-+  // Decoding is now handled once, centrally, in decodeResultText() at the
+-+  // two public entry points below, so this just strips tags.
+-+  return s.replace(/<[^>]+>/g, "").trim();
+- }
+- 
++ }
++ 
++ function stripTags(s) {
++-  return s
++-    .replace(/<[^>]+>/g, "")
++-    .replace(/&amp;/g, "&")
++-    .replace(/&#x27;/g, "'")
++-    .replace(/&quot;/g, '"')
++-    .trim();
+++  // Entity decoding used to happen here too, but that only covered DDG —
+++  // every other engine's title/snippet text passed through undecoded.
+++  // Decoding is now handled once, centrally, in decodeResultText() at the
+++  // two public entry points below, so this just strips tags.
+++  return s.replace(/<[^>]+>/g, "").trim();
++ }
++ 
+  // Google Custom Search JSON API — Google's own, ToS-compliant search API
+ @@ -1080,6 +1079,31 @@ export async function getTierStatus(env) {
+-   return { activeTier: TIER_DEFS[activeIndex].id, tiers };
+- }
+- 
+-+// Some engines (Serper scraping Google's rendered results page, others
+-+// echoing snippet fields as-is) return title/content text that's already
+-+// HTML-entity-encoded — e.g. a literal "&amp;" instead of "&". Left as-is,
+-+// the client's own escapeHtml() re-escapes it before display, turning
+-+// "&amp;" into "&amp;amp;", which the browser then renders back as the
+-+// literal text "&amp;" instead of "&". Decoded once here, centrally, so
+-+// every caller's existing escaping stays correct downstream.
+-+const HTML_ENTITIES = {
+-+  "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'",
+-+  "&#x27;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "—", "&ndash;": "–",
+-+  "&hellip;": "…", "&rsquo;": "\u2019", "&lsquo;": "\u2018", "&rdquo;": "\u201d", "&ldquo;": "\u201c"
+-+};
+-+function decodeHtmlEntities(s) {
+-+  if (!s) return s;
+-+  return s
+-+    .replace(/&(amp|lt|gt|quot|#39|#x27|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);/g, m => HTML_ENTITIES[m])
+-+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+-+    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+-+}
+-+// Applied once at each public entry point below, before results reach any
+-+// caller — title/content are the only fields ever rendered as text.
+-+function decodeResultText(results) {
+-+  return results.map(r => ({ ...r, title: decodeHtmlEntities(r.title), content: decodeHtmlEntities(r.content) }));
+-+}
+-+
+- // Narrow, single-answer lookups (e.g. "find this one company's official
+- // site"). Uses the currently-active tier's engines, primary first; only
+- // spills into the NEXT tier down if every engine in the active tier fails
++   return { activeTier: TIER_DEFS[activeIndex].id, tiers };
++ }
++ 
+++// Some engines (Serper scraping Google's rendered results page, others
+++// echoing snippet fields as-is) return title/content text that's already
+++// HTML-entity-encoded — e.g. a literal "&amp;" instead of "&". Left as-is,
+++// the client's own escapeHtml() re-escapes it before display, turning
+++// "&amp;" into "&amp;amp;", which the browser then renders back as the
+++// literal text "&amp;" instead of "&". Decoded once here, centrally, so
+++// every caller's existing escaping stays correct downstream.
+++const HTML_ENTITIES = {
+++  "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'",
+++  "&#x27;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "—", "&ndash;": "–",
+++  "&hellip;": "…", "&rsquo;": "\u2019", "&lsquo;": "\u2018", "&rdquo;": "\u201d", "&ldquo;": "\u201c"
+++};
+++function decodeHtmlEntities(s) {
+++  if (!s) return s;
+++  return s
+++    .replace(/&(amp|lt|gt|quot|#39|#x27|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);/g, m => HTML_ENTITIES[m])
+++    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+++    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+++}
+++// Applied once at each public entry point below, before results reach any
+++// caller — title/content are the only fields ever rendered as text.
+++function decodeResultText(results) {
+++  return results.map(r => ({ ...r, title: decodeHtmlEntities(r.title), content: decodeHtmlEntities(r.content) }));
+++}
+++
++ // Narrow, single-answer lookups (e.g. "find this one company's official
++ // site"). Uses the currently-active tier's engines, primary first; only
++ // spills into the NEXT tier down if every engine in the active tier fails
+ @@ -1096,7 +1120,7 @@ export async function searchWithFallback(env, query, includeDomains, options = {
+-     if (!configuredEngines(env, tier).length) continue;
+-     const outcome = await runTierSequential(env, tier, query, includeDomains, options);
+-     if (outcome.failures) failures.push(...outcome.failures);
+--    if (outcome.results.length) return { results: outcome.results, provider: outcome.provider };
+-+    if (outcome.results.length) return { results: decodeResultText(outcome.results), provider: outcome.provider };
+-   }
+-   const err = new Error(`All search tiers failed — ${failures.join(" | ") || "no engines configured"}`);
+-   err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
++     if (!configuredEngines(env, tier).length) continue;
++     const outcome = await runTierSequential(env, tier, query, includeDomains, options);
++     if (outcome.failures) failures.push(...outcome.failures);
++-    if (outcome.results.length) return { results: outcome.results, provider: outcome.provider };
+++    if (outcome.results.length) return { results: decodeResultText(outcome.results), provider: outcome.provider };
++   }
++   const err = new Error(`All search tiers failed — ${failures.join(" | ") || "no engines configured"}`);
++   err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+ @@ -1121,7 +1145,7 @@ export async function searchAllSources(env, query, includeDomains, options = {})
+-         err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+-         throw err;
+-       }
+--      return { results: outcome.results, providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+-+      return { results: decodeResultText(outcome.results), providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+-     }
+-     lastFailures = outcome.failedProviders;
+-   }
++         err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
++         throw err;
++       }
++-      return { results: outcome.results, providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+++      return { results: decodeResultText(outcome.results), providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
++     }
++     lastFailures = outcome.failedProviders;
++   }
+ diff --git a/functions/api/gas-price.js b/functions/api/gas-price.js
+ index 2d4de12..0e8ebd0 100644
+ --- a/functions/api/gas-price.js
+diff --git a/location-accuracy-fix.patch b/location-accuracy-fix.patch
+index 28effcb..bbee5c1 100644
+--- a/location-accuracy-fix.patch
++++ b/location-accuracy-fix.patch
+@@ -313,55 +313,55 @@ index 839aec6..f3507fc 100644
+  import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
+  // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+  // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+--import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
++-import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+ +import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+ +// Shared location-text check for the regex fallback path — this file uses
+ +// the STRICTER variant (see that file for why): local/independent orgs
+ +// need an affirmative match, not just "doesn't name another state" the
+ +// way restaurant-deals.js's forgiving looksLikeWrongLocation works.
+-+import { looksLocal } from "../_shared/location.js";
+- 
+- // Time-based freshness ceiling per category, mirroring the old client-side
+- // timeRange settings. null = don't filter by age (evergreen resources like
+++import { looksLocal } from "../_shared/location.js";
++ 
++ // Time-based freshness ceiling per category, mirroring the old client-side
++ // timeRange settings. null = don't filter by age (evergreen resources like
+ @@ -273,7 +278,16 @@ function matchesCategory(text, category) {
+-   return re ? re.test(text) : true; // no keyword list defined — don't gate it
+- }
+- 
+--function regexClassify(results, category) {
+-+// `location` (added for the local/independent check below) mirrors the
+-+// LLM prompt's locationRule: mail stays unfiltered (ships anywhere, same
+-+// as the LLM path), and only items flagged isLocal via the local/
+-+// community regex below are checked — a plain company/chain mention with
+-+// no "local"/"community" language is treated as chain-wide, exempt, same
+-+// as the LLM prompt's national-brand exemption. For an isLocal item,
+-+// require an AFFIRMATIVE location match (looksLocal) — no location detail
+-+// at all does NOT qualify, matching the LLM prompt's strict default here
+-+// (the opposite of restaurant-deals.js's forgiving default).
+-+function regexClassify(results, category, location) {
+-   const items = [];
+-   const spendEligible = SPEND_TO_FREE_CATEGORIES.has(category);
+-   for (const raw of results) {
++   return re ? re.test(text) : true; // no keyword list defined — don't gate it
++ }
++ 
++-function regexClassify(results, category) {
+++// `location` (added for the local/independent check below) mirrors the
+++// LLM prompt's locationRule: mail stays unfiltered (ships anywhere, same
+++// as the LLM path), and only items flagged isLocal via the local/
+++// community regex below are checked — a plain company/chain mention with
+++// no "local"/"community" language is treated as chain-wide, exempt, same
+++// as the LLM prompt's national-brand exemption. For an isLocal item,
+++// require an AFFIRMATIVE location match (looksLocal) — no location detail
+++// at all does NOT qualify, matching the LLM prompt's strict default here
+++// (the opposite of restaurant-deals.js's forgiving default).
+++function regexClassify(results, category, location) {
++   const items = [];
++   const spendEligible = SPEND_TO_FREE_CATEGORIES.has(category);
++   for (const raw of results) {
+ @@ -303,6 +317,11 @@ function regexClassify(results, category) {
+- 
+-     const requirementType = extractRequirementType(combinedText);
+-     const isLocal = /\blocal\b|\bcommunity\b/i.test(combinedText);
+-+    // Mail ships anywhere — no location rule applies (matches the LLM
+-+    // prompt's locationRule, which is "" for category === "mail"). For
+-+    // every other category, an item flagged local/independent needs an
+-+    // affirmative match to the target area or it's rejected outright.
+-+    if (isLocal && category !== "mail" && !looksLocal(combinedText, location)) continue;
+-     const orgMentions = findMultipleOrgMentions(combinedText);
+- 
+-     let price = null;
++ 
++     const requirementType = extractRequirementType(combinedText);
++     const isLocal = /\blocal\b|\bcommunity\b/i.test(combinedText);
+++    // Mail ships anywhere — no location rule applies (matches the LLM
+++    // prompt's locationRule, which is "" for category === "mail"). For
+++    // every other category, an item flagged local/independent needs an
+++    // affirmative match to the target area or it's rejected outright.
+++    if (isLocal && category !== "mail" && !looksLocal(combinedText, location)) continue;
++     const orgMentions = findMultipleOrgMentions(combinedText);
++ 
++     let price = null;
+ @@ -638,7 +657,7 @@ export async function onRequestPost({ request, env }) {
+-       // fall through to regex below
+-     }
+-   }
+--  if (!classified) classified = regexClassify(results, category);
+-+  if (!classified) classified = regexClassify(results, category, location);
+- 
+-   let finalResults = dedupeItems(classified);
+- 
++       // fall through to regex below
++     }
++   }
++-  if (!classified) classified = regexClassify(results, category);
+++  if (!classified) classified = regexClassify(results, category, location);
++ 
++   let finalResults = dedupeItems(classified);
++ 
+ diff --git a/functions/api/restaurant-deals.js b/functions/api/restaurant-deals.js
+ index 98c27a6..c018795 100644
+ --- a/functions/api/restaurant-deals.js
+@@ -369,46 +369,46 @@ index 98c27a6..c018795 100644
+ @@ -32,6 +32,10 @@ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfi
+  // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+  // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+- import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+-+// Shared location-text check for the regex fallback path — see that file
+-+// for why this one uses the forgiving variant. Shared with freebies.js,
+-+// which uses the stricter looksLocal() instead.
+-+import { looksLikeWrongLocation } from "../_shared/location.js";
+- 
++ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+++// Shared location-text check for the regex fallback path — see that file
+++// for why this one uses the forgiving variant. Shared with freebies.js,
+++// which uses the stricter looksLocal() instead.
+++import { looksLikeWrongLocation } from "../_shared/location.js";
++ 
+  const MAX_QUALIFYING_PURCHASE = 10; // dollars — TOTAL cost cap, tax included (see below)
+  // Same tax-inclusive treatment as freebies.js's MAX_QUALIFYING_SPEND: the
+ @@ -359,7 +363,12 @@ function dedupeItems(items) {
+- // snippet (so a roundup post naming several chains yields several cards),
+- // falling back to a single generic "[LOCAL]" card keyed off the source
+- // domain when no known chain name is detected in the text at all.
+--function regexClassify(results) {
+-+// Also takes `location` so the independent/local branch (no known chain
+-+// matched) can reject a result that explicitly names a different state —
+-+// mirroring the LLM path's own forgiving rule (see looksLikeWrongLocation
+-+// in functions/_shared/location.js): national chain matches stay exempt
+-+// from this check just like the LLM prompt exempts them.
+-+function regexClassify(results, location) {
+-   const items = [];
+-   for (const raw of results) {
+-     const combinedText = (raw.content || "") + " " + (raw.title || "");
++ // snippet (so a roundup post naming several chains yields several cards),
++ // falling back to a single generic "[LOCAL]" card keyed off the source
++ // domain when no known chain name is detected in the text at all.
++-function regexClassify(results) {
+++// Also takes `location` so the independent/local branch (no known chain
+++// matched) can reject a result that explicitly names a different state —
+++// mirroring the LLM path's own forgiving rule (see looksLikeWrongLocation
+++// in functions/_shared/location.js): national chain matches stay exempt
+++// from this check just like the LLM prompt exempts them.
+++function regexClassify(results, location) {
++   const items = [];
++   for (const raw of results) {
++     const combinedText = (raw.content || "") + " " + (raw.title || "");
+ @@ -378,6 +387,11 @@ function regexClassify(results) {
+- 
+-     const matchedChains = findAllChainKeys(combinedText);
+-     if (matchedChains.length === 0) {
+-+      // No known national chain matched -> this is the independent/local
+-+      // branch, so apply the same forgiving location check the LLM prompt
+-+      // uses: reject only if the snippet explicitly names a different
+-+      // state and doesn't also mention the target area.
+-+      if (looksLikeWrongLocation(combinedText, location)) continue;
+-       const { store, claimUrl, blogUrl } = resolveStoreAndClaimFromText(raw, combinedText);
+-       items.push({
+-         id: raw.url,
++ 
++     const matchedChains = findAllChainKeys(combinedText);
++     if (matchedChains.length === 0) {
+++      // No known national chain matched -> this is the independent/local
+++      // branch, so apply the same forgiving location check the LLM prompt
+++      // uses: reject only if the snippet explicitly names a different
+++      // state and doesn't also mention the target area.
+++      if (looksLikeWrongLocation(combinedText, location)) continue;
++       const { store, claimUrl, blogUrl } = resolveStoreAndClaimFromText(raw, combinedText);
++       items.push({
++         id: raw.url,
+ @@ -741,7 +755,7 @@ export async function onRequestPost({ request, env }) {
+-       // fall through to regex below
+-     }
+-   }
+--  if (!classified) classified = regexClassify(results);
+-+  if (!classified) classified = regexClassify(results, location);
+- 
+-   let finalResults = dedupeItems(classified);
+-   finalResults = await Promise.all(finalResults.map(async item => {
++       // fall through to regex below
++     }
++   }
++-  if (!classified) classified = regexClassify(results);
+++  if (!classified) classified = regexClassify(results, location);
++ 
++   let finalResults = dedupeItems(classified);
++   finalResults = await Promise.all(finalResults.map(async item => {
