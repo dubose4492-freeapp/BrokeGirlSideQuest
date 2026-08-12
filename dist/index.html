@@ -1334,6 +1334,30 @@ function computeStats() {
   return { totalFound, estValue, scannedCount, totalCats: catKeys.length };
 }
 
+// Picks one item to headline the dashboard as "🔥 Best deal today" —
+// same estimated-value math as computeStats (real price when the item has
+// one, a flat gamified $5 otherwise), with a preference for items from a
+// freshly-scanned category (state.scannedAt within SCAN_FRESH_MS) when two
+// items tie on value, so the highlight favors something actually verified
+// recently over an equally-valued but stale one. Never invents a number
+// beyond what computeStats already uses elsewhere in the HUD, so the
+// highlighted item's implied value always matches what's shown there.
+function findBestDeal() {
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about");
+  let best = null, bestValue = -1, bestFresh = false;
+  catKeys.forEach(k => {
+    const items = state.results[k] || [];
+    const fresh = state.scannedAt[k] && (Date.now() - state.scannedAt[k] < SCAN_FRESH_MS);
+    items.forEach(it => {
+      const priceNum = it.price ? parseFloat(String(it.price).replace(/[^0-9.]/g, "")) : NaN;
+      const value = !isNaN(priceNum) ? priceNum : 5;
+      const better = value > bestValue || (value === bestValue && fresh && !bestFresh);
+      if (better) { best = it; bestValue = value; bestFresh = fresh; }
+    });
+  });
+  return best ? { item: best, value: bestValue } : null;
+}
+
 function renderHud() {
   const s = computeStats();
   const pct = s.totalCats ? Math.round((s.scannedCount / s.totalCats) * 100) : 0;
@@ -1350,6 +1374,7 @@ function renderHud() {
 function renderDashboard() {
   const stats = computeStats();
   const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about");
+  const bestDeal = findBestDeal();
 
   const boardCards = catKeys.map(k => {
     const cat = CATEGORIES[k];
@@ -1370,8 +1395,13 @@ function renderDashboard() {
       <div class="quest-complete-text"><b>Quest complete!</b><br>Found ${stats.totalFound} deals worth ~$${stats.estValue.toFixed(2)} today.</div>
     </div>` : "";
 
+  const bestDealHtml = bestDeal ? `
+    <div class="quest-board-head">🔥 BEST DEAL TODAY <span class="dash-line"></span></div>
+    ${itemCard(bestDeal.item)}` : "";
+
   return `
     ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap a quest card below, then hit <b>scan</b> to start today's live search for that section — search works best one section at a time.</div>`}
+    ${bestDealHtml}
     <div class="quest-board-head">QUEST BOARD <span class="dash-line"></span></div>
     <div class="quest-board">${boardCards}</div>
     ${questComplete}`;
