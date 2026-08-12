@@ -1,0 +1,414 @@
+diff --git a/dist/index.html b/dist/index.html
+index 58b59c6..545225a 100644
+--- a/dist/index.html
++++ b/dist/index.html
+@@ -734,7 +734,7 @@
+   <div class="search-bar">
+     <div class="search-field">
+       <label for="zipInput">ZIP Code</label>
+-      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); refreshGeminiPromptBox()" />
++      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); state.locationLabel=''; refreshGeminiPromptBox(); resolveLocationLabelFromZip(state.zip)" />
+     </div>
+     <div class="search-field">
+       <label for="radiusInput">Radius (mi)</label>
+@@ -1010,6 +1010,19 @@ let state = {
+   // the old two-box setup so existing users don't lose their saved value.
+   zip: lsGet("dff_zip") || lsGet("dff_kroger_zip") || "",
+   radius: lsGet("dff_radius") || "100",
++  // Resolved "City, ST" for the current zip — every search call sends
++  // this (via searchLocation() below) instead of the bare zip digits, so
++  // the LLM classifier and search engines have a real place name to judge
++  // distance against instead of misreading a ZIP. Restored from cache
++  // ONLY if it matches the zip that's currently loaded — a stale label
++  // from a previously-saved zip would be worse than no label at all
++  // (silent fallback to the raw zip, see searchLocation()).
++  locationLabel: (() => {
++    const labelZip = lsGet("dff_location_label_zip");
++    const cachedLabel = lsGet("dff_location_label");
++    const currentZip = lsGet("dff_zip") || lsGet("dff_kroger_zip") || "";
++    return (cachedLabel && labelZip === currentZip) ? cachedLabel : "";
++  })(),
+   // My Wallet tab inputs (budget $ / days until next money) — persisted
+   // so the plan is still there next visit, same pattern as zip/radius.
+   walletBudget: lsGet("dff_wallet_budget") || "",
+@@ -2219,6 +2232,11 @@ function autoFillLocationFromGeo() {
+         state.radius = "25";
+         lsSet("dff_zip", state.zip);
+         lsSet("dff_radius", state.radius);
++        // Same response already carries city/state — no second network
++        // call needed. Falls back to leaving locationLabel unset (silent
++        // fallback to the raw zip in searchLocation()) if either piece is
++        // missing.
++        setLocationLabel(state.zip, data.city || data.locality || "", data.principalSubdivisionCode || "");
+         const zipEl = document.getElementById("zipInput");
+         const radiusEl = document.getElementById("radiusInput");
+         if (zipEl) zipEl.value = state.zip;
+@@ -2234,6 +2252,58 @@ function autoFillLocationFromGeo() {
+   );
+ }
+ 
++// Builds and caches the "City, ST" label for a given zip, keyed to that
++// exact zip so a later zip change can't accidentally reuse a stale label
++// (see the state.locationLabel restore logic above). No-ops silently if
++// city or state abbreviation is missing/malformed.
++function setLocationLabel(zip, city, stateAbbr) {
++  const cleanCity = (city || "").trim();
++  const cleanState = (stateAbbr || "").trim().toUpperCase();
++  if (!zip || !cleanCity || !/^[A-Z]{2}$/.test(cleanState)) {
++    state.locationLabel = "";
++    lsSet("dff_location_label", "");
++    lsSet("dff_location_label_zip", "");
++    return;
++  }
++  state.locationLabel = `${cleanCity}, ${cleanState}`;
++  lsSet("dff_location_label", state.locationLabel);
++  lsSet("dff_location_label_zip", zip);
++}
++
++// Forward zip -> city/state lookup for MANUALLY typed zips (geolocation
++// already gets city/state for free in the same reverse-geocode response
++// above). Zippopotam.us is free, no-key, CORS-friendly — same "no
++// third-party account needed" bar as BigDataCloud. Fails silently on any
++// error/non-US zip; searchLocation() already falls back to the raw zip
++// whenever locationLabel isn't set, so a failed lookup here never blocks
++// a search.
++async function resolveLocationLabelFromZip(zip) {
++  if (!/^\d{5}$/.test(zip)) return;
++  try {
++    const res = await fetch(`https://api.zippopotam.us/us/${zip}`);
++    if (!res.ok) return;
++    const data = await res.json();
++    const place = data.places && data.places[0];
++    if (!place) return;
++    // Only commit the result if the zip box hasn't changed again while
++    // this lookup was in flight.
++    if (state.zip !== zip) return;
++    setLocationLabel(zip, place["place name"], place["state abbreviation"]);
++    refreshGeminiPromptBox();
++  } catch (e) {
++    console.warn("[geo] zip->city/state lookup failed:", e);
++  }
++}
++
++// Every search call site uses this instead of raw state.zip — sends a
++// real "City, ST" string to the server (search query text AND the LLM/
++// regex classifier) whenever one has been resolved for the CURRENT zip,
++// silently falling back to the bare zip otherwise so a lookup failure
++// never blocks a scan.
++function searchLocation() {
++  return state.locationLabel || state.zip;
++}
++
+ // Keeps the "Copy Prompt" textarea in sync with the current ZIP/radius.
+ // Called on load and any time those fields change.
+ function refreshGeminiPromptBox() {
+@@ -2281,7 +2351,7 @@ async function searchGroceryItem(itemName, signal) {
+   const params = new URLSearchParams({
+     item: itemName,
+     zip: state.zip,
+-    location: state.zip,
++    location: searchLocation(),
+     radius: state.radius
+   });
+   const response = await fetch(`/api/grocery-price?${params}`, { signal });
+@@ -2328,7 +2398,7 @@ function recordGroceryProvider(provider, usedEnsemble) {
+ // in the grocery tab's results, styled distinctly via GAS_ITEM_ID in
+ // itemCard() so it reads as "today's gas pick," not just another staple.
+ async function searchGasItem(signal) {
+-  const params = new URLSearchParams({ zip: state.zip, location: state.zip, radius: state.radius });
++  const params = new URLSearchParams({ zip: state.zip, location: searchLocation(), radius: state.radius });
+   const response = await fetch(`/api/gas-price?${params}`, { signal });
+   const data = await response.json();
+   if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);
+@@ -2413,13 +2483,14 @@ function cleanResults(results) {
+ // above); the server does the searching, classifying, and link resolution.
+ async function searchFreebiesCategory(key, signal) {
+   const cat = CATEGORIES[key];
+-  const query = cat.query(state.zip, state.radius);
++  const location = searchLocation();
++  const query = cat.query(location, state.radius);
+   const response = await fetch("/api/freebies", {
+     method: "POST",
+     cache: "no-store",
+     signal,
+     headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius, timeRange: cat.timeRange || null })
++    body: JSON.stringify({ category: key, query, location, radius: state.radius, timeRange: cat.timeRange || null })
+   });
+   const data = await response.json();
+   if (!response.ok) throw new Error(data.error || `${cat.label} search failed (${response.status}).`);
+@@ -2436,7 +2507,7 @@ async function searchRestaurantCategory(signal) {
+     cache: "no-store",
+     signal,
+     headers: { "Content-Type": "application/json" },
+-    body: JSON.stringify({ location: state.zip, radius: state.radius })
++    body: JSON.stringify({ location: searchLocation(), radius: state.radius })
+   });
+   const data = await response.json();
+   if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
+@@ -2482,8 +2553,13 @@ function aiFreshnessNote(maxDays) {
+ }
+ 
+ function buildAiPrompt() {
++  // Same resolved "City, ST" the server-side search calls use (falls back
++  // to the raw zip if nothing's been resolved yet) — Gemini's own web
++  // search does better with a real place name here too, same reasoning as
++  // searchLocation()'s other call sites.
++  const loc = searchLocation();
+   const lines = [
+-    `Find today's real, currently-active deals for someone in ${state.zip || "[ZIP not set]"} ` +
++    `Find today's real, currently-active deals for someone in ${loc || "[ZIP not set]"} ` +
+       `within ${state.radius} miles. For each item below, list the specific offer, where to get it, ` +
+       `and any requirement (sign-up, loyalty app, minimum purchase) or expiration you can find. ` +
+       `Skip anything that looks expired or unverifiable.`,
+@@ -2495,21 +2571,21 @@ function buildAiPrompt() {
+     const cat = CATEGORIES[key];
+     lines.push(`## ${cat.label}`);
+     if (key === "grocery") {
+-      lines.push(`Cheapest regular unleaded gas price per gallon near ${state.zip} within ${state.radius} miles, plus the current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
++      lines.push(`Cheapest regular unleaded gas price per gallon near ${loc} within ${state.radius} miles, plus the current best price near ${loc} for: ${GROCERY_ITEMS.join(", ")}.`);
+     } else if (key === "restaurant") {
+-      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count. The $${MAX_QUALIFYING_SPEND} cap is a TOTAL, TAX-INCLUDED figure — since a stated purchase amount is usually pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ceiling, not $${MAX_QUALIFYING_SPEND} itself.`);
++      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${loc} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count. The $${MAX_QUALIFYING_SPEND} cap is a TOTAL, TAX-INCLUDED figure — since a stated purchase amount is usually pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ceiling, not $${MAX_QUALIFYING_SPEND} itself.`);
+     } else if (key === "community") {
+-      lines.push(`${cat.query(state.zip, state.radius)}. These are ongoing resources, not time-limited deals — don't skip one just because the page describing it looks old; only skip it if it explicitly says closed or discontinued.`);
++      lines.push(`${cat.query(loc, state.radius)}. These are ongoing resources, not time-limited deals — don't skip one just because the page describing it looks old; only skip it if it explicitly says closed or discontinued.`);
+     } else if (key === "clothing" || key === "accessories") {
+-      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(30));
++      lines.push(cat.query(loc, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(30));
+     } else if (key === "toys") {
+-      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + AI_TOYS_WORKSHOP_RULE_TEXT + aiFreshnessNote(30));
++      lines.push(cat.query(loc, state.radius) + "." + AI_SPEND_RULE_TEXT + AI_TOYS_WORKSHOP_RULE_TEXT + aiFreshnessNote(30));
+     } else if (key === "events") {
+-      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(14));
++      lines.push(cat.query(loc, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(14));
+     } else if (key === "mail") {
+-      lines.push(cat.query(state.zip, state.radius) + "." + AI_MAIL_SPEND_RULE_TEXT);
++      lines.push(cat.query(loc, state.radius) + "." + AI_MAIL_SPEND_RULE_TEXT);
+     } else {
+-      lines.push(cat.query(state.zip, state.radius));
++      lines.push(cat.query(loc, state.radius));
+     }
+     lines.push("");
+   }
+diff --git a/functions/_shared/location.js b/functions/_shared/location.js
+new file mode 100644
+index 0000000..04d0dea
+--- /dev/null
++++ b/functions/_shared/location.js
+@@ -0,0 +1,108 @@
++// Shared location-text helpers for the REGEX FALLBACK classifiers (used
++// only when no LLM provider is configured — see restaurant-deals.js and
++// freebies.js). Both files' LLM prompts already do this judgment call in
++// natural language; this module gives the regex path the same two rules
++// in code, since the two prompts intentionally use OPPOSITE defaults for
++// "no location detail in the snippet at all":
++//   - restaurant-deals.js: forgiving default -> assume local unless the
++//     snippet explicitly says otherwise. Use looksLikeWrongLocation().
++//   - freebies.js: strict default -> a local/independent org needs an
++//     affirmative location match, no detail at all does NOT qualify.
++//     Use looksLocal().
++// Neither does real geocoding/distance math (no lat/lng lookup here) —
++// both are best-effort TEXTUAL checks against whatever the caller passed
++// as `location`, same caveat as the LLM prompts' own location rule.
++
++const STATE_ABBR = {
++  alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
++  colorado: "co", connecticut: "ct", delaware: "de", florida: "fl", georgia: "ga",
++  hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia",
++  kansas: "ks", kentucky: "ky", louisiana: "la", maine: "me", maryland: "md",
++  massachusetts: "ma", michigan: "mi", minnesota: "mn", mississippi: "ms",
++  missouri: "mo", montana: "mt", nebraska: "ne", nevada: "nv",
++  "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm", "new york": "ny",
++  "north carolina": "nc", "north dakota": "nd", ohio: "oh", oklahoma: "ok",
++  oregon: "or", pennsylvania: "pa", "rhode island": "ri", "south carolina": "sc",
++  "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
++  virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi",
++  wyoming: "wy"
++};
++const ABBR_TO_STATE = {};
++for (const [full, abbr] of Object.entries(STATE_ABBR)) ABBR_TO_STATE[abbr] = full;
++
++// Word-boundary regex per state, matching either the full name or the
++// 2-letter abbreviation (abbreviation only matched when it stands alone,
++// e.g. surrounded by non-letters, so it doesn't fire inside an unrelated
++// word). Built once at module load.
++const STATE_PATTERNS = Object.entries(STATE_ABBR).map(([full, abbr]) => ({
++  full,
++  abbr,
++  re: new RegExp(`\\b(${full}|${abbr})\\b`, "i")
++}));
++
++const LOCATION_STOPWORDS = new Set(["near", "county", "area", "city", "town", "usa", "us"]);
++
++// Splits whatever the client sent as `location` ("City, ST", a bare ZIP,
++// or something in between) into the pieces useful for matching: the raw
++// state name/abbr if present, and generic place-name tokens (city words,
++// zip digits) for the affirmative-match check.
++function parseLocation(location) {
++  const raw = (location || "").trim();
++  let stateFull = null;
++  let stateAbbr = null;
++  for (const { full, abbr, re } of STATE_PATTERNS) {
++    if (re.test(raw)) { stateFull = full; stateAbbr = abbr; break; }
++  }
++  const placeTokens = new Set();
++  for (const part of raw.split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean)) {
++    for (const word of part.split(/\s+/)) {
++      const clean = word.replace(/[^a-z0-9]/g, "");
++      if (clean.length >= 2 && !LOCATION_STOPWORDS.has(clean) && !STATE_ABBR[clean] && !ABBR_TO_STATE[clean]) {
++        placeTokens.add(clean);
++      }
++    }
++  }
++  return { raw, stateFull, stateAbbr, placeTokens: [...placeTokens] };
++}
++
++// ---------- Forgiving check (restaurant-deals.js) ----------
++// Returns true ONLY when the snippet explicitly names a state that is NOT
++// the target state, AND doesn't also mention the target city/state
++// somewhere else (e.g. a roundup post that mentions several regions).
++// Silent (returns false = "not wrong") on ambiguous or no-location text,
++// matching the LLM prompt's "no location detail should NOT be
++// disqualified" default.
++function looksLikeWrongLocation(text, location) {
++  const { stateFull, stateAbbr, placeTokens } = parseLocation(location);
++  if (!stateFull && placeTokens.length === 0) return false; // nothing usable to compare against
++  const t = (text || "").toLowerCase();
++
++  // Does the text also affirmatively mention the target area? If so,
++  // never flag it as wrong-location even if another state name appears
++  // (e.g. "originally from Ohio, now serving the Portland, TN area").
++  const mentionsTarget =
++    (stateFull && new RegExp(`\\b(${stateFull}|${stateAbbr})\\b`, "i").test(t)) ||
++    placeTokens.some(tok => tok.length >= 3 && t.includes(tok));
++  if (mentionsTarget) return false;
++
++  for (const { full, abbr } of STATE_PATTERNS) {
++    if (full === stateFull) continue; // that's the target state itself
++    if (new RegExp(`\\b(${full}|${abbr})\\b`, "i").test(t)) return true; // names a different state
++  }
++  return false;
++}
++
++// ---------- Strict check (freebies.js) ----------
++// Returns true only on an AFFIRMATIVE match: the text names the target
++// state (full or abbr) or a target place-name token (city word, zip).
++// No match at all -> false, matching the LLM prompt's "no location detail
++// at all -> qualifies is false" default for local/independent results.
++function looksLocal(text, location) {
++  const { stateFull, stateAbbr, placeTokens } = parseLocation(location);
++  if (!stateFull && placeTokens.length === 0) return false; // nothing usable to match — can't affirm
++  const t = (text || "").toLowerCase();
++  if (stateFull && new RegExp(`\\b(${stateFull}|${stateAbbr})\\b`, "i").test(t)) return true;
++  return placeTokens.some(tok => tok.length >= 3 && t.includes(tok));
++}
++
++export { looksLikeWrongLocation, looksLocal, parseLocation };
+diff --git a/functions/api/freebies.js b/functions/api/freebies.js
+index 839aec6..f3507fc 100644
+--- a/functions/api/freebies.js
++++ b/functions/api/freebies.js
+@@ -33,7 +33,12 @@ import { searchWithFallback, searchAllSources } from "../_shared/search-provider
+ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
+ // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+ // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+-import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
++import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
++// Shared location-text check for the regex fallback path — this file uses
++// the STRICTER variant (see that file for why): local/independent orgs
++// need an affirmative match, not just "doesn't name another state" the
++// way restaurant-deals.js's forgiving looksLikeWrongLocation works.
++import { looksLocal } from "../_shared/location.js";
+ 
+ // Time-based freshness ceiling per category, mirroring the old client-side
+ // timeRange settings. null = don't filter by age (evergreen resources like
+@@ -273,7 +278,16 @@ function matchesCategory(text, category) {
+   return re ? re.test(text) : true; // no keyword list defined — don't gate it
+ }
+ 
+-function regexClassify(results, category) {
++// `location` (added for the local/independent check below) mirrors the
++// LLM prompt's locationRule: mail stays unfiltered (ships anywhere, same
++// as the LLM path), and only items flagged isLocal via the local/
++// community regex below are checked — a plain company/chain mention with
++// no "local"/"community" language is treated as chain-wide, exempt, same
++// as the LLM prompt's national-brand exemption. For an isLocal item,
++// require an AFFIRMATIVE location match (looksLocal) — no location detail
++// at all does NOT qualify, matching the LLM prompt's strict default here
++// (the opposite of restaurant-deals.js's forgiving default).
++function regexClassify(results, category, location) {
+   const items = [];
+   const spendEligible = SPEND_TO_FREE_CATEGORIES.has(category);
+   for (const raw of results) {
+@@ -303,6 +317,11 @@ function regexClassify(results, category) {
+ 
+     const requirementType = extractRequirementType(combinedText);
+     const isLocal = /\blocal\b|\bcommunity\b/i.test(combinedText);
++    // Mail ships anywhere — no location rule applies (matches the LLM
++    // prompt's locationRule, which is "" for category === "mail"). For
++    // every other category, an item flagged local/independent needs an
++    // affirmative match to the target area or it's rejected outright.
++    if (isLocal && category !== "mail" && !looksLocal(combinedText, location)) continue;
+     const orgMentions = findMultipleOrgMentions(combinedText);
+ 
+     let price = null;
+@@ -638,7 +657,7 @@ export async function onRequestPost({ request, env }) {
+       // fall through to regex below
+     }
+   }
+-  if (!classified) classified = regexClassify(results, category);
++  if (!classified) classified = regexClassify(results, category, location);
+ 
+   let finalResults = dedupeItems(classified);
+ 
+diff --git a/functions/api/restaurant-deals.js b/functions/api/restaurant-deals.js
+index 98c27a6..c018795 100644
+--- a/functions/api/restaurant-deals.js
++++ b/functions/api/restaurant-deals.js
+@@ -32,6 +32,10 @@ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfi
+ // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
+ // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
+ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
++// Shared location-text check for the regex fallback path — see that file
++// for why this one uses the forgiving variant. Shared with freebies.js,
++// which uses the stricter looksLocal() instead.
++import { looksLikeWrongLocation } from "../_shared/location.js";
+ 
+ const MAX_QUALIFYING_PURCHASE = 10; // dollars — TOTAL cost cap, tax included (see below)
+ // Same tax-inclusive treatment as freebies.js's MAX_QUALIFYING_SPEND: the
+@@ -359,7 +363,12 @@ function dedupeItems(items) {
+ // snippet (so a roundup post naming several chains yields several cards),
+ // falling back to a single generic "[LOCAL]" card keyed off the source
+ // domain when no known chain name is detected in the text at all.
+-function regexClassify(results) {
++// Also takes `location` so the independent/local branch (no known chain
++// matched) can reject a result that explicitly names a different state —
++// mirroring the LLM path's own forgiving rule (see looksLikeWrongLocation
++// in functions/_shared/location.js): national chain matches stay exempt
++// from this check just like the LLM prompt exempts them.
++function regexClassify(results, location) {
+   const items = [];
+   for (const raw of results) {
+     const combinedText = (raw.content || "") + " " + (raw.title || "");
+@@ -378,6 +387,11 @@ function regexClassify(results) {
+ 
+     const matchedChains = findAllChainKeys(combinedText);
+     if (matchedChains.length === 0) {
++      // No known national chain matched -> this is the independent/local
++      // branch, so apply the same forgiving location check the LLM prompt
++      // uses: reject only if the snippet explicitly names a different
++      // state and doesn't also mention the target area.
++      if (looksLikeWrongLocation(combinedText, location)) continue;
+       const { store, claimUrl, blogUrl } = resolveStoreAndClaimFromText(raw, combinedText);
+       items.push({
+         id: raw.url,
+@@ -741,7 +755,7 @@ export async function onRequestPost({ request, env }) {
+       // fall through to regex below
+     }
+   }
+-  if (!classified) classified = regexClassify(results);
++  if (!classified) classified = regexClassify(results, location);
+ 
+   let finalResults = dedupeItems(classified);
+   finalResults = await Promise.all(finalResults.map(async item => {

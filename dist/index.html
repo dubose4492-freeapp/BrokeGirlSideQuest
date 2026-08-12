@@ -734,7 +734,7 @@
   <div class="search-bar">
     <div class="search-field">
       <label for="zipInput">ZIP Code</label>
-      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); refreshGeminiPromptBox()" />
+      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); state.locationLabel=''; refreshGeminiPromptBox(); resolveLocationLabelFromZip(state.zip)" />
     </div>
     <div class="search-field">
       <label for="radiusInput">Radius (mi)</label>
@@ -1010,6 +1010,19 @@ let state = {
   // the old two-box setup so existing users don't lose their saved value.
   zip: lsGet("dff_zip") || lsGet("dff_kroger_zip") || "",
   radius: lsGet("dff_radius") || "100",
+  // Resolved "City, ST" for the current zip — every search call sends
+  // this (via searchLocation() below) instead of the bare zip digits, so
+  // the LLM classifier and search engines have a real place name to judge
+  // distance against instead of misreading a ZIP. Restored from cache
+  // ONLY if it matches the zip that's currently loaded — a stale label
+  // from a previously-saved zip would be worse than no label at all
+  // (silent fallback to the raw zip, see searchLocation()).
+  locationLabel: (() => {
+    const labelZip = lsGet("dff_location_label_zip");
+    const cachedLabel = lsGet("dff_location_label");
+    const currentZip = lsGet("dff_zip") || lsGet("dff_kroger_zip") || "";
+    return (cachedLabel && labelZip === currentZip) ? cachedLabel : "";
+  })(),
   // My Wallet tab inputs (budget $ / days until next money) — persisted
   // so the plan is still there next visit, same pattern as zip/radius.
   walletBudget: lsGet("dff_wallet_budget") || "",
@@ -2219,6 +2232,11 @@ function autoFillLocationFromGeo() {
         state.radius = "25";
         lsSet("dff_zip", state.zip);
         lsSet("dff_radius", state.radius);
+        // Same response already carries city/state — no second network
+        // call needed. Falls back to leaving locationLabel unset (silent
+        // fallback to the raw zip in searchLocation()) if either piece is
+        // missing.
+        setLocationLabel(state.zip, data.city || data.locality || "", data.principalSubdivisionCode || "");
         const zipEl = document.getElementById("zipInput");
         const radiusEl = document.getElementById("radiusInput");
         if (zipEl) zipEl.value = state.zip;
@@ -2232,6 +2250,58 @@ function autoFillLocationFromGeo() {
     (err) => { console.warn("[geo] geolocation denied/unavailable:", err); },
     { timeout: 8000, maximumAge: 300000 }
   );
+}
+
+// Builds and caches the "City, ST" label for a given zip, keyed to that
+// exact zip so a later zip change can't accidentally reuse a stale label
+// (see the state.locationLabel restore logic above). No-ops silently if
+// city or state abbreviation is missing/malformed.
+function setLocationLabel(zip, city, stateAbbr) {
+  const cleanCity = (city || "").trim();
+  const cleanState = (stateAbbr || "").trim().toUpperCase();
+  if (!zip || !cleanCity || !/^[A-Z]{2}$/.test(cleanState)) {
+    state.locationLabel = "";
+    lsSet("dff_location_label", "");
+    lsSet("dff_location_label_zip", "");
+    return;
+  }
+  state.locationLabel = `${cleanCity}, ${cleanState}`;
+  lsSet("dff_location_label", state.locationLabel);
+  lsSet("dff_location_label_zip", zip);
+}
+
+// Forward zip -> city/state lookup for MANUALLY typed zips (geolocation
+// already gets city/state for free in the same reverse-geocode response
+// above). Zippopotam.us is free, no-key, CORS-friendly — same "no
+// third-party account needed" bar as BigDataCloud. Fails silently on any
+// error/non-US zip; searchLocation() already falls back to the raw zip
+// whenever locationLabel isn't set, so a failed lookup here never blocks
+// a search.
+async function resolveLocationLabelFromZip(zip) {
+  if (!/^\d{5}$/.test(zip)) return;
+  try {
+    const res = await fetch(`https://api.zippopotam.us/us/${zip}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const place = data.places && data.places[0];
+    if (!place) return;
+    // Only commit the result if the zip box hasn't changed again while
+    // this lookup was in flight.
+    if (state.zip !== zip) return;
+    setLocationLabel(zip, place["place name"], place["state abbreviation"]);
+    refreshGeminiPromptBox();
+  } catch (e) {
+    console.warn("[geo] zip->city/state lookup failed:", e);
+  }
+}
+
+// Every search call site uses this instead of raw state.zip — sends a
+// real "City, ST" string to the server (search query text AND the LLM/
+// regex classifier) whenever one has been resolved for the CURRENT zip,
+// silently falling back to the bare zip otherwise so a lookup failure
+// never blocks a scan.
+function searchLocation() {
+  return state.locationLabel || state.zip;
 }
 
 // Keeps the "Copy Prompt" textarea in sync with the current ZIP/radius.
@@ -2281,7 +2351,7 @@ async function searchGroceryItem(itemName, signal) {
   const params = new URLSearchParams({
     item: itemName,
     zip: state.zip,
-    location: state.zip,
+    location: searchLocation(),
     radius: state.radius
   });
   const response = await fetch(`/api/grocery-price?${params}`, { signal });
@@ -2328,7 +2398,7 @@ function recordGroceryProvider(provider, usedEnsemble) {
 // in the grocery tab's results, styled distinctly via GAS_ITEM_ID in
 // itemCard() so it reads as "today's gas pick," not just another staple.
 async function searchGasItem(signal) {
-  const params = new URLSearchParams({ zip: state.zip, location: state.zip, radius: state.radius });
+  const params = new URLSearchParams({ zip: state.zip, location: searchLocation(), radius: state.radius });
   const response = await fetch(`/api/gas-price?${params}`, { signal });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);
@@ -2413,13 +2483,14 @@ function cleanResults(results) {
 // above); the server does the searching, classifying, and link resolution.
 async function searchFreebiesCategory(key, signal) {
   const cat = CATEGORIES[key];
-  const query = cat.query(state.zip, state.radius);
+  const location = searchLocation();
+  const query = cat.query(location, state.radius);
   const response = await fetch("/api/freebies", {
     method: "POST",
     cache: "no-store",
     signal,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ category: key, query, location: state.zip, radius: state.radius, timeRange: cat.timeRange || null })
+    body: JSON.stringify({ category: key, query, location, radius: state.radius, timeRange: cat.timeRange || null })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `${cat.label} search failed (${response.status}).`);
@@ -2436,7 +2507,7 @@ async function searchRestaurantCategory(signal) {
     cache: "no-store",
     signal,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ location: state.zip, radius: state.radius })
+    body: JSON.stringify({ location: searchLocation(), radius: state.radius })
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Restaurant Deals search failed (${response.status}).`);
@@ -2482,8 +2553,13 @@ function aiFreshnessNote(maxDays) {
 }
 
 function buildAiPrompt() {
+  // Same resolved "City, ST" the server-side search calls use (falls back
+  // to the raw zip if nothing's been resolved yet) — Gemini's own web
+  // search does better with a real place name here too, same reasoning as
+  // searchLocation()'s other call sites.
+  const loc = searchLocation();
   const lines = [
-    `Find today's real, currently-active deals for someone in ${state.zip || "[ZIP not set]"} ` +
+    `Find today's real, currently-active deals for someone in ${loc || "[ZIP not set]"} ` +
       `within ${state.radius} miles. For each item below, list the specific offer, where to get it, ` +
       `and any requirement (sign-up, loyalty app, minimum purchase) or expiration you can find. ` +
       `Skip anything that looks expired or unverifiable.`,
@@ -2495,21 +2571,21 @@ function buildAiPrompt() {
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
-      lines.push(`Cheapest regular unleaded gas price per gallon near ${state.zip} within ${state.radius} miles, plus the current best price near ${state.zip} for: ${GROCERY_ITEMS.join(", ")}.`);
+      lines.push(`Cheapest regular unleaded gas price per gallon near ${loc} within ${state.radius} miles, plus the current best price near ${loc} for: ${GROCERY_ITEMS.join(", ")}.`);
     } else if (key === "restaurant") {
-      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${state.zip} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count. The $${MAX_QUALIFYING_SPEND} cap is a TOTAL, TAX-INCLUDED figure — since a stated purchase amount is usually pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ceiling, not $${MAX_QUALIFYING_SPEND} itself.`);
+      lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${loc} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count. The $${MAX_QUALIFYING_SPEND} cap is a TOTAL, TAX-INCLUDED figure — since a stated purchase amount is usually pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ceiling, not $${MAX_QUALIFYING_SPEND} itself.`);
     } else if (key === "community") {
-      lines.push(`${cat.query(state.zip, state.radius)}. These are ongoing resources, not time-limited deals — don't skip one just because the page describing it looks old; only skip it if it explicitly says closed or discontinued.`);
+      lines.push(`${cat.query(loc, state.radius)}. These are ongoing resources, not time-limited deals — don't skip one just because the page describing it looks old; only skip it if it explicitly says closed or discontinued.`);
     } else if (key === "clothing" || key === "accessories") {
-      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(30));
+      lines.push(cat.query(loc, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(30));
     } else if (key === "toys") {
-      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + AI_TOYS_WORKSHOP_RULE_TEXT + aiFreshnessNote(30));
+      lines.push(cat.query(loc, state.radius) + "." + AI_SPEND_RULE_TEXT + AI_TOYS_WORKSHOP_RULE_TEXT + aiFreshnessNote(30));
     } else if (key === "events") {
-      lines.push(cat.query(state.zip, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(14));
+      lines.push(cat.query(loc, state.radius) + "." + AI_SPEND_RULE_TEXT + aiFreshnessNote(14));
     } else if (key === "mail") {
-      lines.push(cat.query(state.zip, state.radius) + "." + AI_MAIL_SPEND_RULE_TEXT);
+      lines.push(cat.query(loc, state.radius) + "." + AI_MAIL_SPEND_RULE_TEXT);
     } else {
-      lines.push(cat.query(state.zip, state.radius));
+      lines.push(cat.query(loc, state.radius));
     }
     lines.push("");
   }

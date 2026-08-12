@@ -32,6 +32,10 @@ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfi
 // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
 // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+// Shared location-text check for the regex fallback path — see that file
+// for why this one uses the forgiving variant. Shared with freebies.js,
+// which uses the stricter looksLocal() instead.
+import { looksLikeWrongLocation } from "../_shared/location.js";
 
 const MAX_QUALIFYING_PURCHASE = 10; // dollars — TOTAL cost cap, tax included (see below)
 // Same tax-inclusive treatment as freebies.js's MAX_QUALIFYING_SPEND: the
@@ -359,7 +363,12 @@ function dedupeItems(items) {
 // snippet (so a roundup post naming several chains yields several cards),
 // falling back to a single generic "[LOCAL]" card keyed off the source
 // domain when no known chain name is detected in the text at all.
-function regexClassify(results) {
+// Also takes `location` so the independent/local branch (no known chain
+// matched) can reject a result that explicitly names a different state —
+// mirroring the LLM path's own forgiving rule (see looksLikeWrongLocation
+// in functions/_shared/location.js): national chain matches stay exempt
+// from this check just like the LLM prompt exempts them.
+function regexClassify(results, location) {
   const items = [];
   for (const raw of results) {
     const combinedText = (raw.content || "") + " " + (raw.title || "");
@@ -378,6 +387,11 @@ function regexClassify(results) {
 
     const matchedChains = findAllChainKeys(combinedText);
     if (matchedChains.length === 0) {
+      // No known national chain matched -> this is the independent/local
+      // branch, so apply the same forgiving location check the LLM prompt
+      // uses: reject only if the snippet explicitly names a different
+      // state and doesn't also mention the target area.
+      if (looksLikeWrongLocation(combinedText, location)) continue;
       const { store, claimUrl, blogUrl } = resolveStoreAndClaimFromText(raw, combinedText);
       items.push({
         id: raw.url,
@@ -741,7 +755,7 @@ export async function onRequestPost({ request, env }) {
       // fall through to regex below
     }
   }
-  if (!classified) classified = regexClassify(results);
+  if (!classified) classified = regexClassify(results, location);
 
   let finalResults = dedupeItems(classified);
   finalResults = await Promise.all(finalResults.map(async item => {

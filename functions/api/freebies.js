@@ -34,6 +34,11 @@ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfi
 // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
 // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+// Shared location-text check for the regex fallback path — this file uses
+// the STRICTER variant (see that file for why): local/independent orgs
+// need an affirmative match, not just "doesn't name another state" the
+// way restaurant-deals.js's forgiving looksLikeWrongLocation works.
+import { looksLocal } from "../_shared/location.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -273,7 +278,16 @@ function matchesCategory(text, category) {
   return re ? re.test(text) : true; // no keyword list defined — don't gate it
 }
 
-function regexClassify(results, category) {
+// `location` (added for the local/independent check below) mirrors the
+// LLM prompt's locationRule: mail stays unfiltered (ships anywhere, same
+// as the LLM path), and only items flagged isLocal via the local/
+// community regex below are checked — a plain company/chain mention with
+// no "local"/"community" language is treated as chain-wide, exempt, same
+// as the LLM prompt's national-brand exemption. For an isLocal item,
+// require an AFFIRMATIVE location match (looksLocal) — no location detail
+// at all does NOT qualify, matching the LLM prompt's strict default here
+// (the opposite of restaurant-deals.js's forgiving default).
+function regexClassify(results, category, location) {
   const items = [];
   const spendEligible = SPEND_TO_FREE_CATEGORIES.has(category);
   for (const raw of results) {
@@ -303,6 +317,11 @@ function regexClassify(results, category) {
 
     const requirementType = extractRequirementType(combinedText);
     const isLocal = /\blocal\b|\bcommunity\b/i.test(combinedText);
+    // Mail ships anywhere — no location rule applies (matches the LLM
+    // prompt's locationRule, which is "" for category === "mail"). For
+    // every other category, an item flagged local/independent needs an
+    // affirmative match to the target area or it's rejected outright.
+    if (isLocal && category !== "mail" && !looksLocal(combinedText, location)) continue;
     const orgMentions = findMultipleOrgMentions(combinedText);
 
     let price = null;
@@ -638,7 +657,7 @@ export async function onRequestPost({ request, env }) {
       // fall through to regex below
     }
   }
-  if (!classified) classified = regexClassify(results, category);
+  if (!classified) classified = regexClassify(results, category, location);
 
   let finalResults = dedupeItems(classified);
 
