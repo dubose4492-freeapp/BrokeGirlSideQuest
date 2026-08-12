@@ -80,57 +80,93 @@ const LOCATION_STOPWORDS = new Set(["near", "county", "area", "city", "town", "u
 
 // Pulls out the meaningful place-name tokens from whatever the client sent
 // as `location` (a city/state string, or just a raw ZIP) — e.g.
-// "Lafayette, TN" -> ["lafayette", "tn", "tennessee"]. Both the abbreviation
-// and full state name are included since either could show up in a result.
+// "Lafayette, TN" -> cityTokens: ["lafayette"], stateTokens: ["tn", "tennessee"].
+// Split into two buckets (instead of one flat list) because a match on
+// EITHER alone isn't good enough to prove a result is about the right
+// place — "Lafayette" is a real city name in at least a dozen states
+// (LA, IN, CA, CO, GA...), so a snippet that only says "Lafayette" with no
+// Tennessee/TN anywhere near it is just as likely to be about one of
+// those as about this one. See resultMentionsLocation for how the two
+// buckets get combined.
 function locationKeywords(location, zip) {
-  const tokens = new Set();
-  if (zip) tokens.add(zip.toLowerCase());
+  const cityTokens = new Set();
+  const stateTokens = new Set();
+  const zipToken = zip ? zip.toLowerCase() : null;
   const parts = (location || "").split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean);
   for (const part of parts) {
+    const partIsState = !!STATE_ABBR[part] || Object.values(STATE_ABBR).includes(part);
     for (const word of part.split(/\s+/)) {
       const clean = word.replace(/[^a-z0-9]/g, "");
-      if (clean.length >= 2 && !LOCATION_STOPWORDS.has(clean)) tokens.add(clean);
+      if (clean.length < 2 || LOCATION_STOPWORDS.has(clean)) continue;
+      (partIsState ? stateTokens : cityTokens).add(clean);
     }
-    if (STATE_ABBR[part]) tokens.add(STATE_ABBR[part]);
+    if (STATE_ABBR[part]) stateTokens.add(STATE_ABBR[part]);
     for (const [full, abbr] of Object.entries(STATE_ABBR)) {
-      if (abbr === part) tokens.add(full.replace(/\s+/g, ""));
+      if (abbr === part) stateTokens.add(full.replace(/\s+/g, ""));
     }
   }
-  return [...tokens];
+  return { cityTokens: [...cityTokens], stateTokens: [...stateTokens], zipToken };
 }
 
-function resultMentionsLocation(r, keywords) {
-  if (!keywords.length) return true; // nothing usable to match against — don't over-filter
+// STRICT: requires a real place-name token, AND (when we actually have a
+// state to check) a state token too, before trusting a result names the
+// target place. A bare ZIP match also counts as strict on its own — ZIPs
+// aren't shared across states, so no second token is needed to trust one.
+function resultMentionsLocationStrict(r, keywords) {
+  const { cityTokens, stateTokens, zipToken } = keywords;
+  if (!cityTokens.length && !stateTokens.length && !zipToken) return true; // nothing usable to match against
   const text = ((r.title || "") + " " + (r.content || "") + " " + (r.url || "")).toLowerCase();
-  return keywords.some(kw => kw.length >= 3 && text.includes(kw));
+  if (zipToken && text.includes(zipToken)) return true;
+  const hasCity = cityTokens.length === 0 || cityTokens.some(kw => kw.length >= 3 && text.includes(kw));
+  const hasState = stateTokens.length === 0 || stateTokens.some(kw => text.includes(kw));
+  // Require whichever of the two buckets actually has tokens to match —
+  // if we only ever had a city name (no state was given to us at all),
+  // don't demand a state hit that could never happen either way.
+  return (cityTokens.length === 0 || hasCity) && (stateTokens.length === 0 || hasState) && (cityTokens.length > 0 || stateTokens.length > 0);
+}
+
+// LOOSE: the old single-token behavior — any one token, city or state,
+// anywhere in the text. Kept only as a second-chance pass (see
+// filterByLocation) for small towns whose name plus state genuinely never
+// appears verbatim together in a snippet (common with GasBuddy/AAA pages
+// that key off a ZIP or a nearby metro instead). Loose is intentionally
+// weaker, so it's never the FIRST thing tried — see filterByLocation.
+function resultMentionsLocationLoose(r, keywords) {
+  const { cityTokens, stateTokens, zipToken } = keywords;
+  const all = [...cityTokens, ...stateTokens, ...(zipToken ? [zipToken] : [])];
+  if (!all.length) return true;
+  const text = ((r.title || "") + " " + (r.content || "") + " " + (r.url || "")).toLowerCase();
+  return all.some(kw => kw.length >= 3 && text.includes(kw));
 }
 
 // Keeps only results that actually mention the target location, so a
 // price can never be extracted from a page about some other state/city
-// just because it matched on chain name or the word "gas".
-//
-// `allowFallback` (used only for tier 2 below, the LAST tier a caller
-// here has) makes good on what this function's filtering was ALWAYS
-// supposed to do but previously didn't: when the filter would wipe out
-// every result, fall back to the unfiltered list instead of returning
-// nothing. Without it, a small town whose exact name+state never happens
-// to appear verbatim in a search snippet — extremely common; GasBuddy/
-// AAA-style pages and generic web results frequently key off a ZIP code,
-// a county, or a nearby larger metro instead of spelling out the small
-// town's own name — would filter to zero on EVERY tier and gas price
-// would silently and permanently return "no price found" for that town,
-// no matter how good the underlying search results actually were. Tier 1
-// still never gets this fallback: it always has tier 2 to fall through to
-// next, so an empty tier 1 filter correctly means "try the open web,"
-// not "trust an unrelated chain-homepage result." Tier 2 has nowhere
-// further to fall through to, so trusting the LLM's own locationGuard
-// double-check (see extractLowestPriceLLM) on an unfiltered result is
-// better than guaranteeing an empty answer.
-function filterByLocation(results, location, zip, allowFallback = false) {
+// just because it matched on chain name or the word "gas". Three passes,
+// each only tried if the one before it came back empty:
+//   1. STRICT  — place name AND state both present (or a ZIP hit alone).
+//      This is the only pass tier 1 (see gas-price.js's caller) ever
+//      gets — an empty strict match there just means "try the open web
+//      next," which is fine, tier 2 is right there waiting.
+//   2. LOOSE   — `allowLoose` only (tier 2 passes this): single-token
+//      match, for small towns that genuinely never get their state named
+//      alongside them in a snippet.
+//   3. UNFILTERED — `allowFallback` only (tier 2's last resort): every
+//      result mentioned nothing recognizable as the target place at all.
+//      Returned results are flagged `locationUnverified: true` so the
+//      caller can be honest with the client about it instead of quietly
+//      presenting a possibly-wrong-city price as a confirmed local one.
+function filterByLocation(results, location, zip, { allowLoose = false, allowFallback = false } = {}) {
   const keywords = locationKeywords(location, zip);
-  const filtered = results.filter(r => resultMentionsLocation(r, keywords));
-  if (!filtered.length && allowFallback && results.length) return results;
-  return filtered;
+  const strict = results.filter(r => resultMentionsLocationStrict(r, keywords));
+  if (strict.length) return strict;
+  if (allowLoose) {
+    const loose = results.filter(r => resultMentionsLocationLoose(r, keywords));
+    if (loose.length) return loose;
+  }
+  if (allowFallback && results.length) {
+    return results.map(r => ({ ...r, locationUnverified: true }));
+  }
+  return [];
 }
 
 // Gas prices are commonly quoted to a third decimal (e.g. $3.199), unlike
@@ -147,7 +183,13 @@ function extractLowestPriceRegex(results) {
       if (!isNaN(val) && val >= 1.5 && val <= 8 && (!best || val < best.price)) {
         const domainChain = DOMAIN_TO_CHAIN[hostname(r.url)];
         const chain = (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) ? domainChain : findChainName(combinedText);
-        best = { price: val, store: chain || hostname(r.url), chain, url: r.url };
+        // Don't fabricate a "store" out of a blog/tracker's own domain
+        // name when no real station brand was actually found in the text
+        // — that's how a card used to end up labeled with something like
+        // "gasprices.blogspot.com" as if it were a place. Leave store
+        // null instead; getWebSearchGasPrice below turns that into an
+        // honest "unconfirmed" label and keeps sourceHost for the link.
+        best = { price: val, store: chain || null, chain, url: r.url, sourceHost: hostname(r.url), locationUnverified: r.locationUnverified === true };
       }
     }
   }
@@ -215,12 +257,20 @@ function parsePriceResponse(text, results) {
 
   const raw = results[parsed.index];
   const domainChain = DOMAIN_TO_CHAIN[hostname(raw.url)];
+  const locationUnverified = raw.locationUnverified === true;
   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
-    return { price: parsed.price, store: domainChain, chain: domainChain, url: raw.url };
+    return { price: parsed.price, store: domainChain, chain: domainChain, url: raw.url, locationUnverified };
   }
   const chain = findChainName((parsed.store || "") + " " + (raw.content || "") + " " + (raw.title || "")) || null;
-  const store = (parsed.store && String(parsed.store).trim()) || chain || hostname(raw.url);
-  return { price: parsed.price, store, chain, url: raw.url };
+  // Trust the LLM's own read of the station brand (it read the actual
+  // page text, could be a real regional chain not in GAS_CHAINS) — but
+  // never fall back to the raw domain name the way this used to. A blog
+  // or tracker's hostname is not a gas station; presenting it as `store`
+  // made every blog-sourced price look like a real, named local place
+  // when it wasn't. Leave store null in that case; sourceHost carries the
+  // domain through for an honest "Source: X" link instead.
+  const store = (parsed.store && String(parsed.store).trim()) || chain || null;
+  return { price: parsed.price, store, chain, url: raw.url, sourceHost: hostname(raw.url), locationUnverified };
 }
 
 function corroboratePrice(parsedList) {
@@ -467,7 +517,7 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     } catch (err) {
       openResults = [];
     }
-    openResults = filterByLocation(openResults, location, zip, true);
+    openResults = filterByLocation(openResults, location, zip, { allowLoose: true, allowFallback: true });
     const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, openResults, tier2Ensemble, location);
     usedProvider = best ? openProviders.join("+") : null;
@@ -480,8 +530,9 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
     const nearby = await verifyNearbyGasStation(env, domainChain, location, radius);
     return {
-      price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null,
-      provider: usedProvider, usedEnsemble,
+      price: best.price, store: domainChain, unconfirmedStore: false, sourceHost: hostname(best.url),
+      url: best.url, productUrl: best.url, blogUrl: null,
+      provider: usedProvider, usedEnsemble, locationUnverified: best.locationUnverified === true,
       ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
     };
   }
@@ -499,7 +550,14 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   ]);
   return {
     price: best.price,
+    // best.store is null when no real station brand could be identified
+    // in the text (see extractLowestPriceRegex/parsePriceResponse) — the
+    // client shows an honest "unconfirmed" label instead of a fabricated
+    // one in that case, using sourceHost for the "where this came from" link.
     store: best.store,
+    unconfirmedStore: !best.store,
+    sourceHost: best.sourceHost || hostname(best.url),
+    locationUnverified: best.locationUnverified === true,
     url: productUrl || best.url,
     productUrl,
     blogUrl: best.url,
@@ -546,7 +604,7 @@ export async function onRequestGet({ request, env }) {
     }
   }
 
-  return json(result || { price: null, store: null, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
+  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
 }
 
 function json(obj, status = 200) {

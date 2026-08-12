@@ -1280,11 +1280,35 @@ function itemCard(item) {
   const ribbon = isGas ? `<div class="gas-ribbon">⛽ TODAY'S<br>GAS PICK</div>` : "";
   const badge = isGas ? `<span class="gas-badge">⛽ Cheapest Gas</span>` : `<span class="cat-badge">${cat.label}</span>`;
 
-  return `<div class="item-card${isGas ? " gas-card" : ""}" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}">
+  // Gas-specific caveat line — tells the truth about how confident this
+  // price actually is, instead of every gas card looking equally
+  // "verified local price" regardless of where it actually came from:
+  //   - a real address (Foursquare-confirmed nearby) -> show it
+  //   - a statewide average (OilPriceAPI last-resort fallback, no real
+  //     station behind it at all) -> label it as that, with attribution
+  //   - a price whose location match is unconfirmed (see gas-price.js's
+  //     locationUnverified) or whose station brand couldn't be identified
+  //     (unconfirmedStore) -> flag it rather than presenting it as a sure
+  //     thing, and link to where it actually came from
+  let gasCaveat = "";
+  const mapsUrl = isSafeUrl(item.mapsUrl);
+  if (isGas && item.isStateAverage) {
+    gasCaveat = `<div class="verified-note">📊 Statewide average, not a specific station${item.sourceAttribution ? ` &middot; ${escapeHtml(item.sourceAttribution)}` : ""}</div>`;
+  } else if (isGas && item.address) {
+    gasCaveat = `<div class="verified-note">📍 ${escapeHtml(item.address)}</div>`;
+  } else if (isGas && (item.unconfirmedStore || item.locationUnverified)) {
+    const srcLink = blogUrl
+      ? `<a href="${escapeHtml(blogUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.sourceHost || hostname(blogUrl))}</a>`
+      : escapeHtml(item.sourceHost || "source unclear");
+    gasCaveat = `<div class="verified-note">⚠️ ${item.unconfirmedStore ? "Station not confirmed" : "Location not confirmed"} &middot; via ${srcLink}</div>`;
+  }
+
+  return `<div class="item-card${isGas ? " gas-card" : ""}" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}" data-maps="${escapeHtml(mapsUrl || "")}">
     <div class="item-media">${ribbon}${media}</div>
     <div class="item-body">
       <p class="item-name">${safeTitle}</p>
       <div class="item-store">${safeStore}</div>
+      ${gasCaveat}
       ${item.trustedSource ? `<div class="trusted-badge">⭐ ${escapeHtml(item.trustedSource)}</div>` : ""}
       <div class="item-price-row">
         <span class="item-price ${item.isFree ? "" : "paid"}">${escapeHtml(priceLabel(item, cat))}</span>
@@ -1318,9 +1342,17 @@ function itemCard(item) {
 document.getElementById("content").addEventListener("click", (e) => {
   const card = e.target.closest(".item-card");
   if (!card) return;
-  const { id, title, store, claim } = card.dataset;
+  const { id, title, store, claim, maps } = card.dataset;
   if (e.target.closest(".save-btn")) toggleSave(id);
-  else if (e.target.closest(".dir-btn")) openDirections(`${store} ${state.zip}`);
+  else if (e.target.closest(".dir-btn")) {
+    // Use the Foursquare-verified map link when we actually have one
+    // (see gas-price.js's verifyNearbyGasStation) instead of a generic
+    // text search — a text search on an "unconfirmed" placeholder name
+    // isn't a real place and would just send someone to whatever Maps
+    // guesses closest to those words.
+    if (maps) window.open(maps, "_blank", "noopener");
+    else openDirections(store.includes("unconfirmed") ? `gas stations near ${state.zip}` : `${store} ${state.zip}`);
+  }
   else if (e.target.closest(".claim-btn")) {
     // Already claimed -> this click is the undo, not a re-claim. Doesn't
     // reopen the link (they've already been there); just pulls it back
@@ -2504,10 +2536,21 @@ async function searchGasItem(signal) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);
   recordGroceryProvider(data.provider, data.usedEnsemble);
+  // data.store is only null when the server genuinely found a price but
+  // couldn't identify a real station brand behind it (see gas-price.js) —
+  // that's different from "no price found," so it gets its own label
+  // rather than reusing the no-results message. isStateAverage means the
+  // OilPriceAPI last-resort fallback answered instead of a real per-station
+  // search result — labeled distinctly so it's never mistaken for a
+  // specific nearby price. See itemCard() for how these render.
+  const store = data.isStateAverage ? data.store
+    : data.store ? data.store
+    : data.price ? "Nearby station (unconfirmed)"
+    : "No price found nearby";
   return {
     id: GAS_ITEM_ID,
     title: "Regular Unleaded Gas",
-    store: data.store || "No price found nearby",
+    store,
     url: data.url || "#",
     productUrl: data.productUrl || null,
     blogUrl: data.blogUrl || null,
@@ -2515,7 +2558,18 @@ async function searchGasItem(signal) {
     isFree: false,
     requirementType: "unknown",
     expires: null,
-    category: "grocery"
+    category: "grocery",
+    // Passed through as-is from gas-price.js so itemCard() can render an
+    // honest caveat instead of presenting every price as an equally
+    // confirmed, verified local number:
+    isStateAverage: data.isStateAverage || false,
+    sourceAttribution: data.sourceAttribution || null,
+    unconfirmedStore: data.unconfirmedStore || false,
+    locationUnverified: data.locationUnverified || false,
+    sourceHost: data.sourceHost || null,
+    verifiedNearby: data.verifiedNearby || false,
+    address: data.address || null,
+    mapsUrl: data.mapsUrl || null
   };
 }
 
