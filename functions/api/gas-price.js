@@ -272,6 +272,73 @@ async function findOfficialStationPage(env, chain) {
   }
 }
 
+// ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
+// Same UNVERIFIED CONTRACT as restaurant-deals.js's verifyNearbyWithFoursquare
+// (see that file's header comment for the full caveat — endpoint/auth header
+// confirmed against one real working example, not Foursquare's own docs
+// directly). Generalized here so it fires on whatever station NAME the
+// price-extraction path actually identified — best.store from extractBest
+// above — whether or not that name matched one of the 22 chains in
+// GAS_STATION_DOMAINS. An independent/regional station the LLM correctly
+// read out of a snippet still gets a real address + maps link instead of
+// silently having nothing beyond a blog URL.
+//
+// Two things this version adds on top of the restaurant one, both from the
+// "only gas stations, and faster" ask:
+//   1. `categories` — restricts Foursquare's OWN matching to the "Gas
+//      Station / Garage" taxonomy id, confirmed against Foursquare's
+//      published category list (id 4bf58dd8d48988d113951735). Without this,
+//      a `query: name` search can match a same-named restaurant, car wash,
+//      or convenience store that isn't actually a pump — this is what
+//      keeps the nearby-check itself honest the way the location filter
+//      keeps the price search honest.
+//   2. `fields` + a short timeout — this call only ever reads
+//      name/location/lat/lng (see below), so asking Foursquare to skip
+//      computing photos/hours/ratings/tips/features cuts real response
+//      size, and a 3s AbortController means one slow Foursquare request
+//      can't stall the whole gas lookup past what tier 1+2 search already
+//      cost. Both are additive to the existing best-effort contract: any
+//      failure (timeout included) still just returns null, never throws.
+const GAS_STATION_CATEGORY_ID = "4bf58dd8d48988d113951735"; // Foursquare taxonomy: "Gas Station / Garage"
+const FOURSQUARE_TIMEOUT_MS = 3000;
+async function verifyNearbyGasStation(env, name, location, radius) {
+  if (!env.FOURSQUARE_API_KEY || !name || !location) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
+  try {
+    const radiusMeters = Math.min(100000, Math.round(radius * 1609)); // miles -> meters, Foursquare caps around 100km
+    const params = new URLSearchParams({
+      query: name,
+      near: location,
+      radius: String(radiusMeters),
+      limit: "1",
+      categories: GAS_STATION_CATEGORY_ID,
+      fields: "name,location,latitude,longitude"
+    });
+    const res = await fetch(`https://places-api.foursquare.com/places/search?${params.toString()}`, {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${env.FOURSQUARE_API_KEY}`,
+        "X-Places-Api-Version": "2025-06-17",
+        accept: "application/json"
+      }
+    });
+    if (!res.ok) return null; // don't throw — best-effort only, see header comment
+    const data = await res.json();
+    const place = data && Array.isArray(data.results) && data.results[0];
+    if (!place) return null;
+    const address = place.location && (place.location.formatted_address || place.location.address);
+    const mapsUrl = (typeof place.latitude === "number" && typeof place.longitude === "number")
+      ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
+      : null;
+    return { verifiedNearby: true, address: address || null, mapsUrl };
+  } catch (err) {
+    return null; // covers fetch/timeout/JSON errors alike — never break a real price card
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------- OilPriceAPI (state-average LAST-RESORT fallback) ----------
 // Free tier confirmed against oilpriceapi.com/pricing (Aug 2026): 200
 // requests/month, no credit card. Deliberately called ONLY when the web
@@ -408,13 +475,25 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
 
   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
-    return { price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null, provider: usedProvider, usedEnsemble };
+    const nearby = await verifyNearbyGasStation(env, domainChain, location, radius);
+    return {
+      price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null,
+      provider: usedProvider, usedEnsemble,
+      ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
+    };
   }
 
   // Price came from an aggregator (GasBuddy/AAA) or a third-party page —
-  // try to resolve an actual station-brand page too, same pattern as
-  // grocery-price.js's blog/product-page split.
-  const productUrl = best.chain ? await findOfficialStationPage(env, best.chain) : null;
+  // try to resolve an actual station-brand page AND check Foursquare for a
+  // real nearby branch. Fired concurrently (not one-then-the-other) since
+  // neither depends on the other's result — this is the "faster" half of
+  // the ask: adding the Foursquare check doesn't add a third sequential
+  // round trip on top of tier 1/tier 2 search, it rides alongside the
+  // official-page lookup that was already happening here.
+  const [productUrl, nearby] = await Promise.all([
+    best.chain ? findOfficialStationPage(env, best.chain) : Promise.resolve(null),
+    verifyNearbyGasStation(env, best.store, location, radius)
+  ]);
   return {
     price: best.price,
     store: best.store,
@@ -422,7 +501,8 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     productUrl,
     blogUrl: best.url,
     provider: usedProvider,
-    usedEnsemble
+    usedEnsemble,
+    ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
   };
 }
 

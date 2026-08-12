@@ -299,6 +299,68 @@ async function findOfficialProductPage(env, item, chain) {
   }
 }
 
+// ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
+// Same pattern/contract as gas-price.js's verifyNearbyGasStation (see that
+// file for the full endpoint/auth caveat, shared with restaurant-deals.js's
+// original verifyNearbyWithFoursquare) — generalized to fire on whatever
+// STORE name extractBest actually identified, matched chain or not, so an
+// independent grocer the LLM correctly named still gets a real address
+// instead of nothing.
+// categories restricts Foursquare's own matching to grocery-shaped retail
+// (Grocery Store, Supermarket, Organic Grocery, plus Big Box/Warehouse/
+// Discount Store so Walmart/Costco/Sam's Club/Dollar General-style results
+// still match) — confirmed ids from Foursquare's published category list.
+// fields + a short AbortController timeout are the same speed trade as
+// gas-price.js: this call only ever reads name/location/lat/lng, so
+// trimming the response and capping how long one slow request can block
+// the item's lookup keeps this from adding real latency to an 11-item scan.
+const GROCERY_CATEGORY_IDS = [
+  "4bf58dd8d48988d118951735", // Grocery Store
+  "52f2ab2ebcbc57f1066b8b46", // Supermarket
+  "52f2ab2ebcbc57f1066b8b45", // Organic Grocery
+  "52f2ab2ebcbc57f1066b8b42", // Big Box Store
+  "52e816a6bcbc57f1066b7a54", // Warehouse Store
+  "52dea92d3cf9994f4e043dbb"  // Discount Store
+].join(",");
+const FOURSQUARE_TIMEOUT_MS = 3000;
+async function verifyNearbyGroceryStore(env, name, location, radius) {
+  if (!env.FOURSQUARE_API_KEY || !name || !location) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
+  try {
+    const radiusMeters = Math.min(100000, Math.round(radius * 1609)); // miles -> meters, Foursquare caps around 100km
+    const params = new URLSearchParams({
+      query: name,
+      near: location,
+      radius: String(radiusMeters),
+      limit: "1",
+      categories: GROCERY_CATEGORY_IDS,
+      fields: "name,location,latitude,longitude"
+    });
+    const res = await fetch(`https://places-api.foursquare.com/places/search?${params.toString()}`, {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${env.FOURSQUARE_API_KEY}`,
+        "X-Places-Api-Version": "2025-06-17",
+        accept: "application/json"
+      }
+    });
+    if (!res.ok) return null; // don't throw — best-effort only
+    const data = await res.json();
+    const place = data && Array.isArray(data.results) && data.results[0];
+    if (!place) return null;
+    const address = place.location && (place.location.formatted_address || place.location.address);
+    const mapsUrl = (typeof place.latitude === "number" && typeof place.longitude === "number")
+      ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
+      : null;
+    return { verifiedNearby: true, address: address || null, mapsUrl };
+  } catch (err) {
+    return null; // covers fetch/timeout/JSON errors alike — never break a real price card
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function getWebSearchPrice(env, item, location, radius) {
   const chainList = GROCERY_CHAINS.join(", ");
   const query = `${item} price at ${chainList} grocery store near ${location} within ${radius} miles`;
@@ -341,12 +403,24 @@ async function getWebSearchPrice(env, item, location, radius) {
   if (domainChain) {
     // Belt-and-suspenders: always label with the domain we're actually
     // linking to, so "Claim" and the card's store name can never disagree.
-    return { price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null, provider: usedProvider, usedEnsemble };
+    const nearby = await verifyNearbyGroceryStore(env, domainChain, location, radius);
+    return {
+      price: best.price, store: domainChain, url: best.url, productUrl: best.url, blogUrl: null,
+      provider: usedProvider, usedEnsemble,
+      ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
+    };
   }
 
   // Price came from a third-party page (blog, deal tracker, etc.) — try to
-  // resolve an actual product page on the identified chain's own site too.
-  const productUrl = best.chain ? await findOfficialProductPage(env, item, best.chain) : null;
+  // resolve an actual product page on the identified chain's own site AND
+  // check Foursquare for a real nearby branch, concurrently rather than
+  // one-then-the-other (same "faster" reasoning as gas-price.js — neither
+  // lookup depends on the other, so running them together doesn't add a
+  // third sequential round trip per item across an 11-item scan).
+  const [productUrl, nearby] = await Promise.all([
+    best.chain ? findOfficialProductPage(env, item, best.chain) : Promise.resolve(null),
+    verifyNearbyGroceryStore(env, best.store, location, radius)
+  ]);
   return {
     price: best.price,
     store: best.store,
@@ -354,7 +428,8 @@ async function getWebSearchPrice(env, item, location, radius) {
     productUrl,
     blogUrl: best.url,
     provider: usedProvider,
-    usedEnsemble
+    usedEnsemble,
+    ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
   };
 }
 
