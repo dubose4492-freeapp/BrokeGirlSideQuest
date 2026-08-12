@@ -139,68 +139,103 @@ index 70c30db..054f88d 100644
      lastFailures = outcome.failedProviders;
    }
 diff --git a/functions/api/gas-price.js b/functions/api/gas-price.js
-index 2d4de12..f88babd 100644
+index 2d4de12..0e8ebd0 100644
 --- a/functions/api/gas-price.js
 +++ b/functions/api/gas-price.js
-@@ -330,38 +330,41 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
-   // are usually indexed by ZIP, not by city name alone.
+@@ -104,14 +104,30 @@ function resultMentionsLocation(r, keywords) {
+ 
+ // Keeps only results that actually mention the target location, so a
+ // price can never be extracted from a page about some other state/city
+-// just because it matched on chain name or the word "gas". Falls back to
+-// the unfiltered list only when filtering would wipe out everything AND
+-// the caller has no further tier to fall back to — callers here always
+-// have tier 2, so in practice an empty filtered set just means "try the
+-// open web next" rather than "trust an unrelated result."
+-function filterByLocation(results, location, zip) {
++// just because it matched on chain name or the word "gas".
++//
++// `allowFallback` (used only for tier 2 below, the LAST tier a caller
++// here has) makes good on what this function's filtering was ALWAYS
++// supposed to do but previously didn't: when the filter would wipe out
++// every result, fall back to the unfiltered list instead of returning
++// nothing. Without it, a small town whose exact name+state never happens
++// to appear verbatim in a search snippet — extremely common; GasBuddy/
++// AAA-style pages and generic web results frequently key off a ZIP code,
++// a county, or a nearby larger metro instead of spelling out the small
++// town's own name — would filter to zero on EVERY tier and gas price
++// would silently and permanently return "no price found" for that town,
++// no matter how good the underlying search results actually were. Tier 1
++// still never gets this fallback: it always has tier 2 to fall through to
++// next, so an empty tier 1 filter correctly means "try the open web,"
++// not "trust an unrelated chain-homepage result." Tier 2 has nowhere
++// further to fall through to, so trusting the LLM's own locationGuard
++// double-check (see extractLowestPriceLLM) on an unfiltered result is
++// better than guaranteeing an empty answer.
++function filterByLocation(results, location, zip, allowFallback = false) {
+   const keywords = locationKeywords(location, zip);
+-  return results.filter(r => resultMentionsLocation(r, keywords));
++  const filtered = results.filter(r => resultMentionsLocation(r, keywords));
++  if (!filtered.length && allowFallback && results.length) return results;
++  return filtered;
+ }
+ 
+ // Gas prices are commonly quoted to a third decimal (e.g. $3.199), unlike
+@@ -149,7 +165,7 @@ async function extractLowestPriceLLM(env, results, { ensemble = false, location
+     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
+     .join("\n\n");
+   const locationGuard = location
+-    ? ` Every snippet here has already been pre-filtered to mention "${location}" somewhere, but double check: only use a snippet if it's genuinely about a station in or near ${location}, not a different city/state that happens to share a chain name or a word.`
++    ? ` These snippets are USUALLY pre-filtered to mention "${location}" somewhere, but not always (a small town's name doesn't always show up verbatim in a snippet) — so don't assume: only use a snippet if it's genuinely about a station in or near ${location}, not a different city/state that happens to share a chain name or a word.`
+     : "";
+   const prompt = `You are finding the lowest real current price per gallon for regular unleaded gasoline, from these search result snippets.${locationGuard} Ignore prices for premium/diesel unless that's all a snippet gives, ignore prices for unrelated products (snacks, car washes, other cities), and ignore vague "prices range from X to Y" statements unless a specific station price is given.
+ 
+@@ -331,7 +347,28 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
    const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
  
--  // Tier 1 — known gas station chains + GasBuddy/AAA only. Runs every
+   // Tier 1 — known gas station chains + GasBuddy/AAA only. Runs every
 -  // configured engine in parallel (see searchAllSources above).
--  let officialResults = [], officialProviders = [];
--  try {
--    ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
--  } catch (err) {
--    officialResults = [];
--  }
-+  // Tier 1 (domain-restricted) and tier 2 (open web) RAW SEARCHES fire
-+  // concurrently — chain homepages rarely name a specific small town, so
-+  // tier 1 fails filterByLocation almost every time and tier 2 ends up
-+  // running anyway; the old code just paid tier 1's full latency first
-+  // before even starting tier 2. Firing both searches at once caps the
-+  // wait at whichever is slower instead of their sum. The costlier step —
-+  // LLM classification via extractBest — still only runs for tier 2 when
-+  // tier 1 truly comes up empty, so this adds no extra LLM-quota cost on
-+  // the common path; the only added cost is tier 2's search-engine call
-+  // going out even on the rare occasion tier 1 alone succeeds, and its
-+  // results are simply discarded then.
-+  const [officialSettled, openSettled] = await Promise.all([
-+    searchAllSources(env, query, GAS_DOMAIN_LIST).catch(() => ({ results: [], providers: [] })),
-+    searchAllSources(env, query, null).catch(() => ({ results: [], providers: [] }))
-+  ]);
-+
-   // Domain-restricted != location-restricted (see filterByLocation above)
-   // — every result has to actually mention the target place before a
-   // price can be extracted from it, or "cheapest near you" can quietly
-   // resolve to "cheapest anywhere in the country."
--  officialResults = filterByLocation(officialResults, location, zip);
-+  const officialResults = filterByLocation(officialSettled.results, location, zip);
-   const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
-   let best = await extractBest(env, officialResults, tier1Ensemble, location);
--  let usedProvider = best ? officialProviders.join("+") : null;
-+  let usedProvider = best ? officialSettled.providers.join("+") : null;
-   let usedEnsemble = best ? tier1Ensemble : false;
++  // configured engine in the currently-active tier in parallel (see
++  // searchAllSources above) — that parallelism is unaffected by this
++  // revert, only the tier-to-tier sequencing below is.
++  //
++  // NOTE: an earlier version of this function fired tier 1 and tier 2's
++  // raw searches concurrently via Promise.all, on the theory that tier 1
++  // (domain-restricted to just the chain sites) almost always fails the
++  // location filter anyway, so tier 2 was going to run regardless — firing
++  // both at once just meant paying whichever was slower instead of their
++  // sum. In practice that backfired: it doubles how many outbound calls
++  // hit the search backend on EVERY gas lookup (not just the rare case
++  // tier 1 succeeds), and when the active tier has already fallen to the
++  // rate-limited terminal scrape tier (DuckDuckGo — see the tier table at
++  // the top of search-providers.js), two simultaneous scrape requests are
++  // far more likely to both get throttled/blocked than one, which reads
++  // as "gas comes back fast but empty." It also burns that tier's quota
++  // faster, which is what pushes OTHER calls (the grocery items search
++  // loop) down to the same slow terminal tier sooner, matching "groceries
++  // taking forever." Reverted to strictly sequential — tier 2 only runs at
++  // all (search included, not just its LLM classification step) when
++  // tier 1 truly comes up empty — so gas costs at most one extra search
++  // pass beyond what grocery/restaurant/freebies already cost per lookup.
+   let officialResults = [], officialProviders = [];
+   try {
+     ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+@@ -350,7 +387,9 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
  
--  // Tier 2 — open web fallback, same reasoning as grocery-price.js: tier 1
-+  // Tier 2 classification — same reasoning as grocery-price.js: tier 1
+   // Tier 2 — open web fallback, same reasoning as grocery-price.js: tier 1
    // domains often render prices via JS, so a domain-restricted crawl can
 -  // return real pages with zero extractable price text.
-+  // return real pages with zero extractable price text. Only pay for this
-+  // LLM pass when tier 1 didn't already answer it.
++  // return real pages with zero extractable price text. Only fired at all
++  // when tier 1 came up empty — see the note above for why this isn't
++  // fired eagerly alongside tier 1 anymore.
    if (!best) {
--    let openResults = [], openProviders = [];
--    try {
--      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, null));
--    } catch (err) {
--      openResults = [];
--    }
+     let openResults = [], openProviders = [];
+     try {
+@@ -358,7 +397,7 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
+     } catch (err) {
+       openResults = [];
+     }
 -    openResults = filterByLocation(openResults, location, zip);
-+    const openResults = filterByLocation(openSettled.results, location, zip);
++    openResults = filterByLocation(openResults, location, zip, true);
      const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
      best = await extractBest(env, openResults, tier2Ensemble, location);
--    usedProvider = best ? openProviders.join("+") : null;
-+    usedProvider = best ? openSettled.providers.join("+") : null;
-     usedEnsemble = best ? tier2Ensemble : false;
-   }
- 
+     usedProvider = best ? openProviders.join("+") : null;
