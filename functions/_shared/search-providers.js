@@ -435,12 +435,11 @@ function unwrapDdgRedirect(href) {
 }
 
 function stripTags(s) {
-  return s
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&#x27;/g, "'")
-    .replace(/&quot;/g, '"')
-    .trim();
+  // Entity decoding used to happen here too, but that only covered DDG —
+  // every other engine's title/snippet text passed through undecoded.
+  // Decoding is now handled once, centrally, in decodeResultText() at the
+  // two public entry points below, so this just strips tags.
+  return s.replace(/<[^>]+>/g, "").trim();
 }
 
 // Google Custom Search JSON API — Google's own, ToS-compliant search API
@@ -1080,6 +1079,31 @@ export async function getTierStatus(env) {
   return { activeTier: TIER_DEFS[activeIndex].id, tiers };
 }
 
+// Some engines (Serper scraping Google's rendered results page, others
+// echoing snippet fields as-is) return title/content text that's already
+// HTML-entity-encoded — e.g. a literal "&amp;" instead of "&". Left as-is,
+// the client's own escapeHtml() re-escapes it before display, turning
+// "&amp;" into "&amp;amp;", which the browser then renders back as the
+// literal text "&amp;" instead of "&". Decoded once here, centrally, so
+// every caller's existing escaping stays correct downstream.
+const HTML_ENTITIES = {
+  "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'",
+  "&#x27;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "—", "&ndash;": "–",
+  "&hellip;": "…", "&rsquo;": "\u2019", "&lsquo;": "\u2018", "&rdquo;": "\u201d", "&ldquo;": "\u201c"
+};
+function decodeHtmlEntities(s) {
+  if (!s) return s;
+  return s
+    .replace(/&(amp|lt|gt|quot|#39|#x27|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);/g, m => HTML_ENTITIES[m])
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+// Applied once at each public entry point below, before results reach any
+// caller — title/content are the only fields ever rendered as text.
+function decodeResultText(results) {
+  return results.map(r => ({ ...r, title: decodeHtmlEntities(r.title), content: decodeHtmlEntities(r.content) }));
+}
+
 // Narrow, single-answer lookups (e.g. "find this one company's official
 // site"). Uses the currently-active tier's engines, primary first; only
 // spills into the NEXT tier down if every engine in the active tier fails
@@ -1096,7 +1120,7 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     if (!configuredEngines(env, tier).length) continue;
     const outcome = await runTierSequential(env, tier, query, includeDomains, options);
     if (outcome.failures) failures.push(...outcome.failures);
-    if (outcome.results.length) return { results: outcome.results, provider: outcome.provider };
+    if (outcome.results.length) return { results: decodeResultText(outcome.results), provider: outcome.provider };
   }
   const err = new Error(`All search tiers failed — ${failures.join(" | ") || "no engines configured"}`);
   err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
@@ -1121,7 +1145,7 @@ export async function searchAllSources(env, query, includeDomains, options = {})
         err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
         throw err;
       }
-      return { results: outcome.results, providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+      return { results: decodeResultText(outcome.results), providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
     }
     lastFailures = outcome.failedProviders;
   }

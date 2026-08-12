@@ -1,0 +1,204 @@
+diff --git a/dist/index.html b/dist/index.html
+index 545225a..a1ba36e 100644
+--- a/dist/index.html
++++ b/dist/index.html
+@@ -295,6 +295,13 @@
+ 
+   .empty-state { text-align: center; padding: 40px 20px; color: #4a3d68; grid-column: 1 / -1; font-weight: 700; font-size: 15px; }
+   .empty-state b { color: var(--ink); }
++  /* Animated "Scanning…" dots — same staggered-delay pattern as
++     .splash-hearts above, just three plain dots pulsing in sequence
++     instead of a static ellipsis character. */
++  .scan-dots span { display: inline-block; animation: dotPulse 1.2s ease-in-out infinite; }
++  .scan-dots span:nth-child(2) { animation-delay: .15s; }
++  .scan-dots span:nth-child(3) { animation-delay: .3s; }
++  @keyframes dotPulse { 0%, 60%, 100% { opacity: .25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+   .search-bar {
+     display: flex; gap: 12px; flex-wrap: wrap; background: var(--panel); border: 3px solid var(--ink);
+     padding: 14px; margin-bottom: 16px; box-shadow: 4px 4px 0 var(--pink);
+@@ -1329,7 +1336,7 @@ function renderList(key) {
+   if (filtered.length === 0) {
+     if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit the scan button again.</div>`;
+     else if (!state.lastScan && !(state.scanning && state.scanningKey === key)) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap <b>scan ${cat.label.toLowerCase()}</b> up top to pull today's loot for this section.</div>`;
+-    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}…</div>`;
++    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span></div>`;
+     else body = `<div class="empty-state">No results match this filter.</div>`;
+   } else {
+     body = filtered.map(itemCard).join("");
+@@ -2422,13 +2429,19 @@ async function searchGroceryCategory(signal) {
+   const items = [];
+   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
+   state.ensembleUsed.grocery = false;
+-  if (!state.stopRequested) {
+-    try {
+-      items.push(await searchGasItem(signal));
+-    } catch (err) {
+-      if (err.name !== "AbortError") recordFailure("grocery", err.message);
+-    }
+-  }
++
++  // Kick off the gas lookup but don't block the item loop on it — this
++  // used to fully await gas price before even starting the 11 grocery
++  // items, adding gas's whole latency serially on top of the loop. Now it
++  // runs concurrently with the loop below and gets slotted in as the
++  // first card once it resolves.
++  const gasPromise = state.stopRequested
++    ? null
++    : searchGasItem(signal).catch(err => {
++        if (err.name !== "AbortError") recordFailure("grocery", err.message);
++        return null;
++      });
++
+   for (const itemName of GROCERY_ITEMS) {
+     if (state.stopRequested) break;
+     try {
+@@ -2438,6 +2451,11 @@ async function searchGroceryCategory(signal) {
+       recordFailure("grocery", err.message);
+     }
+   }
++
++  if (gasPromise) {
++    const gasItem = await gasPromise;
++    if (gasItem) items.unshift(gasItem);
++  }
+   return items;
+ }
+ 
+diff --git a/functions/_shared/search-providers.js b/functions/_shared/search-providers.js
+index 70c30db..054f88d 100644
+--- a/functions/_shared/search-providers.js
++++ b/functions/_shared/search-providers.js
+@@ -435,12 +435,11 @@ function unwrapDdgRedirect(href) {
+ }
+ 
+ function stripTags(s) {
+-  return s
+-    .replace(/<[^>]+>/g, "")
+-    .replace(/&amp;/g, "&")
+-    .replace(/&#x27;/g, "'")
+-    .replace(/&quot;/g, '"')
+-    .trim();
++  // Entity decoding used to happen here too, but that only covered DDG —
++  // every other engine's title/snippet text passed through undecoded.
++  // Decoding is now handled once, centrally, in decodeResultText() at the
++  // two public entry points below, so this just strips tags.
++  return s.replace(/<[^>]+>/g, "").trim();
+ }
+ 
+ // Google Custom Search JSON API — Google's own, ToS-compliant search API
+@@ -1080,6 +1079,31 @@ export async function getTierStatus(env) {
+   return { activeTier: TIER_DEFS[activeIndex].id, tiers };
+ }
+ 
++// Some engines (Serper scraping Google's rendered results page, others
++// echoing snippet fields as-is) return title/content text that's already
++// HTML-entity-encoded — e.g. a literal "&amp;" instead of "&". Left as-is,
++// the client's own escapeHtml() re-escapes it before display, turning
++// "&amp;" into "&amp;amp;", which the browser then renders back as the
++// literal text "&amp;" instead of "&". Decoded once here, centrally, so
++// every caller's existing escaping stays correct downstream.
++const HTML_ENTITIES = {
++  "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'",
++  "&#x27;": "'", "&apos;": "'", "&nbsp;": " ", "&mdash;": "—", "&ndash;": "–",
++  "&hellip;": "…", "&rsquo;": "\u2019", "&lsquo;": "\u2018", "&rdquo;": "\u201d", "&ldquo;": "\u201c"
++};
++function decodeHtmlEntities(s) {
++  if (!s) return s;
++  return s
++    .replace(/&(amp|lt|gt|quot|#39|#x27|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo);/g, m => HTML_ENTITIES[m])
++    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
++    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
++}
++// Applied once at each public entry point below, before results reach any
++// caller — title/content are the only fields ever rendered as text.
++function decodeResultText(results) {
++  return results.map(r => ({ ...r, title: decodeHtmlEntities(r.title), content: decodeHtmlEntities(r.content) }));
++}
++
+ // Narrow, single-answer lookups (e.g. "find this one company's official
+ // site"). Uses the currently-active tier's engines, primary first; only
+ // spills into the NEXT tier down if every engine in the active tier fails
+@@ -1096,7 +1120,7 @@ export async function searchWithFallback(env, query, includeDomains, options = {
+     if (!configuredEngines(env, tier).length) continue;
+     const outcome = await runTierSequential(env, tier, query, includeDomains, options);
+     if (outcome.failures) failures.push(...outcome.failures);
+-    if (outcome.results.length) return { results: outcome.results, provider: outcome.provider };
++    if (outcome.results.length) return { results: decodeResultText(outcome.results), provider: outcome.provider };
+   }
+   const err = new Error(`All search tiers failed — ${failures.join(" | ") || "no engines configured"}`);
+   err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+@@ -1121,7 +1145,7 @@ export async function searchAllSources(env, query, includeDomains, options = {})
+         err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
+         throw err;
+       }
+-      return { results: outcome.results, providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
++      return { results: decodeResultText(outcome.results), providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+     }
+     lastFailures = outcome.failedProviders;
+   }
+diff --git a/functions/api/gas-price.js b/functions/api/gas-price.js
+index 2d4de12..f88babd 100644
+--- a/functions/api/gas-price.js
++++ b/functions/api/gas-price.js
+@@ -330,38 +330,41 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
+   // are usually indexed by ZIP, not by city name alone.
+   const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
+ 
+-  // Tier 1 — known gas station chains + GasBuddy/AAA only. Runs every
+-  // configured engine in parallel (see searchAllSources above).
+-  let officialResults = [], officialProviders = [];
+-  try {
+-    ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+-  } catch (err) {
+-    officialResults = [];
+-  }
++  // Tier 1 (domain-restricted) and tier 2 (open web) RAW SEARCHES fire
++  // concurrently — chain homepages rarely name a specific small town, so
++  // tier 1 fails filterByLocation almost every time and tier 2 ends up
++  // running anyway; the old code just paid tier 1's full latency first
++  // before even starting tier 2. Firing both searches at once caps the
++  // wait at whichever is slower instead of their sum. The costlier step —
++  // LLM classification via extractBest — still only runs for tier 2 when
++  // tier 1 truly comes up empty, so this adds no extra LLM-quota cost on
++  // the common path; the only added cost is tier 2's search-engine call
++  // going out even on the rare occasion tier 1 alone succeeds, and its
++  // results are simply discarded then.
++  const [officialSettled, openSettled] = await Promise.all([
++    searchAllSources(env, query, GAS_DOMAIN_LIST).catch(() => ({ results: [], providers: [] })),
++    searchAllSources(env, query, null).catch(() => ({ results: [], providers: [] }))
++  ]);
++
+   // Domain-restricted != location-restricted (see filterByLocation above)
+   // — every result has to actually mention the target place before a
+   // price can be extracted from it, or "cheapest near you" can quietly
+   // resolve to "cheapest anywhere in the country."
+-  officialResults = filterByLocation(officialResults, location, zip);
++  const officialResults = filterByLocation(officialSettled.results, location, zip);
+   const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
+   let best = await extractBest(env, officialResults, tier1Ensemble, location);
+-  let usedProvider = best ? officialProviders.join("+") : null;
++  let usedProvider = best ? officialSettled.providers.join("+") : null;
+   let usedEnsemble = best ? tier1Ensemble : false;
+ 
+-  // Tier 2 — open web fallback, same reasoning as grocery-price.js: tier 1
++  // Tier 2 classification — same reasoning as grocery-price.js: tier 1
+   // domains often render prices via JS, so a domain-restricted crawl can
+-  // return real pages with zero extractable price text.
++  // return real pages with zero extractable price text. Only pay for this
++  // LLM pass when tier 1 didn't already answer it.
+   if (!best) {
+-    let openResults = [], openProviders = [];
+-    try {
+-      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, null));
+-    } catch (err) {
+-      openResults = [];
+-    }
+-    openResults = filterByLocation(openResults, location, zip);
++    const openResults = filterByLocation(openSettled.results, location, zip);
+     const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
+     best = await extractBest(env, openResults, tier2Ensemble, location);
+-    usedProvider = best ? openProviders.join("+") : null;
++    usedProvider = best ? openSettled.providers.join("+") : null;
+     usedEnsemble = best ? tier2Ensemble : false;
+   }
+ 

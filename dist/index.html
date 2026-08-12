@@ -295,6 +295,13 @@
 
   .empty-state { text-align: center; padding: 40px 20px; color: #4a3d68; grid-column: 1 / -1; font-weight: 700; font-size: 15px; }
   .empty-state b { color: var(--ink); }
+  /* Animated "Scanning…" dots — same staggered-delay pattern as
+     .splash-hearts above, just three plain dots pulsing in sequence
+     instead of a static ellipsis character. */
+  .scan-dots span { display: inline-block; animation: dotPulse 1.2s ease-in-out infinite; }
+  .scan-dots span:nth-child(2) { animation-delay: .15s; }
+  .scan-dots span:nth-child(3) { animation-delay: .3s; }
+  @keyframes dotPulse { 0%, 60%, 100% { opacity: .25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
   .search-bar {
     display: flex; gap: 12px; flex-wrap: wrap; background: var(--panel); border: 3px solid var(--ink);
     padding: 14px; margin-bottom: 16px; box-shadow: 4px 4px 0 var(--pink);
@@ -1329,7 +1336,7 @@ function renderList(key) {
   if (filtered.length === 0) {
     if (failed) body = `<div class="empty-state">This quest line failed on the last run — check the error up top, then hit the scan button again.</div>`;
     else if (!state.lastScan && !(state.scanning && state.scanningKey === key)) body = `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap <b>scan ${cat.label.toLowerCase()}</b> up top to pull today's loot for this section.</div>`;
-    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}…</div>`;
+    else if (state.scanning && state.scanningKey === key) body = `<div class="empty-state">Scanning ${cat.label}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span></div>`;
     else body = `<div class="empty-state">No results match this filter.</div>`;
   } else {
     body = filtered.map(itemCard).join("");
@@ -2422,13 +2429,19 @@ async function searchGroceryCategory(signal) {
   const items = [];
   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
   state.ensembleUsed.grocery = false;
-  if (!state.stopRequested) {
-    try {
-      items.push(await searchGasItem(signal));
-    } catch (err) {
-      if (err.name !== "AbortError") recordFailure("grocery", err.message);
-    }
-  }
+
+  // Kick off the gas lookup but don't block the item loop on it — this
+  // used to fully await gas price before even starting the 11 grocery
+  // items, adding gas's whole latency serially on top of the loop. Now it
+  // runs concurrently with the loop below and gets slotted in as the
+  // first card once it resolves.
+  const gasPromise = state.stopRequested
+    ? null
+    : searchGasItem(signal).catch(err => {
+        if (err.name !== "AbortError") recordFailure("grocery", err.message);
+        return null;
+      });
+
   for (const itemName of GROCERY_ITEMS) {
     if (state.stopRequested) break;
     try {
@@ -2437,6 +2450,11 @@ async function searchGroceryCategory(signal) {
       if (err.name === "AbortError") break;
       recordFailure("grocery", err.message);
     }
+  }
+
+  if (gasPromise) {
+    const gasItem = await gasPromise;
+    if (gasItem) items.unshift(gasItem);
   }
   return items;
 }

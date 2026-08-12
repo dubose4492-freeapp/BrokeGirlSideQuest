@@ -330,38 +330,41 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   // are usually indexed by ZIP, not by city name alone.
   const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
 
-  // Tier 1 — known gas station chains + GasBuddy/AAA only. Runs every
-  // configured engine in parallel (see searchAllSources above).
-  let officialResults = [], officialProviders = [];
-  try {
-    ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
-  } catch (err) {
-    officialResults = [];
-  }
+  // Tier 1 (domain-restricted) and tier 2 (open web) RAW SEARCHES fire
+  // concurrently — chain homepages rarely name a specific small town, so
+  // tier 1 fails filterByLocation almost every time and tier 2 ends up
+  // running anyway; the old code just paid tier 1's full latency first
+  // before even starting tier 2. Firing both searches at once caps the
+  // wait at whichever is slower instead of their sum. The costlier step —
+  // LLM classification via extractBest — still only runs for tier 2 when
+  // tier 1 truly comes up empty, so this adds no extra LLM-quota cost on
+  // the common path; the only added cost is tier 2's search-engine call
+  // going out even on the rare occasion tier 1 alone succeeds, and its
+  // results are simply discarded then.
+  const [officialSettled, openSettled] = await Promise.all([
+    searchAllSources(env, query, GAS_DOMAIN_LIST).catch(() => ({ results: [], providers: [] })),
+    searchAllSources(env, query, null).catch(() => ({ results: [], providers: [] }))
+  ]);
+
   // Domain-restricted != location-restricted (see filterByLocation above)
   // — every result has to actually mention the target place before a
   // price can be extracted from it, or "cheapest near you" can quietly
   // resolve to "cheapest anywhere in the country."
-  officialResults = filterByLocation(officialResults, location, zip);
+  const officialResults = filterByLocation(officialSettled.results, location, zip);
   const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
   let best = await extractBest(env, officialResults, tier1Ensemble, location);
-  let usedProvider = best ? officialProviders.join("+") : null;
+  let usedProvider = best ? officialSettled.providers.join("+") : null;
   let usedEnsemble = best ? tier1Ensemble : false;
 
-  // Tier 2 — open web fallback, same reasoning as grocery-price.js: tier 1
+  // Tier 2 classification — same reasoning as grocery-price.js: tier 1
   // domains often render prices via JS, so a domain-restricted crawl can
-  // return real pages with zero extractable price text.
+  // return real pages with zero extractable price text. Only pay for this
+  // LLM pass when tier 1 didn't already answer it.
   if (!best) {
-    let openResults = [], openProviders = [];
-    try {
-      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, null));
-    } catch (err) {
-      openResults = [];
-    }
-    openResults = filterByLocation(openResults, location, zip);
+    const openResults = filterByLocation(openSettled.results, location, zip);
     const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, openResults, tier2Ensemble, location);
-    usedProvider = best ? openProviders.join("+") : null;
+    usedProvider = best ? openSettled.providers.join("+") : null;
     usedEnsemble = best ? tier2Ensemble : false;
   }
 
