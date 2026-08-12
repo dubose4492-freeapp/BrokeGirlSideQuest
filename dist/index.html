@@ -290,6 +290,7 @@
   }
   .item-actions button:last-child { border-right: none; }
   .item-actions button.saved { color: var(--coral); background: var(--coral-soft); }
+  .item-actions button.claimed { color: #14532d; background: #e6f7ec; }
   .item-actions button:hover { background: var(--sun-soft); }
 
   .empty-state { text-align: center; padding: 40px 20px; color: #4a3d68; grid-column: 1 / -1; font-weight: 700; font-size: 15px; }
@@ -986,6 +987,14 @@ let state = {
   results: {},
   filters: {}, // per-category active requirement-type filter
   saved: new Set(JSON.parse(lsGet("dff_saved") || "[]")),
+  // Persistent claim log — { itemId: { value, monthKey, ts } } — survives
+  // across sessions (unlike computeStats' estValue, which only covers
+  // whatever's in state.results right now). Drives the "Total saved this
+  // month" / "quests completed" numbers Clara's feedback asked for.
+  // Marking something claimed never removes or overwrites an earlier
+  // entry for the same item id, so re-clicking Claim on something already
+  // claimed doesn't double-count it.
+  claimedLog: JSON.parse(lsGet("dff_claimed_log") || "{}"),
   lastScan: lsGet("dff_last_scan") || null,
   scanning: false,
   scanningKey: null, // set to a category key while a single-section scan (not the full "Run Quest") is in flight
@@ -1218,7 +1227,7 @@ function itemCard(item) {
     <div class="item-actions">
       <button class="save-btn ${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
       <button class="dir-btn">📍 Directions</button>
-      <button class="claim-btn"${claimUrl ? "" : " disabled"}>🔗 Claim</button>
+      <button class="claim-btn${state.claimedLog[item.id] ? " claimed" : ""}"${claimUrl ? "" : " disabled"}>${state.claimedLog[item.id] ? "✅ Claimed" : "🔗 Claim"}</button>
       <button class="share-btn">📤 Share</button>
     </div>
   </div>`;
@@ -1237,7 +1246,7 @@ document.getElementById("content").addEventListener("click", (e) => {
   const { id, title, store, claim } = card.dataset;
   if (e.target.closest(".save-btn")) toggleSave(id);
   else if (e.target.closest(".dir-btn")) openDirections(`${store} ${state.zip}`);
-  else if (e.target.closest(".claim-btn")) { if (claim) window.open(claim, "_blank", "noopener"); }
+  else if (e.target.closest(".claim-btn")) { if (claim) { markClaimed(id); window.open(claim, "_blank", "noopener"); render(); } }
   else if (e.target.closest(".share-btn")) shareItem(title, claim);
 });
 
@@ -1399,8 +1408,15 @@ function renderDashboard() {
     <div class="quest-board-head">🔥 BEST DEAL TODAY <span class="dash-line"></span></div>
     ${itemCard(bestDeal.item)}` : "";
 
+  const claimedStats = claimedStatsThisMonth();
+  const claimedSummaryHtml = claimedStats.count > 0 ? `<div class="quest-complete" style="margin-bottom:12px;">
+      <div class="quest-complete-xp">💰</div>
+      <div class="quest-complete-text"><b>Total saved this month: ~$${claimedStats.total.toFixed(2)}</b><br>${claimedStats.count} quest${claimedStats.count === 1 ? "" : "s"} claimed</div>
+    </div>` : "";
+
   return `
     ${state.lastScan ? "" : `<div class="empty-state"><div class="mascot-empty">${CAT_SVG_FN()}</div>Tap a quest card below, then hit <b>scan</b> to start today's live search for that section — search works best one section at a time.</div>`}
+    ${claimedSummaryHtml}
     ${bestDealHtml}
     <div class="quest-board-head">QUEST BOARD <span class="dash-line"></span></div>
     <div class="quest-board">${boardCards}</div>
@@ -1760,6 +1776,43 @@ function toggleSave(id) {
   if (state.saved.has(id)) state.saved.delete(id); else state.saved.add(id);
   lsSet("dff_saved", JSON.stringify([...state.saved]));
   render();
+}
+
+function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
+
+// Records a claim the first time an item's Claim button is clicked —
+// intentionally NOT re-recorded on subsequent clicks (people re-open a
+// claim link to double-check details, that's not a second deal). Looks
+// the full item up by id across every category's results (the delegated
+// click handler only has the escaped id/title/store/claim data
+// attributes, not the whole item object). Value uses the exact same
+// real-price-or-flat-$5 estimate computeStats/findBestDeal already use
+// elsewhere, so the running total here stays consistent with the "SAVED
+// TODAY" HUD number instead of being a separate guess.
+function markClaimed(id) {
+  if (state.claimedLog[id]) return; // already logged — no double-count
+  let item = null;
+  for (const key of Object.keys(state.results)) {
+    item = (state.results[key] || []).find(it => it.id === id);
+    if (item) break;
+  }
+  if (!item) return; // shouldn't happen (id came from a rendered card), fail closed
+  const priceNum = item.price ? parseFloat(String(item.price).replace(/[^0-9.]/g, "")) : NaN;
+  const value = !isNaN(priceNum) ? priceNum : 5;
+  state.claimedLog[id] = { value, monthKey: monthKey(new Date()), ts: Date.now() };
+  lsSet("dff_claimed_log", JSON.stringify(state.claimedLog));
+}
+
+// Totals for the current calendar month only — old months' entries stay
+// in claimedLog (nothing is ever deleted) but don't count toward "this
+// month" once the month rolls over.
+function claimedStatsThisMonth() {
+  const mk = monthKey(new Date());
+  let total = 0, count = 0;
+  Object.values(state.claimedLog).forEach(entry => {
+    if (entry.monthKey === mk) { total += entry.value; count++; }
+  });
+  return { total, count };
 }
 function openDirections(query) {
   window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`, "_blank", "noopener");
