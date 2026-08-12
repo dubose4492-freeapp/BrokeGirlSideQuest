@@ -2430,17 +2430,33 @@ async function searchGroceryCategory(signal) {
   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
   state.ensembleUsed.grocery = false;
 
-  // Kick off the gas lookup but don't block the item loop on it — this
-  // used to fully await gas price before even starting the 11 grocery
-  // items, adding gas's whole latency serially on top of the loop. Now it
-  // runs concurrently with the loop below and gets slotted in as the
-  // first card once it resolves.
-  const gasPromise = state.stopRequested
-    ? null
-    : searchGasItem(signal).catch(err => {
-        if (err.name !== "AbortError") recordFailure("grocery", err.message);
-        return null;
-      });
+  // Gas is fired off but NEVER awaited here — it previously still held up
+  // this function's return (and therefore the rest of the scan queue in
+  // runFullScan, which awaits one category before starting the next) any
+  // time gas itself was the slower of the two, which defeats the point of
+  // running it concurrently. Now the item loop below returns as soon as
+  // it's done, full stop, and gas patches itself into state.results.grocery
+  // — wherever that array is by the time it resolves, even after this
+  // category (and possibly the whole scan) is already finished — and
+  // triggers its own render() so the card just pops in whenever it's ready
+  // instead of ever blocking anything after it.
+  if (!state.stopRequested) {
+    searchGasItem(signal).then(gasItem => {
+      const bucket = state.results.grocery;
+      if (Array.isArray(bucket) && !bucket.some(it => it.id === GAS_ITEM_ID)) {
+        bucket.unshift(gasItem);
+        render();
+      }
+    }).catch(err => {
+      if (err.name === "AbortError") return;
+      recordFailure("grocery", err.message);
+      // The scan-wide error banner is normally built once, right after
+      // runFullScan's category loop finishes — which may already have
+      // happened by the time a backgrounded gas fetch fails. Surface it
+      // as a toast instead so a late failure is never silently dropped.
+      if (!state.scanning) showToast(`Gas price: ${err.message}`);
+    });
+  }
 
   for (const itemName of GROCERY_ITEMS) {
     if (state.stopRequested) break;
@@ -2450,11 +2466,6 @@ async function searchGroceryCategory(signal) {
       if (err.name === "AbortError") break;
       recordFailure("grocery", err.message);
     }
-  }
-
-  if (gasPromise) {
-    const gasItem = await gasPromise;
-    if (gasItem) items.unshift(gasItem);
   }
   return items;
 }
