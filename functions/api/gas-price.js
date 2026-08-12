@@ -48,6 +48,34 @@ const AGGREGATOR_CHAINS = new Set(["GasBuddy", "AAA"]);
 
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
+// Tier 1 asks each search engine to restrict itself to GAS_DOMAIN_LIST via
+// that engine's own `includeDomains`/`site:` mechanism — but that's a
+// per-engine best-effort hint, not a guarantee. Tavily/Serper/Exa's real
+// `include_domains` params are reliable; DuckDuckGo (the free, no-key,
+// always-available terminal tier — see DEPLOY_INSTRUCTIONS.md, and the
+// only tier active at all if no search API key is configured) works by
+// appending `(site:shell.com OR site:chevron.com OR ...)` — 22 ORed
+// site: clauses — to a plain HTML-scrape query, and DDG's lite search
+// frequently drops or partially ignores long boolean site: chains like
+// that instead of erroring. When it does, "tier 1, official chains only"
+// silently comes back full of ordinary web results (blogs, forums,
+// price-comparison sites) that were never actually restricted to a real
+// station's own domain — which is exactly what read as "gas prices are
+// pulling from blogs, not real stations." This is the actual server-side
+// enforcement tier 1 was always supposed to have: keep only results whose
+// URL hostname genuinely IS one of GAS_STATION_DOMAINS, and drop anything
+// else, regardless of whether the search engine says it already filtered.
+// Tier 2 (the open web) is intentionally NOT run through this — it's
+// allowed to return third-party pages by design, which is why those cards
+// get an honest "unconfirmed"/blog-sourced label instead of a real chain
+// name (see getWebSearchGasPrice below).
+function restrictToOfficialDomains(results) {
+  return results.filter(r => {
+    const host = hostname(r.url);
+    return Object.values(GAS_STATION_DOMAINS).some(domain => host === domain || host.endsWith("." + domain));
+  });
+}
+
 // ---------- Location relevance filter ----------
 // The bug this fixes: GAS_STATION_DOMAINS are national chain homepages
 // (shell.com, gasbuddy.com, etc.) — restricting a search to those domains
@@ -495,6 +523,11 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   } catch (err) {
     officialResults = [];
   }
+  // Server-side enforcement of the domain restriction the engine was
+  // ASKED to apply — see restrictToOfficialDomains's header comment for
+  // why this can't just be trusted to have already happened (DuckDuckGo
+  // in particular).
+  officialResults = restrictToOfficialDomains(officialResults);
   // Domain-restricted != location-restricted (see filterByLocation above)
   // — every result has to actually mention the target place before a
   // price can be extracted from it, or "cheapest near you" can quietly

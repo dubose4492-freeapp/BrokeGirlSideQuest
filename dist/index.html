@@ -2636,7 +2636,26 @@ async function searchGroceryCategory(signal) {
   // "results within 5 minutes" instead of "however long the slowest
   // search tier feels like taking."
   const GROCERY_CONCURRENCY = 4;
-  await mapWithConcurrency(GROCERY_ITEMS, GROCERY_CONCURRENCY, async (itemName) => {
+  // GROCERY_ITEMS is a fixed list (Bread, Eggs, ... Diapers, Formula, Baby
+  // food) and mapWithConcurrency's workers pull from it in that same fixed
+  // order every single scan — so whenever a scan runs long enough to butt
+  // up against SCAN_TIMEOUT_MS (a slow/rate-limited search tier — see the
+  // "two simultaneous DuckDuckGo scrapes" note on gas-price.js's tier
+  // sequencing for why that happens more than it should), it's always the
+  // LAST few items in the array that never even get their fetch sent (see
+  // the `signal.aborted` check inside the worker below) — which on this
+  // list means Diapers/Formula/Baby food specifically get starved on
+  // every single slow run, not a random assortment of items. Scanning a
+  // shuffled COPY each time spreads that risk evenly across all 11 items
+  // scan-to-scan instead of the same three staples silently losing every
+  // time. GROCERY_ITEMS itself (and its original order, used everywhere
+  // else — e.g. what a fresh/never-scanned tab lists) is left untouched.
+  const shuffledItems = [...GROCERY_ITEMS];
+  for (let i = shuffledItems.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffledItems[i], shuffledItems[j]] = [shuffledItems[j], shuffledItems[i]];
+  }
+  await mapWithConcurrency(shuffledItems, GROCERY_CONCURRENCY, async (itemName) => {
     if (state.stopRequested || signal.aborted) return undefined;
     let item;
     try {

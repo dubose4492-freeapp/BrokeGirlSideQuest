@@ -115,6 +115,22 @@ async function getKrogerPrice(env, item, zip, radius) {
 // ---------- Web search side (every major chain) ----------
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
+// Same server-side enforcement as gas-price.js's restrictToOfficialDomains
+// (see that function's comment for the full "why"): tier 1 asks the search
+// engine to restrict itself to GROCERY_DOMAIN_LIST, but DuckDuckGo — the
+// free, keyless, always-on terminal tier, and the only one active if no
+// paid-tier search key is configured — frequently doesn't fully honor a
+// long ORed `site:` chain on its HTML-scrape endpoint. Without this check,
+// a blog/deal-tracker page that slips through still gets treated as an
+// "official chain" tier-1 result instead of falling to the properly-labeled
+// third-party/blog branch further down.
+function restrictToOfficialDomains(results) {
+  return results.filter(r => {
+    const host = hostname(r.url);
+    return GROCERY_DOMAIN_LIST.some(domain => host === domain || host.endsWith("." + domain));
+  });
+}
+
 function extractLowestPriceRegex(results) {
   let best = null;
   for (const r of results) {
@@ -378,6 +394,9 @@ async function getWebSearchPrice(env, item, location, radius) {
   } catch (err) {
     officialResults = []; // fall through to tier 2 below
   }
+  // Verify the engine actually restricted itself the way it was asked to
+  // — see restrictToOfficialDomains's header comment.
+  officialResults = restrictToOfficialDomains(officialResults);
   const tier1Ensemble = officialProvider && officialProvider !== "tavily" && multipleLLMsConfigured(env);
   let best = await extractBest(env, item, officialResults, tier1Ensemble);
   let usedProvider = best ? officialProvider : null;
