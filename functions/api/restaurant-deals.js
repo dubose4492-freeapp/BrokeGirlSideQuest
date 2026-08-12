@@ -248,11 +248,18 @@ function parseExpiryDate(text) {
   const md = cleaned.match(/([A-Za-z]{3,9})\s+(\d{1,2})/);
   if (md) {
     const now = new Date();
+    // Stay in the scan's own year — do NOT roll a past-seeming date
+    // forward to next year. A bare "expires August 15" almost always
+    // means the year the offer/article was actually posted in (i.e. this
+    // scan's year), so if that date has already passed, the offer really
+    // is expired and isExpired() below should catch it. Bumping to next
+    // year here used to un-expire genuinely stale deals (an "expires
+    // August 15" snippet scraped in October would silently become "valid
+    // until next August"), which is how expired listings were slipping
+    // through to the results.
+    // (Same fix as freebies.js's copy of this function.)
     const guess = new Date(`${md[1]} ${md[2]}, ${now.getFullYear()}`);
-    if (!isNaN(guess.getTime())) {
-      if (guess < now) guess.setFullYear(now.getFullYear() + 1);
-      return guess;
-    }
+    if (!isNaN(guess.getTime())) return guess;
   }
   return null;
 }
