@@ -848,6 +848,15 @@ const CATEGORIES = {
   // as the "tips" tab below.
   tube: { label: "Watch & Chill", icon: "📺", static: true },
   game: { label: "Coin Dash", icon: "🎮", static: true },
+  // Static content tab — no search/API call of its own. Instead of
+  // fetching anything new, renderWallet() builds a "get to Friday" plan
+  // out of whatever's already sitting in state.results from prior scans
+  // (real grocery prices, real free/no-purchase finds) — never invents
+  // deals or prices the app hasn't actually seen. Handled via
+  // renderWallet() in render(), same static-tab pattern as "help" below;
+  // also skipped by runFullScan()/computeStats()'s category loops.
+  // Placed before "dashboard" so My Wallet is the first tab in the nav.
+  wallet: { label: "My Wallet", icon: "👛", static: true },
   dashboard: { label: "Dashboard" },
   restaurant: { label: "Restaurant Deals", icon: "🍔" },
   grocery: { label: "Grocery", icon: "🛒", timeRange: "week", isPriced: true, groceryItems: GROCERY_ITEMS },
@@ -870,14 +879,6 @@ const CATEGORIES = {
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: null, query: () =>
     `free samples and free items by mail no purchase necessary` },
-  // Static content tab — no search/API call of its own. Instead of
-  // fetching anything new, renderWallet() builds a "get to Friday" plan
-  // out of whatever's already sitting in state.results from prior scans
-  // (real grocery prices, real free/no-purchase finds) — never invents
-  // deals or prices the app hasn't actually seen. Handled via
-  // renderWallet() in render(), same static-tab pattern as "help" above;
-  // also skipped by runFullScan()/computeStats()'s category loops.
-  wallet: { label: "My Wallet", icon: "👛", static: true },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped
   // by renderList()/runFullScan()'s category loops (both filter on
@@ -1239,7 +1240,7 @@ function itemCard(item) {
     <div class="item-actions">
       <button class="save-btn ${state.saved.has(item.id) ? "saved" : ""}">${state.saved.has(item.id) ? "♥ Saved" : "♡ Save"}</button>
       <button class="dir-btn">📍 Directions</button>
-      <button class="claim-btn${state.claimedLog[item.id] ? " claimed" : ""}"${claimUrl ? "" : " disabled"}>${state.claimedLog[item.id] ? "✅ Claimed" : "🔗 Claim"}</button>
+      <button class="claim-btn${state.claimedLog[item.id] ? " claimed" : ""}"${claimUrl ? "" : " disabled"} title="${state.claimedLog[item.id] ? "Tap to undo — didn't work out? Un-claim so it doesn't count toward your total" : ""}">${state.claimedLog[item.id] ? "✅ Claimed ↺" : "🔗 Claim"}</button>
       <button class="share-btn">📤 Share</button>
     </div>
   </div>`;
@@ -1258,7 +1259,13 @@ document.getElementById("content").addEventListener("click", (e) => {
   const { id, title, store, claim } = card.dataset;
   if (e.target.closest(".save-btn")) toggleSave(id);
   else if (e.target.closest(".dir-btn")) openDirections(`${store} ${state.zip}`);
-  else if (e.target.closest(".claim-btn")) { if (claim) { markClaimed(id); window.open(claim, "_blank", "noopener"); render(); } }
+  else if (e.target.closest(".claim-btn")) {
+    // Already claimed -> this click is the undo, not a re-claim. Doesn't
+    // reopen the link (they've already been there); just pulls it back
+    // out of the log so it stops counting toward the monthly total.
+    if (state.claimedLog[id]) { unclaimItem(id); render(); }
+    else if (claim) { markClaimed(id); window.open(claim, "_blank", "noopener"); render(); }
+  }
   else if (e.target.closest(".share-btn")) shareItem(title, claim);
 });
 
@@ -1915,6 +1922,19 @@ function markClaimed(id) {
   const value = !isNaN(priceNum) ? priceNum : 5;
   state.claimedLog[id] = { value, monthKey: monthKey(new Date()), ts: Date.now() };
   lsSet("dff_claimed_log", JSON.stringify(state.claimedLog));
+}
+
+// Reverses a claim — changed your mind, deal turned out to be expired/
+// unavailable, whatever. Fully removes the entry (not a soft "cancelled"
+// flag) so claimedStatsThisMonth() just doesn't see it anymore and the
+// monthly total/quest count both drop back down automatically. Button
+// reverts to "🔗 Claim" on next render, so it can be re-claimed later if
+// it turns out it was actually valid.
+function unclaimItem(id) {
+  if (!state.claimedLog[id]) return;
+  delete state.claimedLog[id];
+  lsSet("dff_claimed_log", JSON.stringify(state.claimedLog));
+  showToast("Un-claimed — removed from your saved total");
 }
 
 // Totals for the current calendar month only — old months' entries stay
