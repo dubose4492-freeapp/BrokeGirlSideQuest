@@ -992,6 +992,12 @@ function extraTags(item) {
   if (/\bbirthday\b/.test(text)) tags.push("🎂 Birthday only");
   if (/\bnew (customer|member|account)s?\b|\bfirst[- ]time\b/.test(text)) tags.push("👤 New customers only");
   if (item.requirementType === "loyalty" && !tags.some(t => t.includes("App"))) tags.push("💳 Membership required");
+  // Giveaway/contest offers get a location tag — the person's city/
+  // surrounding area within radius for a local one, or a mail/online note
+  // for a national one. Set server-side (freebies.js) via
+  // giveawayLocationLabel; this just surfaces it as a tag like every other
+  // restriction chip on the card.
+  if (item.requirementType === "giveaway" && item.giveawayLocation) tags.push(`📍 ${item.giveawayLocation}`);
   return tags;
 }
 

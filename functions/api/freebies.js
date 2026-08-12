@@ -38,7 +38,7 @@ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 // the STRICTER variant (see that file for why): local/independent orgs
 // need an affirmative match, not just "doesn't name another state" the
 // way restaurant-deals.js's forgiving looksLikeWrongLocation works.
-import { looksLocal } from "../_shared/location.js";
+import { looksLocal, extractCityMentions } from "../_shared/location.js";
 
 // Time-based freshness ceiling per category, mirroring the old client-side
 // timeRange settings. null = don't filter by age (evergreen resources like
@@ -284,6 +284,28 @@ function matchesCategory(text, category) {
   return re ? re.test(text) : true; // no keyword list defined — don't gate it
 }
 
+// Builds the "where/how to get this" label shown on giveaway cards. Used
+// by BOTH the regex fallback and the LLM path so behavior is consistent
+// regardless of which classifier ran — derived from text + the isLocal
+// flag rather than a separate LLM-extracted field, since isLocal already
+// carries the judgment call (chain/national vs local/independent) and
+// this just phrases it for display:
+//   - not local (national/chain-wide entry): mail if the snippet actually
+//     says so, otherwise online — either way "no local visit required".
+//   - local: pull an actual "City, ST" mention out of the snippet text if
+//     one's there (the real event city, which may be a nearby town within
+//     the radius rather than the exact city the person searched), else
+//     fall back to "Near <searched location> (within N mi)".
+function giveawayLocationLabel(text, isLocal, location, radius) {
+  if (!isLocal) {
+    const byMail = /\bby mail\b|\bmail-?in\b|\bmail entry\b/i.test(text || "");
+    return byMail ? "Enter by mail — no local visit required" : "Enter online — no local visit required";
+  }
+  const cities = extractCityMentions(text);
+  if (cities.length) return `Near ${cities.slice(0, 3).join(" / ")}`;
+  return location ? `Near ${location} (within ${radius} mi)` : `Within ${radius} mi of your area`;
+}
+
 // `location` (added for the local/independent check below) mirrors the
 // LLM prompt's locationRule: mail stays unfiltered (ships anywhere, same
 // as the LLM path), and only items flagged isLocal via the local/
@@ -293,7 +315,7 @@ function matchesCategory(text, category) {
 // require an AFFIRMATIVE location match (looksLocal) — no location detail
 // at all does NOT qualify, matching the LLM prompt's strict default here
 // (the opposite of restaurant-deals.js's forgiving default).
-function regexClassify(results, category, location) {
+function regexClassify(results, category, location, radius) {
   const items = [];
   const spendEligible = SPEND_TO_FREE_CATEGORIES.has(category);
   for (const raw of results) {
@@ -344,6 +366,14 @@ function regexClassify(results, category, location) {
       taxNote = `Estimated total with tax stays at or under $${MAX_QUALIFYING_SPEND} — actual local tax rate may vary slightly.`;
     }
 
+    // Giveaway/contest offers need to show where they're claimable — the
+    // person's city/surrounding area within radius for a local one, or an
+    // explicit mail/online note for a national one. See
+    // giveawayLocationLabel's header comment above.
+    const giveawayLocation = requirementType === "giveaway"
+      ? giveawayLocationLabel(combinedText, isLocal, location, radius)
+      : null;
+
     const baseItem = {
       url: raw.url,
       isFree: true,
@@ -353,6 +383,7 @@ function regexClassify(results, category, location) {
       price,
       spendRequired,
       taxNote,
+      giveawayLocation,
       trustedSource: prioritySourceName(raw.url),
       category
     };
@@ -473,7 +504,7 @@ ${snippetText}`;
     } catch (err) {
       throw new Error(`LLM classification failed: ${err.message}`);
     }
-    const parsedLists = chatResults.map(r => parseClassifyResponse(r.text, results, category)).filter(Boolean);
+    const parsedLists = chatResults.map(r => parseClassifyResponse(r.text, results, category, location, radius)).filter(Boolean);
     if (!parsedLists.length) return null;
     if (parsedLists.length === 1) return parsedLists[0]; // only one model actually succeeded — nothing to corroborate against, trust it alone same as non-ensemble mode
     console.log(`[freebies] ensemble: cross-checking ${parsedLists.length} model outputs for ${category}`);
@@ -486,7 +517,7 @@ ${snippetText}`;
   } catch (err) {
     throw new Error(`LLM classification failed: ${err.message}`);
   }
-  return parseClassifyResponse(text, results, category);
+  return parseClassifyResponse(text, results, category, location, radius);
 }
 
 // Parses one model's raw JSON response into the same item shape used
@@ -494,7 +525,7 @@ ${snippetText}`;
 // can run it against several models' responses independently, then compare
 // the results — a parse failure from one model just drops that model's
 // vote rather than failing classification entirely.
-function parseClassifyResponse(text, results, category) {
+function parseClassifyResponse(text, results, category, location, radius) {
   const cleaned = text.replace(/^```json\s*|```$/g, "");
   let parsed;
   try { parsed = JSON.parse(cleaned); } catch { return null; }
@@ -519,6 +550,15 @@ function parseClassifyResponse(text, results, category) {
       let price = null;
       if (o.requirementType === "bogo") price = "BOGO Free";
       else if (minSpend != null) price = `Free w/ $${minSpend.toFixed(2)} purchase`;
+      // Same giveawayLocationLabel helper the regex fallback uses (see its
+      // header comment) — derived from the raw snippet text + the model's
+      // isLocal call rather than a separate LLM-extracted field, so a
+      // giveaway/contest offer always shows where it's claimable: the
+      // person's city/surrounding area within radius, or an explicit
+      // mail/online note for a national one.
+      const giveawayLocation = o.requirementType === "giveaway"
+        ? giveawayLocationLabel(`${raw.content || ""} ${raw.title || ""}`, !!o.isLocal, location, radius)
+        : null;
       items.push({
         id: `${raw.url}#${oi}`,
         title: o.title || raw.title || "Untitled offer",
@@ -536,6 +576,7 @@ function parseClassifyResponse(text, results, category) {
         // confirming note for the client — not a warning path anymore.
         taxNote: minSpend == null ? null
           : `Estimated total with tax stays at or under $${MAX_QUALIFYING_SPEND} — actual local tax rate may vary slightly.`,
+        giveawayLocation,
         trustedSource: prioritySourceName(raw.url),
         category
       });
@@ -666,7 +707,7 @@ export async function onRequestPost({ request, env }) {
       // fall through to regex below
     }
   }
-  if (!classified) classified = regexClassify(results, category, location);
+  if (!classified) classified = regexClassify(results, category, location, radius);
 
   let finalResults = dedupeItems(classified);
 
