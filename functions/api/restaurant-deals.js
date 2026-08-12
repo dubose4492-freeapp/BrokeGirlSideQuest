@@ -531,9 +531,17 @@ function parseClassifyResponse(text, results) {
     const offers = Array.isArray(entry.offers) ? entry.offers : [];
     offers.forEach((o, oi) => {
       if (!o || !o.qualifies) return;
+      const minPurchase = o.requirementType === "min_purchase" && o.minPurchase != null ? Number(o.minPurchase) : null;
+      // Hard gate: the prompt tells the model to only mark qualifies:true
+      // when the purchase clears MAX_QUALIFYING_PURCHASE WITH tax, but
+      // nothing here actually re-checked that — a mis-classified high
+      // minimum purchase (e.g. "spend $150, get a free item") could reach
+      // the results with nothing stopping it. Same fix as freebies.js's
+      // copy of this function.
+      if (minPurchase != null && !withinTaxAdjustedCap(minPurchase)) return;
       let price = null;
       if (o.requirementType === "bogo") price = "BOGO Free";
-      else if (o.requirementType === "min_purchase" && o.minPurchase != null) price = `Free w/ $${Number(o.minPurchase).toFixed(2)} purchase`;
+      else if (minPurchase != null) price = `Free w/ $${minPurchase.toFixed(2)} purchase`;
       const { store, claimUrl, blogUrl } = resolveStoreAndClaim(raw, o.restaurantName);
       items.push({
         id: `${raw.url}#${oi}`,

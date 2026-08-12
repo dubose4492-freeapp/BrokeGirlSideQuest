@@ -509,6 +509,13 @@ function parseClassifyResponse(text, results, category) {
       if (!o || !o.qualifies) return;
       const orgName = o.orgName || raw.title || hostname(raw.url);
       const minSpend = o.requirementType === "min_purchase" && o.minSpend != null ? Number(o.minSpend) : null;
+      // Hard gate, not just a note: the prompt already tells the model to
+      // only mark qualifies:true when the spend clears $MAX_QUALIFYING_SPEND
+      // WITH tax — but this used to just attach a "may exceed" warning and
+      // still include the item when the model didn't follow that (e.g. a
+      // $150 minimum spend slipping through as "free item"). Drop it here
+      // instead of trusting the model's qualifies flag on its own.
+      if (minSpend != null && !withinTaxAdjustedCap(minSpend)) return;
       let price = null;
       if (o.requirementType === "bogo") price = "BOGO Free";
       else if (minSpend != null) price = `Free w/ $${minSpend.toFixed(2)} purchase`;
@@ -524,15 +531,11 @@ function parseClassifyResponse(text, results, category) {
         expires: o.expires || null,
         price,
         spendRequired: minSpend,
-        // The prompt already instructs the model to only mark qualifies:true
-        // when the spend clears $MAX_QUALIFYING_SPEND WITH estimated tax
-        // included — this is a confirming note in the normal case, and a
-        // safety-net warning (rather than silently trusting the model) if
-        // a spend amount slipped through that doesn't actually clear the
-        // tax-adjusted cap on a second check here.
-        taxNote: minSpend == null ? null : (withinTaxAdjustedCap(minSpend)
-          ? `Estimated total with tax stays at or under $${MAX_QUALIFYING_SPEND} — actual local tax rate may vary slightly.`
-          : `May exceed $${MAX_QUALIFYING_SPEND} once tax is added — double-check before you check out.`),
+        // Anything with a minSpend that reaches this point already passed
+        // the withinTaxAdjustedCap gate above, so this is just a
+        // confirming note for the client — not a warning path anymore.
+        taxNote: minSpend == null ? null
+          : `Estimated total with tax stays at or under $${MAX_QUALIFYING_SPEND} — actual local tax rate may vary slightly.`,
         trustedSource: prioritySourceName(raw.url),
         category
       });
