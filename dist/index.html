@@ -1400,7 +1400,21 @@ function renderList(key) {
   } else {
     body = filtered.map(itemCard).join("");
   }
-  return filterBar + providerNote + `<div class="grid">${body}</div>`;
+
+  // Once the first card lands, `filtered.length > 0` above stops showing
+  // the "Scanning..." empty-state entirely — without this, a scan that's
+  // still fetching the remaining items would look like it silently
+  // finished after just one or two cards showed up. This banner keeps the
+  // "still working, X of Y, M:SS left" signal visible above the grid for
+  // as long as the scan is actually still running.
+  let scanningBanner = "";
+  if (state.scanning && state.scanningKey === key && filtered.length > 0) {
+    const progressText = key === "grocery" && state.groceryProgress.total > 0
+      ? `${Math.min(state.groceryProgress.done + 1, state.groceryProgress.total)} of ${state.groceryProgress.total} checked`
+      : `Scanning ${cat.label.toLowerCase()}`;
+    scanningBanner = `<div class="empty-state" style="padding:10px;font-size:0.9em;opacity:0.85">${progressText}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span>${countdownHtml()}</div>`;
+  }
+  return filterBar + providerNote + scanningBanner + `<div class="grid">${body}</div>`;
 }
 
 // Human-readable label + confidence styling for whichever search provider
@@ -2582,23 +2596,27 @@ async function searchGroceryCategory(signal) {
   // renderList empty-state) actually moves as results come in.
   state.groceryProgress = { done: 0, total: GROCERY_ITEMS.length + 1 };
 
-  // Gas fires concurrently with the item loop below (so its latency
-  // overlaps the loop instead of stacking in front of it), but this
-  // function does NOT return until BOTH are done, and gas is folded into
-  // the same `items` array that gets returned. This used to background
-  // gas entirely (fire it, never await it, let it patch itself into
-  // state.results.grocery whenever it happened to resolve) — that made
-  // the gas card pop in early, then get wiped out the moment the item
-  // loop finished, because the loop's return value (a *different* array)
-  // overwrote whatever gas had patched into state.results.grocery. Gas
-  // and groceries need to land in the exact same array so the caller's
-  // one assignment — state.results.grocery = await searchGroceryCategory(...)
-  // — carries both, and the whole tab updates in one single render, all
-  // together, not gas-then-groceries or groceries-then-gas.
+  // Both gas and every grocery item write straight into this SAME live
+  // array (the caller — scanSingleCategory/runFullScan — already reset
+  // state.results.grocery to [] right before calling this) and render()
+  // after every single one, instead of the old approach of building a
+  // local array and only handing it to the caller once everything was
+  // done. That old approach meant gas and groceries ran concurrently
+  // under the hood but the UI still couldn't show ANY of the 11 grocery
+  // items — even ones that finished in the first few seconds — until gas
+  // *also* finished, because nothing was written to state.results.grocery
+  // until the very end. A slow gas lookup (or vice versa) made already-
+  // finished results invisible, which is exactly what read as "still
+  // hanging" even after the per-item concurrency fix. Mutating the same
+  // array in place means whichever finishes first — a grocery item, or
+  // gas — shows up immediately; nothing has to wait on anything else.
+  const results = state.results.grocery;
+
   const gasPromise = state.stopRequested
     ? null
     : searchGasItem(signal).then(item => {
         state.groceryProgress.done++;
+        if (item) results.unshift(item); // gas always leads the grid — see the ribbon/badge styling in itemCard()
         render();
         return item;
       }).catch(err => {
@@ -2618,7 +2636,7 @@ async function searchGroceryCategory(signal) {
   // "results within 5 minutes" instead of "however long the slowest
   // search tier feels like taking."
   const GROCERY_CONCURRENCY = 4;
-  const itemResults = await mapWithConcurrency(GROCERY_ITEMS, GROCERY_CONCURRENCY, async (itemName) => {
+  await mapWithConcurrency(GROCERY_ITEMS, GROCERY_CONCURRENCY, async (itemName) => {
     if (state.stopRequested || signal.aborted) return undefined;
     let item;
     try {
@@ -2628,17 +2646,14 @@ async function searchGroceryCategory(signal) {
       item = undefined;
     } finally {
       state.groceryProgress.done++;
-      render(); // live-updates the "Scanning X of Y" counter after every item, success or failure
+      if (item) results.push(item); // shows up the instant it resolves — doesn't wait on the other items or on gas
+      render();
     }
     return item;
   });
-  const items = itemResults.filter(Boolean);
 
-  if (gasPromise) {
-    const gasItem = await gasPromise;
-    if (gasItem) items.unshift(gasItem);
-  }
-  return items;
+  if (gasPromise) await gasPromise; // scan isn't "done" until gas settles too, even though it already rendered itself in above
+  return results;
 }
 
 // Best-effort client-side safety net: if a returned item's "expires" text
