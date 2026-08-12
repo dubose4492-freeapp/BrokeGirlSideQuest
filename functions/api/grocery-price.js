@@ -27,6 +27,12 @@ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfi
 // Per-IP rate limiting — see functions/_shared/rate-limit.js for why and
 // how generous the limits are. Fails open if RATE_LIMIT_KV isn't bound.
 import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+// Wraps every Kroger call below in an 8s timeout — see that file for why:
+// none of these three calls (auth, store lookup, product search) had ANY
+// timeout before, so an unresponsive Kroger endpoint could hang an entire
+// item's lookup (and, since the grocery loop runs items sequentially, the
+// whole scan) for as long as Cloudflare's own function limit allowed.
+import { fetchWithTimeout } from "../_shared/fetch-timeout.js";
 let cachedToken = null;
 let cachedTokenExpiry = 0;
 const locationCache = new Map(); // "zip:radius" -> locationId
@@ -52,7 +58,7 @@ const DOMAIN_TO_CHAIN = Object.fromEntries(Object.entries(GROCERY_CHAIN_DOMAINS)
 async function getToken(env) {
   if (cachedToken && Date.now() < cachedTokenExpiry) return cachedToken;
   const creds = btoa(`${env.KROGER_CLIENT_ID}:${env.KROGER_CLIENT_SECRET}`);
-  const res = await fetch("https://api.kroger.com/v1/connect/oauth2/token", {
+  const res = await fetchWithTimeout("https://api.kroger.com/v1/connect/oauth2/token", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -72,7 +78,7 @@ async function getLocationId(env, zip, radius) {
   if (locationCache.has(cacheKey)) return locationCache.get(cacheKey);
   const token = await getToken(env);
   const url = `https://api.kroger.com/v1/locations?filter.zipCode.near=${encodeURIComponent(zip)}&filter.radiusInMiles=${radius}&filter.limit=1`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`Kroger store lookup failed (${res.status}).`);
   const data = await res.json();
   const loc = (data.data || [])[0];
@@ -88,7 +94,7 @@ async function getKrogerPrice(env, item, zip, radius) {
   const token = await getToken(env);
   const locationId = await getLocationId(env, zip, radius);
   const url = `https://api.kroger.com/v1/products?filter.term=${encodeURIComponent(item)}&filter.locationId=${locationId}&filter.limit=5`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`Kroger product search failed (${res.status}) for ${item}.`);
   const data = await res.json();
 
