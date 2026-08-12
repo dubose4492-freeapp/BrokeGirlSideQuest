@@ -870,6 +870,14 @@ const CATEGORIES = {
     `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: null, query: () =>
     `free samples and free items by mail no purchase necessary` },
+  // Static content tab — no search/API call of its own. Instead of
+  // fetching anything new, renderWallet() builds a "get to Friday" plan
+  // out of whatever's already sitting in state.results from prior scans
+  // (real grocery prices, real free/no-purchase finds) — never invents
+  // deals or prices the app hasn't actually seen. Handled via
+  // renderWallet() in render(), same static-tab pattern as "help" above;
+  // also skipped by runFullScan()/computeStats()'s category loops.
+  wallet: { label: "My Wallet", icon: "👛", static: true },
   // Static content tab — no search/API call, just evergreen tips.
   // Handled separately in render() via renderTips(), so it's skipped
   // by renderList()/runFullScan()'s category loops (both filter on
@@ -984,6 +992,10 @@ let state = {
   // the old two-box setup so existing users don't lose their saved value.
   zip: lsGet("dff_zip") || lsGet("dff_kroger_zip") || "",
   radius: lsGet("dff_radius") || "100",
+  // My Wallet tab inputs (budget $ / days until next money) — persisted
+  // so the plan is still there next visit, same pattern as zip/radius.
+  walletBudget: lsGet("dff_wallet_budget") || "",
+  walletDays: lsGet("dff_wallet_days") || "",
   results: {},
   filters: {}, // per-category active requirement-type filter
   saved: new Set(JSON.parse(lsGet("dff_saved") || "[]")),
@@ -1050,7 +1062,7 @@ function bumpCharLevel(id) {
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about") state.results[k] = []; });
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet") state.results[k] = []; });
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -1329,7 +1341,7 @@ function providerNoteHtml(key) {
 // this is a gamified estimate, not a receipt), and how many of the 8
 // searchable categories have been scanned at least once this run.
 function computeStats() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
   let totalFound = 0, estValue = 0, scannedCount = 0;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1352,7 +1364,7 @@ function computeStats() {
 // beyond what computeStats already uses elsewhere in the HUD, so the
 // highlighted item's implied value always matches what's shown there.
 function findBestDeal() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
   let best = null, bestValue = -1, bestFresh = false;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1382,7 +1394,7 @@ function renderHud() {
 
 function renderDashboard() {
   const stats = computeStats();
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
   const bestDeal = findBestDeal();
 
   const boardCards = catKeys.map(k => {
@@ -1561,6 +1573,107 @@ function renderHelp() {
       <p class="tip-note">Whatever you're facing, you don't have to carry it alone — reaching out is a strong move, not a last resort.</p>
     </div>
   </div>`;
+}
+
+// Builds a "get to <days> from now" plan purely out of whatever's already
+// sitting in state.results from prior scans — never fetches anything new
+// and never invents a price or deal the app hasn't actually seen. Two
+// halves: (1) real free/no-purchase finds across every non-grocery
+// category, since those stretch a tight budget without touching it at
+// all, and (2) a greedy cheapest-first fit of real Kroger grocery prices
+// against the dollar amount entered, so "these fit your budget" is
+// arithmetic on real numbers, not a guess.
+function buildWalletPlan(budget, days) {
+  const freeCatKeys = Object.keys(CATEGORIES).filter(k =>
+    k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
+    k !== "tube" && k !== "about" && k !== "wallet" && k !== "grocery");
+  const freeFinds = [];
+  freeCatKeys.forEach(k => {
+    (state.results[k] || []).forEach(it => { if (it.isFree || !it.price) freeFinds.push(it); });
+  });
+
+  const priced = (it) => parseFloat(String(it.price || "").replace(/[^0-9.]/g, ""));
+  const groceryItems = [...(state.results.grocery || [])]
+    .filter(it => !isNaN(priced(it)))
+    .sort((a, b) => priced(a) - priced(b));
+
+  let remaining = budget;
+  const fitted = [];
+  groceryItems.forEach(it => {
+    const p = priced(it);
+    if (p <= remaining) { remaining -= p; fitted.push(it); }
+  });
+
+  const anyScanned = Object.keys(state.scannedAt).length > 0;
+  return { perDay: days > 0 ? budget / days : budget, freeFinds, fitted, spent: budget - remaining, remaining, anyScanned };
+}
+
+function submitWalletPlan() {
+  const budgetEl = document.getElementById("walletBudgetInput");
+  const daysEl = document.getElementById("walletDaysInput");
+  state.walletBudget = String(Math.max(0, parseFloat(budgetEl.value) || 0));
+  state.walletDays = String(Math.max(1, parseInt(daysEl.value) || 1));
+  lsSet("dff_wallet_budget", state.walletBudget);
+  lsSet("dff_wallet_days", state.walletDays);
+  render();
+}
+
+function renderWallet() {
+  const budget = parseFloat(state.walletBudget);
+  const days = parseInt(state.walletDays);
+  const hasPlan = !isNaN(budget) && budget >= 0 && !isNaN(days) && days > 0;
+
+  let planHtml = "";
+  if (hasPlan) {
+    const plan = buildWalletPlan(budget, days);
+    if (!plan.anyScanned) {
+      planHtml = `<div class="tip-card">
+        <h3>🧭 Run a quest first</h3>
+        <p>This plan only uses deals you've actually scanned — nothing here gets invented. Head to the <b>Dashboard</b>, tap Grocery plus a couple of freebie categories (Restaurant Deals, Community, By Mail are the fastest), then come back to this tab.</p>
+      </div>`;
+    } else {
+      const freeHtml = plan.freeFinds.length
+        ? `<div class="grid">${plan.freeFinds.slice(0, 6).map(itemCard).join("")}</div>`
+        : `<p class="tip-note">No free/no-purchase finds in your scanned categories yet — try scanning Restaurant Deals, Community, or By Mail.</p>`;
+      const fittedHtml = plan.fitted.length
+        ? `<ul>${plan.fitted.map(it => `<li>${escapeHtml(it.title)} — ${escapeHtml(it.price)}</li>`).join("")}</ul>
+           <p class="tip-note">Spends ~$${plan.spent.toFixed(2)} of your $${budget.toFixed(2)}, leaves ~$${plan.remaining.toFixed(2)}.</p>`
+        : `<p class="tip-note">No grocery prices scanned yet — run the Grocery quest to see what fits your budget.</p>`;
+      const lowBudgetWarning = plan.perDay < 5 ? `<div class="help-banner" style="margin-bottom:16px;">
+          <h2>🆘 That's a tight stretch</h2>
+          <p>$${plan.perDay.toFixed(2)}/day is a real squeeze. This app can help you find free stuff, but it's not a substitute for the safety net that exists for exactly this — check the <b>Emergency Help</b> tab (211, SNAP, food banks) before you white-knuckle it.</p>
+        </div>` : "";
+
+      planHtml = `
+        ${lowBudgetWarning}
+        <div class="quest-complete" style="margin-bottom:16px;">
+          <div class="quest-complete-xp">$${plan.perDay.toFixed(2)}/day</div>
+          <div class="quest-complete-text"><b>$${budget.toFixed(2)} over ${days} day${days === 1 ? "" : "s"}</b><br>That's your daily ceiling — everything below stretches it further.</div>
+        </div>
+        <div class="quest-board-head">🛒 GROCERY STAPLES THAT FIT <span class="dash-line"></span></div>
+        <div class="tip-card" style="margin-bottom:24px;">${fittedHtml}</div>
+        <div class="quest-board-head">🎁 FREE / NO-PURCHASE FINDS <span class="dash-line"></span></div>
+        ${freeHtml}`;
+    }
+  }
+
+  return `
+  <div class="help-banner">
+    <h2>👛 My Wallet</h2>
+    <p>Tell it what you've got and how long it needs to last — it'll build a plan out of deals you've already scanned. Nothing here leaves your browser.</p>
+    <div class="search-bar" style="margin-top:8px;">
+      <div class="search-field">
+        <label for="walletBudgetInput">Budget ($)</label>
+        <input id="walletBudgetInput" type="number" min="0" step="1" placeholder="e.g. 30" value="${escapeHtml(state.walletBudget)}" />
+      </div>
+      <div class="search-field">
+        <label for="walletDaysInput">Days until next money</label>
+        <input id="walletDaysInput" type="number" min="1" step="1" placeholder="e.g. 4" value="${escapeHtml(state.walletDays)}" />
+      </div>
+    </div>
+    <button class="help-hotline-btn" style="margin-top:12px; border:none; cursor:pointer;" onclick="submitWalletPlan()">🎒 Build my plan</button>
+  </div>
+  ${planHtml}`;
 }
 
 function renderTips() {
@@ -1752,12 +1865,13 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
+  else if (state.tab === "wallet") content.innerHTML = renderWallet();
   else if (state.tab === "tips") content.innerHTML = renderTips();
   else if (state.tab === "about") content.innerHTML = renderAbout();
   else if (state.tab === "tube") content.innerHTML = renderTube();
@@ -2133,7 +2247,7 @@ function buildAiPrompt() {
   ];
 
   for (const key of Object.keys(CATEGORIES)) {
-    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about") continue;
+    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "wallet") continue;
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
@@ -2180,7 +2294,7 @@ async function runFullScan() {
   stopBtn.style.display = "flex";
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet");
   for (let i = 0; i < categoryKeys.length; i++) {
     if (state.stopRequested) break;
     const key = categoryKeys[i];
@@ -2245,7 +2359,7 @@ function stopScan() {
 // currentAbortController/state.results slot. Triggered via
 // handleScanClick() — never call this directly for "dashboard" or "tips".
 async function scanSingleCategory(key) {
-  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about") return;
+  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "wallet") return;
 
   state.scanning = true;
   state.scanningKey = key;
