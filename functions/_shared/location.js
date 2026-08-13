@@ -105,4 +105,28 @@ function looksLocal(text, location) {
   return placeTokens.some(tok => tok.length >= 3 && t.includes(tok));
 }
 
-export { looksLikeWrongLocation, looksLocal, parseLocation };
+// ---------- City mention extraction (freebies.js display label) ----------
+// Pulls "City, ST" style mentions out of free text (e.g. a giveaway
+// snippet mentioning "our new store in Portland, TN opens Saturday") for
+// giveawayLocationLabel()'s "Near <city>" display. Best-effort regex, not
+// geocoding, same caveat as the rest of this module — requires a
+// capitalized place name immediately followed by a comma and a real
+// 2-letter state abbreviation, which keeps false positives low but will
+// miss phrasings that don't include the state abbr right next to the city.
+const STATE_ABBR_SET = new Set(Object.values(STATE_ABBR).map(a => a.toUpperCase()));
+function extractCityMentions(text) {
+  const t = text || "";
+  const re = /\b([A-Z][a-zA-Z.]+(?:\s[A-Z][a-zA-Z.]+){0,2}),\s*([A-Z]{2})\b/g;
+  const seen = new Set();
+  const out = [];
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const abbr = m[2].toUpperCase();
+    if (!STATE_ABBR_SET.has(abbr)) continue; // "Thanks, OK" etc. aren't states
+    const label = `${m[1]}, ${abbr}`;
+    if (!seen.has(label)) { seen.add(label); out.push(label); }
+  }
+  return out;
+}
+
+export { looksLikeWrongLocation, looksLocal, parseLocation, extractCityMentions };
