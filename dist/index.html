@@ -2679,13 +2679,12 @@ async function searchGroceryCategory(signal) {
       item = undefined;
     } finally {
       state.groceryProgress.done++;
-      if (item) results.push(item); // shows up the instant it resolves — doesn't wait on the other items or on gas
+      if (item) results.push(item); // shows up the instant it resolves — doesn't wait on the other items
       render();
     }
     return item;
   });
 
-  if (gasPromise) await gasPromise; // scan isn't "done" until gas settles too, even though it already rendered itself in above
   return results;
 }
 
