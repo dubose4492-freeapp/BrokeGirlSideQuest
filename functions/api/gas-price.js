@@ -49,6 +49,29 @@ const DOMAIN_TO_CHAIN = Object.fromEntries(Object.entries(GAS_STATION_DOMAINS).m
 // domainChain as the display store name).
 const AGGREGATOR_CHAINS = new Set(["GasBuddy", "AAA"]);
 
+// A short, hand-picked list of real, editorially-staffed news
+// organizations that regularly publish local/regional gas price coverage
+// (often citing AAA/GasBuddy data themselves) — never personal blogs,
+// forums, or user-generated roundup sites. This is the ONLY thing allowed
+// to stand in for GAS_DOMAIN_LIST when tiers 1+2 find nothing (see tier 3
+// in getWebSearchGasPrice) — still a fixed domain allowlist, never the
+// open web. Results sourced from here are always labeled with
+// `trustedSource` in the response (see trustedNewsSourceName below) so the
+// client shows an honest "via <Outlet>" attribution — see dist/index.html's
+// "⭐ trusted-badge" — instead of implying it's an official station page or
+// a GasBuddy/AAA number.
+const TRUSTED_NEWS_DOMAINS = {
+  "apnews.com": "AP News", "reuters.com": "Reuters", "npr.org": "NPR",
+  "usatoday.com": "USA Today", "cbsnews.com": "CBS News",
+  "nbcnews.com": "NBC News", "abcnews.go.com": "ABC News",
+  "cnbc.com": "CNBC", "forbes.com": "Forbes", "patch.com": "Patch"
+};
+function trustedNewsSourceName(url) {
+  const h = hostname(url);
+  const domain = Object.keys(TRUSTED_NEWS_DOMAINS).find(d => h === d || h.endsWith("." + d));
+  return domain ? TRUSTED_NEWS_DOMAINS[domain] : null;
+}
+
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
 // Tier 1 asks each search engine to restrict itself to GAS_DOMAIN_LIST via
@@ -568,6 +591,30 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     usedEnsemble = best ? tier2Ensemble : false;
   }
 
+  // Tier 3 — small curated trusted-news fallback (see TRUSTED_NEWS_DOMAINS
+  // above). Only reached when tiers 1+2 — both restricted to
+  // GAS_DOMAIN_LIST (chains + GasBuddy/AAA) — found nothing at all, even
+  // with tier 2's loosened location match. Still a fixed domain allowlist,
+  // just a different and much smaller one — never the open web, never a
+  // blog or forum.
+  if (!best) {
+    let newsResults = [], newsProviders = [];
+    try {
+      ({ results: newsResults, providers: newsProviders } = await searchAllSources(env, query, Object.keys(TRUSTED_NEWS_DOMAINS)));
+    } catch (err) {
+      newsResults = [];
+    }
+    // Same server-side enforcement as tiers 1/2 — don't trust the search
+    // engine to have actually honored the domain restriction it was asked
+    // for.
+    newsResults = newsResults.filter(r => trustedNewsSourceName(r.url));
+    newsResults = filterByLocation(newsResults, location, zip, { allowLoose: true, allowFallback: true });
+    const tier3Ensemble = newsResults.length > 0 && multipleLLMsConfigured(env);
+    best = await extractBest(env, newsResults, tier3Ensemble, location);
+    usedProvider = best ? newsProviders.join("+") : null;
+    usedEnsemble = best ? tier3Ensemble : false;
+  }
+
   if (!best) return null;
 
   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
@@ -581,17 +628,17 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     };
   }
 
-  // Price came from GasBuddy/AAA (an aggregator, not a station itself) or
-  // from a subdomain of an official chain site that didn't match
-  // DOMAIN_TO_CHAIN's exact hostname — either way, still one of
-  // GAS_DOMAIN_LIST's official domains, never a blog/forum/news page, since
-  // both tier 1 and tier 2 above are restricted to that same domain list.
-  // Try to resolve an actual station-brand page AND check Foursquare for a
-  // real nearby branch. Fired concurrently (not one-then-the-other) since
-  // neither depends on the other's result — this is the "faster" half of
-  // the ask: adding the Foursquare check doesn't add a third sequential
-  // round trip on top of tier 1/tier 2 search, it rides alongside the
-  // official-page lookup that was already happening here.
+  // Price came from GasBuddy/AAA (an aggregator, not a station itself), a
+  // subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
+  // exact hostname, or tier 3's small trusted-news allowlist — never a
+  // blog/forum, since all three tiers above are restricted to a fixed
+  // domain list. Try to resolve an actual station-brand page AND check
+  // Foursquare for a real nearby branch. Fired concurrently (not
+  // one-then-the-other) since neither depends on the other's result — this
+  // is the "faster" half of the ask: adding the Foursquare check doesn't
+  // add a third sequential round trip on top of the search tiers above, it
+  // rides alongside the official-page lookup that was already happening
+  // here.
   const [productUrl, nearby] = await Promise.all([
     best.chain ? findOfficialStationPage(env, best.chain) : Promise.resolve(null),
     verifyNearbyGasStation(env, best.store, location, radius)
@@ -609,6 +656,12 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     url: productUrl || best.url,
     productUrl,
     blogUrl: best.url,
+    // Non-null only when best.url is one of TRUSTED_NEWS_DOMAINS (tier 3)
+    // — GasBuddy/AAA/chain-subdomain results (tiers 1/2) get null here, so
+    // the client's "⭐ via <Outlet>" badge only ever shows for the actual
+    // news-sourced case, never implies a GasBuddy/AAA number is "from AP
+    // News" or vice versa.
+    trustedSource: trustedNewsSourceName(best.url),
     provider: usedProvider,
     usedEnsemble,
     ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
@@ -652,7 +705,7 @@ export async function onRequestGet({ request, env }) {
     }
   }
 
-  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
+  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, trustedSource: null, provider: null, usedEnsemble: false });
 }
 
 function json(obj, status = 200) {
