@@ -884,6 +884,13 @@ const CATEGORIES = {
   dashboard: { label: "Dashboard" },
   restaurant: { label: "Restaurant Deals", icon: "🍔" },
   grocery: { label: "Grocery", icon: "🛒", timeRange: "week", isPriced: true, groceryItems: GROCERY_ITEMS },
+  // Split out from the Grocery tab (used to be bundled into the same scan
+  // — see searchGroceryCategory()'s old comments) so gas has its own scan
+  // button, its own "last scanned"/timeout cycle, and its own tab on the
+  // nav instead of silently riding along inside an 11-item grocery sweep.
+  // A single lookup, same as restaurant/clothing/etc. — see
+  // searchGasCategory().
+  gas: { label: "Gas", icon: "⛽", timeRange: "day", isPriced: true },
   // Query text kept as plain natural phrasing rather than a heavy OR/quote
   // chain — that style reads well on Tavily's semantic "advanced" search
   // but over-narrows on Serper/DuckDuckGo's more literal keyword matching.
@@ -920,6 +927,7 @@ const CATEGORIES = {
 const QUEST_DESC = {
   restaurant: "Free & BOGO food nearby",
   grocery: "Best price on staples this week",
+  gas: "Cheapest gas near you today",
   clothing: "Freebies & markdowns",
   toys: "Free stuff for the kids",
   accessories: "Freebies for extras & school supplies",
@@ -1062,9 +1070,11 @@ let state = {
   scanning: false,
   scanningKey: null, // set to the category currently being scanned — during a full "Run Quest" sweep too, not just a single-tab scan, so the tab itself can show which one is active
   // Live item-by-item progress for the grocery scan specifically (11
-  // sequential items + gas), so the tab can show "Scanning 4 of 12..."
-  // instead of just three dots for however long the whole thing takes.
-  // Reset to {done:0, total:0} at the start of every grocery scan.
+  // items), so the tab can show "Scanning 4 of 11..." instead of just
+  // three dots for however long the whole thing takes. Gas is its own
+  // single-item tab/scan now (see the "gas" entry in CATEGORIES) and
+  // doesn't use this. Reset to {done:0, total:0} at the start of every
+  // grocery scan.
   groceryProgress: { done: 0, total: 0 },
   // Hard wall-clock budget for a scan (see SCAN_TIMEOUT_MS) — deadline is
   // the timestamp the in-flight scan gets aborted at, so the UI can show a
@@ -1366,13 +1376,14 @@ document.getElementById("content").addEventListener("click", (e) => {
 function renderList(key) {
   const cat = CATEGORIES[key];
   const items = state.results[key] || [];
-  // Grocery is just cheapest-price-nearby, not a requirement-type offer —
-  // the No Purchase Required / Sign-Up / Loyalty / Rebate / Giveaway filter
-  // bar doesn't apply there, so it's skipped for that tab entirely.
-  const activeFilter = key === "grocery" ? "all" : (state.filters[key] || "all");
+  // Grocery/gas are just cheapest-price-nearby, not a requirement-type
+  // offer — the No Purchase Required / Sign-Up / Loyalty / Rebate /
+  // Giveaway filter bar doesn't apply to either, so it's skipped for both.
+  const isPricedTab = key === "grocery" || key === "gas";
+  const activeFilter = isPricedTab ? "all" : (state.filters[key] || "all");
   const filtered = activeFilter === "all" ? items : items.filter(i => i.requirementType === activeFilter);
 
-  const filterBar = key === "grocery" ? "" : `<div class="filter-bar">
+  const filterBar = isPricedTab ? "" : `<div class="filter-bar">
     ${["all", "no_purchase", "signup", "loyalty", "rebate", "giveaway"].map(f => `
       <button class="filter-chip ${activeFilter === f ? "active" : ""}" onclick="setFilter('${key}','${f}')">
         ${f === "all" ? "All" : reqTypeLabel(f)}
@@ -1848,9 +1859,13 @@ function renderBudget() {
 // against the dollar amount entered, so "these fit your budget" is
 // arithmetic on real numbers, not a guess.
 function buildWalletPlan(budget, days) {
+  // Priced tabs (grocery, gas) aren't "free finds" — excluded by checking
+  // CATEGORIES[k].isPriced generically instead of naming "grocery" alone,
+  // so gas (split into its own tab/scan — see the "gas" entry in
+  // CATEGORIES) doesn't leak fuel prices into the free-finds list either.
   const freeCatKeys = Object.keys(CATEGORIES).filter(k =>
     k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
-    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "grocery");
+    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && !CATEGORIES[k].isPriced);
   const freeFinds = [];
   freeCatKeys.forEach(k => {
     (state.results[k] || []).forEach(it => { if (it.isFree || !it.price) freeFinds.push(it); });
@@ -2504,7 +2519,7 @@ async function searchGroceryItem(itemName, signal) {
   const response = await fetch(`/api/grocery-price?${params}`, { signal, cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Grocery lookup failed (${response.status}) for ${itemName}.`);
-  recordGroceryProvider(data.provider, data.usedEnsemble);
+  recordProviderTier("grocery", data.provider, data.usedEnsemble);
   return {
     id: "grocery-" + itemName.replace(/\s+/g, "-").toLowerCase(),
     title: itemName,
@@ -2522,34 +2537,38 @@ async function searchGroceryItem(itemName, signal) {
     category: "grocery"
   };
 }
+
 // Grocery scans 11 items individually (see GROCERY_ITEMS), each with its
 // own /api/grocery-price call that can independently land on a different
 // search tier. Rather than showing 11 separate badges, track the WORST
 // tier seen across the whole scan (tavily best, duckduckgo worst; kroger —
 // no search involved at all — doesn't count toward this) so one badge for
 // the grocery tab still means something: "at least one item had to fall
-// back this far."
+// back this far." Generic on `key` so gas's single-lookup scan can share
+// the same tracking (trivially "worst of one") instead of its own copy.
 const PROVIDER_RANK = { tavily: 0, gemini: 0, serper: 1, exa: 1, duckduckgo: 2 };
-function recordGroceryProvider(provider, usedEnsemble) {
+function recordProviderTier(key, provider, usedEnsemble) {
   if (provider && provider in PROVIDER_RANK) {
-    const currentRank = PROVIDER_RANK[state.providers.grocery] ?? -1;
-    if (PROVIDER_RANK[provider] > currentRank) state.providers.grocery = provider;
+    const currentRank = PROVIDER_RANK[state.providers[key]] ?? -1;
+    if (PROVIDER_RANK[provider] > currentRank) state.providers[key] = provider;
   }
-  if (usedEnsemble) state.ensembleUsed.grocery = true;
+  if (usedEnsemble) state.ensembleUsed[key] = true;
 }
 
 // ---------- Gas pricing — /functions/api/gas-price.js, same zip/radius as
 // the grocery lookups above, but its own endpoint (no Kroger-style official
 // API for fuel, so it's web-search only — see that file for the domain/
-// extraction details). Always fetched first and slotted as the first card
-// in the grocery tab's results, styled distinctly via GAS_ITEM_ID in
-// itemCard() so it reads as "today's gas pick," not just another staple.
+// extraction details) and, since the fix that split it out of the Grocery
+// tab, its own scan/tab entirely — see searchGasCategory() below and the
+// "gas" entry in CATEGORIES. GAS_ITEM_ID/GAS_CAN_ICON styling in itemCard()
+// is kept as-is even though gas is now the only card on its tab, so it
+// still reads as a distinct "today's gas pick" rather than a plain card.
 async function searchGasItem(signal) {
   const params = new URLSearchParams({ zip: state.zip, location: searchLocation(), radius: state.radius });
   const response = await fetch(`/api/gas-price?${params}`, { signal, cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);
-  recordGroceryProvider(data.provider, data.usedEnsemble);
+  recordProviderTier("gas", data.provider, data.usedEnsemble);
   // data.store is only null when the server genuinely found a price but
   // couldn't identify a real station brand behind it (see gas-price.js) —
   // that's different from "no price found," so it gets its own label
@@ -2572,7 +2591,7 @@ async function searchGasItem(signal) {
     isFree: false,
     requirementType: "unknown",
     expires: null,
-    category: "grocery",
+    category: "gas",
     // Passed through as-is from gas-price.js so itemCard() can render an
     // honest caveat instead of presenting every price as an equally
     // confirmed, verified local number:
@@ -2587,44 +2606,39 @@ async function searchGasItem(signal) {
   };
 }
 
+// Its own tab now (see the "gas" entry in CATEGORIES) — a single lookup,
+// same shape as searchRestaurantCategory/searchFreebiesCategory, instead
+// of riding along inside the grocery scan. Splitting it out means: its own
+// scan button and "last scanned"/timeout cycle, and a slow/failed gas
+// lookup can no longer stall or blank out the 11 grocery-staple cards (and
+// vice versa) the way sharing one scan used to.
+async function searchGasCategory(signal) {
+  delete state.providers.gas; // reset the tier tracker for this fresh scan
+  state.ensembleUsed.gas = false;
+  try {
+    const item = await searchGasItem(signal);
+    return item ? [item] : [];
+  } catch (err) {
+    if (err.name !== "AbortError") recordFailure("gas", err.message);
+    return [];
+  }
+}
+
 async function searchGroceryCategory(signal) {
   delete state.providers.grocery; // reset the worst-tier tracker for this fresh scan
   state.ensembleUsed.grocery = false;
-  // +1 for the gas lookup, which runs concurrently with the item loop
-  // below and ticks the counter too — see the two spots that bump
-  // .done and call render() so the "Scanning X of Y" text (in the
-  // renderList empty-state) actually moves as results come in.
-  state.groceryProgress = { done: 0, total: GROCERY_ITEMS.length + 1 };
+  state.groceryProgress = { done: 0, total: GROCERY_ITEMS.length };
 
-  // Both gas and every grocery item write straight into this SAME live
-  // array (the caller — scanSingleCategory/runFullScan — already reset
+  // Every grocery item writes straight into this SAME live array (the
+  // caller — scanSingleCategory/runFullScan — already reset
   // state.results.grocery to [] right before calling this) and render()
-  // after every single one, instead of the old approach of building a
-  // local array and only handing it to the caller once everything was
-  // done. That old approach meant gas and groceries ran concurrently
-  // under the hood but the UI still couldn't show ANY of the 11 grocery
-  // items — even ones that finished in the first few seconds — until gas
-  // *also* finished, because nothing was written to state.results.grocery
-  // until the very end. A slow gas lookup (or vice versa) made already-
-  // finished results invisible, which is exactly what read as "still
-  // hanging" even after the per-item concurrency fix. Mutating the same
-  // array in place means whichever finishes first — a grocery item, or
-  // gas — shows up immediately; nothing has to wait on anything else.
+  // after every single one, instead of building a local array and only
+  // handing it to the caller once everything was done — so whichever item
+  // finishes first shows up immediately, nothing has to wait on anything
+  // else. (Gas used to also write into this same array — see the "gas"
+  // entry in CATEGORIES and searchGasCategory() above for why it's now a
+  // fully separate scan instead.)
   const results = state.results.grocery;
-
-  const gasPromise = state.stopRequested
-    ? null
-    : searchGasItem(signal).then(item => {
-        state.groceryProgress.done++;
-        if (item) results.unshift(item); // gas always leads the grid — see the ribbon/badge styling in itemCard()
-        render();
-        return item;
-      }).catch(err => {
-        state.groceryProgress.done++;
-        render();
-        if (err.name !== "AbortError") recordFailure("grocery", err.message);
-        return null;
-      });
 
   // Used to run one item after another — 11 sequential round trips, each
   // its own Kroger + multi-tier web search + LLM extraction, was the main
@@ -2805,7 +2819,9 @@ function buildAiPrompt() {
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
-      lines.push(`Cheapest regular unleaded gas price per gallon near ${loc} within ${state.radius} miles, plus the current best price near ${loc} for: ${GROCERY_ITEMS.join(", ")}.`);
+      lines.push(`Current best price near ${loc} for: ${GROCERY_ITEMS.join(", ")}.`);
+    } else if (key === "gas") {
+      lines.push(`Cheapest regular unleaded gas price per gallon near ${loc} within ${state.radius} miles.`);
     } else if (key === "restaurant") {
       lines.push(`Free food / BOGO ("buy one get one") deals at restaurants and fast food near ${loc} within ${state.radius} miles this week. Also include anything that's free or added at no extra cost with a purchase of $10 or less (e.g. "free dessert with any $10 order") — a plain percentage discount or a regular priced combo does not count. The $${MAX_QUALIFYING_SPEND} cap is a TOTAL, TAX-INCLUDED figure — since a stated purchase amount is usually pre-tax, treat roughly $${PRE_TAX_CEILING} (i.e. $${MAX_QUALIFYING_SPEND} minus a typical ~${Math.round(ESTIMATED_SALES_TAX_RATE * 100)}% sales-tax buffer) as the real usable pre-tax ceiling, not $${MAX_QUALIFYING_SPEND} itself.`);
     } else if (key === "community") {
@@ -2867,6 +2883,7 @@ async function runFullScan() {
     render(); // reflect the clear + scanningKey immediately, instead of leaving the previous scan's results on screen for this category's whole fetch
     try {
       state.results[key] = key === "grocery" ? await searchGroceryCategory(currentAbortController.signal)
+        : key === "gas" ? await searchGasCategory(currentAbortController.signal)
         : key === "restaurant" ? await searchRestaurantCategory(currentAbortController.signal)
         : await searchFreebiesCategory(key, currentAbortController.signal);
       state.scannedAt[key] = Date.now();
@@ -2958,6 +2975,7 @@ async function scanSingleCategory(key) {
 
   try {
     state.results[key] = key === "grocery" ? await searchGroceryCategory(currentAbortController.signal)
+      : key === "gas" ? await searchGasCategory(currentAbortController.signal)
       : key === "restaurant" ? await searchRestaurantCategory(currentAbortController.signal)
       : await searchFreebiesCategory(key, currentAbortController.signal);
     state.scannedAt[key] = Date.now();
