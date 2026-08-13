@@ -4,12 +4,15 @@
 // productUrl, blogUrl, provider, usedEnsemble } — but for regular unleaded
 // gas instead of a grocery item. There's no Kroger-style official-API side
 // here (no free, keyless fuel-price API exists the way Kroger's product API
-// does for groceries), so this is just the web-search tier: known gas
-// station chain sites + GasBuddy/AAA (both are trusted, frequently-updated
-// price aggregators, not stores themselves — kept in the domain list so the
-// search can find a current, sourced number even when no chain site itself
-// has posted today's price) first, then falls back to the open web exactly
-// like grocery-price.js's tier 2.
+// does for groceries), so this is web search — but UNLIKE grocery-price.js's
+// tier 2, it never opens up to the general web. Every pass (see
+// getWebSearchGasPrice below) stays restricted to GAS_DOMAIN_LIST: known gas
+// station chain sites plus GasBuddy/AAA, the same two trusted, frequently-
+// updated price-aggregator sites GasBuddy's own app effectively rolls up —
+// never a blog, forum, or news article. If nothing turns up on any of those
+// domains, the only fallback is OilPriceAPI's state-level EIA-sourced
+// average (still an official, sourced number, just not a specific station —
+// see getOilPriceApiPrice below), not the open web.
 //
 // Client never sees any search/LLM keys — same trust boundary as every
 // other endpoint here.
@@ -538,18 +541,26 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   let usedProvider = best ? officialProviders.join("+") : null;
   let usedEnsemble = best ? tier1Ensemble : false;
 
-  // Tier 2 — open web fallback, same reasoning as grocery-price.js: tier 1
-  // domains often render prices via JS, so a domain-restricted crawl can
-  // return real pages with zero extractable price text. Only fired at all
-  // when tier 1 came up empty — see the note above for why this isn't
-  // fired eagerly alongside tier 1 anymore.
+  // Tier 2 — same official domain list as tier 1 (GAS_DOMAIN_LIST), never
+  // the open web. Only fired when tier 1's STRICT location match came up
+  // empty, and only loosens the LOCATION matching (single-token, then
+  // unverified-but-flagged) — it never loosens which domains are eligible.
+  // Reason this pass exists at all: tier 1's strict city+state match can
+  // legitimately come up empty even on a real official-domain result (a
+  // GasBuddy/AAA page keyed to a ZIP that never spells out the city name
+  // verbatim), so it's worth re-checking the SAME restricted result set
+  // with a looser location bar before giving up on web search entirely.
   if (!best) {
     let openResults = [], openProviders = [];
     try {
-      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, null));
+      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
     } catch (err) {
       openResults = [];
     }
+    // Same server-side domain enforcement as tier 1 — never trust that the
+    // search engine actually honored the domain restriction it was asked
+    // for (see restrictToOfficialDomains's header comment).
+    openResults = restrictToOfficialDomains(openResults);
     openResults = filterByLocation(openResults, location, zip, { allowLoose: true, allowFallback: true });
     const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, openResults, tier2Ensemble, location);
@@ -570,8 +581,12 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     };
   }
 
-  // Price came from an aggregator (GasBuddy/AAA) or a third-party page —
-  // try to resolve an actual station-brand page AND check Foursquare for a
+  // Price came from GasBuddy/AAA (an aggregator, not a station itself) or
+  // from a subdomain of an official chain site that didn't match
+  // DOMAIN_TO_CHAIN's exact hostname — either way, still one of
+  // GAS_DOMAIN_LIST's official domains, never a blog/forum/news page, since
+  // both tier 1 and tier 2 above are restricted to that same domain list.
+  // Try to resolve an actual station-brand page AND check Foursquare for a
   // real nearby branch. Fired concurrently (not one-then-the-other) since
   // neither depends on the other's result — this is the "faster" half of
   // the ask: adding the Foursquare check doesn't add a third sequential
