@@ -225,10 +225,43 @@ function extractMentionedDate(text) {
 function getEffectiveDate(r) {
   return r.publishedDate || extractMentionedDate(r.content) || extractMentionedDate(r.title);
 }
+
+// Same fix as restaurant-deals.js's mentionsPastYearDeal (ported over after
+// a clothing-giveaway listing that had actually ended the prior year still
+// showed up here) — catches a snippet that explicitly names a year earlier
+// than the current one, even when it's nowhere near the narrower "expires/
+// through/until/ends" phrase extractExpiry looks for, and even when there's
+// no publish-date metadata or "posted/updated/as of" cue for
+// getEffectiveDate/isStale to catch (a roundup post with neither signal was
+// slipping straight through both of those checks). Two patterns:
+//   - a full date-like mention naming a year ("December 2025",
+//     "12/31/2025", "Dec 5, 2025")
+//   - a bare year sitting right next to giveaway/date vocabulary ("valid
+//     through 2025", "this 2025 giveaway")
+function mentionsPastYearDeal(text) {
+  const currentYear = new Date().getFullYear();
+  const t = text || "";
+  const dateLike = t.match(/\b(?:[A-Za-z]{3,9}\.?\s+\d{1,2},?\s*|\d{1,2}\/\d{1,2}\/|[A-Za-z]{3,9}\.?\s+)(20\d{2})\b/g) || [];
+  const contextual = t.match(/\b(?:expires?|valid|through|until|ends?|giveaway|promo|deal|offer|posted|updated|published)\b[^.]{0,20}\b(20\d{2})\b/gi) || [];
+  return [...dateLike, ...contextual].some(m => {
+    const y = m.match(/20\d{2}/);
+    return y && parseInt(y[0], 10) < currentYear;
+  });
+}
+
+// The mentionsPastYearDeal check runs unconditionally, even when maxDays is
+// null (community/mail — see CATEGORIES timeRange in dist/index.html) —
+// those two categories don't get the maxDays-based staleness check at all
+// (a food pantry's listing IS the current resource by definition, same
+// idea as restaurant-deals.js's chain-domain exemption), but a specific
+// giveaway/event snippet that itself names a year that's already passed is
+// stale regardless of which category it's in.
 function filterAndSortByFreshness(results, maxDays) {
-  if (maxDays == null) return results;
-  return results
+  const current = results
     .map(r => ({ ...r, effectiveDate: getEffectiveDate(r) }))
+    .filter(r => !mentionsPastYearDeal((r.content || "") + " " + (r.title || "")));
+  if (maxDays == null) return current;
+  return current
     .filter(r => !isStale(r.effectiveDate, maxDays))
     .sort((a, b) => {
       if (!a.effectiveDate) return 1;
