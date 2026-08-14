@@ -307,6 +307,76 @@ function findChainName(text) {
   return null;
 }
 
+// ---------- Tier 3: real chain price close to the state average ----------
+// Only reached when tiers 0-2 AND their location matching (strict, loose,
+// and unfiltered) all came up completely empty, AND OilPriceAPI's
+// state-average fallback succeeded. Rather than showing a bare, anonymous
+// "TN state average" card, make one more domain-restricted (still only
+// GAS_STATION_DOMAINS + GasBuddy, same as every other tier — never the
+// open web) search with NO location-text requirement at all, and instead
+// treat "the price is close to the known state average" as the
+// corroborating signal that a candidate result is real and plausible for
+// the area. This can surface a genuine, named chain (e.g. "Sunoco —
+// $3.11") even when nothing on the page ever spelled out the city/state,
+// which location-text matching alone could never confirm. Every card this
+// produces is still tagged `locationUnverified: true` — price-closeness
+// to a state average is a real signal, but weaker than a page actually
+// naming the location, so the client should keep showing it as unconfirmed.
+const STATE_AVG_MAX_DELTA = 0.35; // dollars/gallon — how far a candidate can drift from the average and still count as "close"
+function extractClosestPriceRegex(results, targetPrice) {
+  let best = null, bestDelta = Infinity;
+  for (const r of results) {
+    const combinedText = (r.content || "") + " " + (r.title || "");
+    const matches = combinedText.match(/\$\s?\d\.\d{2,3}/g) || [];
+    for (const m of matches) {
+      const val = parseFloat(m.replace(/[$\s]/g, ""));
+      if (isNaN(val) || val < 1.5 || val > 8) continue;
+      const delta = Math.abs(val - targetPrice);
+      if (delta > STATE_AVG_MAX_DELTA) continue; // too far from the average to trust as "this area"
+      if (delta < bestDelta) {
+        const domainChain = DOMAIN_TO_CHAIN[hostname(r.url)];
+        const chain = (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) ? domainChain : findChainName(combinedText);
+        bestDelta = delta;
+        best = { price: val, store: chain || null, chain, url: r.url, sourceHost: hostname(r.url) };
+      }
+    }
+  }
+  return best;
+}
+
+async function findChainPriceNearStateAverage(env, location, zip, targetPrice) {
+  const query = `regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}`;
+  let results = [];
+  try {
+    ({ results } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+  } catch (err) {
+    return null;
+  }
+  results = restrictToOfficialDomains(results); // still real chain/GasBuddy domains only — never opens to the open web
+  const best = extractClosestPriceRegex(results, targetPrice);
+  console.error(`gas-price tier3 (state-avg match): candidates=${results.length} target=${targetPrice} -> ${best ? `hit ${best.store || "unconfirmed"} @ ${best.price}` : "empty"}`);
+  if (!best) return null;
+
+  const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
+  const nearby = (domainChain && !AGGREGATOR_CHAINS.has(domainChain))
+    ? await verifyNearbyGasStation(env, domainChain, location, 100, null, null)
+    : null;
+  return {
+    price: best.price,
+    store: best.store,
+    unconfirmedStore: !best.store,
+    sourceHost: best.sourceHost,
+    locationUnverified: true, // price-closeness, not a real location-text match — always flagged
+    matchedToStateAverage: true,
+    url: best.url,
+    productUrl: best.url,
+    blogUrl: best.url,
+    provider: "state-average-match",
+    usedEnsemble: false,
+    ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
+  };
+}
+
 async function extractLowestPriceLLM(env, results, { ensemble = false, location = null } = {}) {
   const snippetText = results
     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
@@ -999,7 +1069,23 @@ export async function onRequestGet({ request, env }) {
   // in when web search found nothing at all.
   if (!result) {
     try {
-      result = await getOilPriceApiPrice(env, location, zip);
+      const stateAvg = await getOilPriceApiPrice(env, location, zip);
+      if (stateAvg) {
+        // Before settling for the anonymous state-average card, make one
+        // more attempt at a real, named chain — using the average price
+        // itself as the plausibility check instead of location text (see
+        // findChainPriceNearStateAverage's header comment). Never competes
+        // with a real tiers-0-2 hit; only runs because that already failed.
+        let chainMatch = null;
+        try {
+          chainMatch = await findChainPriceNearStateAverage(env, location, zip, stateAvg.price);
+        } catch (err) {
+          console.error("state-average chain match failed:", err.message);
+          // fall through to the plain state-average card below — never lose
+          // a working fallback just because this extra enrichment step failed
+        }
+        result = chainMatch || stateAvg;
+      }
     } catch (err) {
       console.error("OilPriceAPI fallback failed:", err.message);
       // fall through to the "nothing found" response below — never surface
