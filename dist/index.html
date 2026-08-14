@@ -2651,10 +2651,6 @@ async function searchGasItem(signal) {
     unconfirmedStore: data.unconfirmedStore || false,
     locationUnverified: data.locationUnverified || false,
     sourceHost: data.sourceHost || null,
-    // Only set when the price came from gas-price.js's tier 3 trusted-news
-    // allowlist (AP News, Reuters, etc.) — never for a GasBuddy/AAA/chain
-    // result — so itemCard()'s "⭐ trusted-badge" only shows for that case.
-    trustedSource: data.trustedSource || null,
     verifiedNearby: data.verifiedNearby || false,
     address: data.address || null,
     mapsUrl: data.mapsUrl || null

@@ -131,6 +131,21 @@ function restrictToOfficialDomains(results) {
   });
 }
 
+// Tier 1 is already domain-restricted to real chain sites (see above), so
+// this only matters for tier 2's open web pass below — Reddit/subreddit
+// threads are crowd-sourced forum posts (people guessing/arguing about a
+// price in a comment thread), not an official retailer or product page,
+// same category of source this app already keeps out of every domain-
+// restricted tier elsewhere. Covers the main domain, any subdomain
+// (old.reddit.com, np.reddit.com, i.reddit.com, etc.), and the redd.it
+// short-link domain Reddit itself uses for permalinks.
+function excludeRedditResults(results) {
+  return results.filter(r => {
+    const host = hostname(r.url);
+    return host !== "reddit.com" && !host.endsWith(".reddit.com") && host !== "redd.it" && !host.endsWith(".redd.it");
+  });
+}
+
 function extractLowestPriceRegex(results) {
   let best = null;
   for (const r of results) {
@@ -416,6 +431,7 @@ async function getWebSearchPrice(env, item, location, radius) {
     } catch (err) {
       openResults = [];
     }
+    openResults = excludeRedditResults(openResults);
     const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, item, openResults, tier2Ensemble);
     usedProvider = best ? openProviders.join("+") : null;

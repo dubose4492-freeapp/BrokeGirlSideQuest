@@ -4,15 +4,19 @@
 // productUrl, blogUrl, provider, usedEnsemble } — but for regular unleaded
 // gas instead of a grocery item. There's no Kroger-style official-API side
 // here (no free, keyless fuel-price API exists the way Kroger's product API
-// does for groceries), so this is web search — but UNLIKE grocery-price.js's
-// tier 2, it never opens up to the general web. Every pass (see
-// getWebSearchGasPrice below) stays restricted to GAS_DOMAIN_LIST: known gas
-// station chain sites plus GasBuddy/AAA, the same two trusted, frequently-
-// updated price-aggregator sites GasBuddy's own app effectively rolls up —
-// never a blog, forum, or news article. If nothing turns up on any of those
-// domains, the only fallback is OilPriceAPI's state-level EIA-sourced
-// average (still an official, sourced number, just not a specific station —
-// see getOilPriceApiPrice below), not the open web.
+// does for groceries), so this is web search — but it NEVER opens up to the
+// general web at any point. Every pass (see getWebSearchGasPrice below)
+// stays restricted to gas-specific sources: known gas station chain sites
+// (see GAS_STATION_DOMAINS — a broad, ~45-brand list, not just a handful)
+// plus GasBuddy/AAA, the two trusted, frequently-updated price-aggregator
+// sites GasBuddy's own app effectively rolls up. No news sites, no blogs,
+// no forums, ever — that fallback existed briefly and was deliberately
+// removed; gas price data is either a real gas-related source or the
+// OilPriceAPI state-average last resort, nothing in between. Tier 0 (see
+// below) additionally cross-checks Foursquare for which of those brands
+// are ACTUALLY near the user before searching, so a found price is tied to
+// a station Foursquare confirms is really nearby, not just a same-named
+// chain page somewhere else in the country.
 //
 // Client never sees any search/LLM keys — same trust boundary as every
 // other endpoint here.
@@ -27,17 +31,32 @@ import { fetchWithTimeout } from "../_shared/fetch-timeout.js";
 // restricted to a station's actual site — plus GasBuddy and AAA, which
 // aren't stores but are the two most commonly-cited, frequently-refreshed
 // crowd-sourced price trackers, so including them in the domain-restricted
-// tier 1 pass (instead of only in the open-web tier 2 fallback) gets a
-// sourced, current price far more often than chain sites alone, which
-// rarely publish per-station pricing on their own domains.
+// tier 1 pass (instead of only in an open-web fallback that no longer
+// exists) gets a sourced, current price far more often than chain sites
+// alone, which rarely publish per-station pricing on their own domains.
+// Deliberately broad (~45 brands) rather than just the dozen biggest
+// national names — regional chains (Kwik Trip, Casey's, Sheetz, QuikTrip,
+// Wawa, etc.) are exactly what someone outside a handful of major metro
+// areas is actually going to find nearby, so leaving them out would mean
+// tier 0's "which of these are near the user" cross-check (below) misses
+// real local options.
 const GAS_STATION_DOMAINS = {
   "Shell": "shell.com", "Chevron": "chevron.com", "ExxonMobil": "exxon.com",
-  "BP": "bp.com", "Marathon": "marathon.com", "Circle K": "circlek.com",
-  "Speedway": "speedway.com", "QuikTrip": "quiktrip.com", "RaceTrac": "racetrac.com",
-  "Murphy USA": "murphyusa.com", "Love's": "loves.com", "Pilot Flying J": "pilotflyingj.com",
-  "Wawa": "wawa.com", "Sheetz": "sheetz.com", "Costco Gas": "costco.com",
-  "Sam's Club Gas": "samsclub.com", "Kroger Fuel": "kroger.com", "Casey's": "caseys.com",
-  "Valero": "valero.com", "Sunoco": "sunoco.com", "Citgo": "citgo.com",
+  "Mobil": "mobil.com", "BP": "bp.com", "Marathon": "marathon.com",
+  "Circle K": "circlek.com", "Speedway": "speedway.com", "QuikTrip": "quiktrip.com",
+  "RaceTrac": "racetrac.com", "Murphy USA": "murphyusa.com", "Love's": "loves.com",
+  "Pilot Flying J": "pilotflyingj.com", "Wawa": "wawa.com", "Sheetz": "sheetz.com",
+  "Costco Gas": "costco.com", "Sam's Club Gas": "samsclub.com", "Kroger Fuel": "kroger.com",
+  "Casey's": "caseys.com", "Valero": "valero.com", "Sunoco": "sunoco.com",
+  "Citgo": "citgo.com", "76": "76.com", "ampm": "ampm.com",
+  "Conoco": "conoco.com", "Phillips 66": "phillips66.com", "Texaco": "texaco.com",
+  "Gulf": "gulfoil.com", "Arco": "arco.com", "Cumberland Farms": "cumberlandfarms.com",
+  "Kwik Trip": "kwiktrip.com", "Kum & Go": "kumandgo.com", "Maverik": "maverik.com",
+  "7-Eleven": "7-eleven.com", "Thorntons": "thorntons.com", "TA Travel Centers": "ta-petro.com",
+  "Rutter's": "rutters.com", "Weigel's": "weigels.com", "Meijer Gas": "meijer.com",
+  "Giant Eagle GetGo": "gianteagle.com", "H-E-B Fuel": "heb.com", "Safeway Fuel": "safeway.com",
+  "Albertsons Fuel": "albertsons.com", "Road Ranger": "roadrangerusa.com", "Stripes": "stripesstore.com",
+  "Holiday Stationstores": "holidaystationstores.com", "Sinclair": "sinclairoil.com",
   "GasBuddy": "gasbuddy.com", "AAA": "gasprices.aaa.com"
 };
 const GAS_CHAINS = Object.keys(GAS_STATION_DOMAINS);
@@ -48,29 +67,6 @@ const DOMAIN_TO_CHAIN = Object.fromEntries(Object.entries(GAS_STATION_DOMAINS).m
 // directly (see the two spots below that check this before trusting
 // domainChain as the display store name).
 const AGGREGATOR_CHAINS = new Set(["GasBuddy", "AAA"]);
-
-// A short, hand-picked list of real, editorially-staffed news
-// organizations that regularly publish local/regional gas price coverage
-// (often citing AAA/GasBuddy data themselves) — never personal blogs,
-// forums, or user-generated roundup sites. This is the ONLY thing allowed
-// to stand in for GAS_DOMAIN_LIST when tiers 1+2 find nothing (see tier 3
-// in getWebSearchGasPrice) — still a fixed domain allowlist, never the
-// open web. Results sourced from here are always labeled with
-// `trustedSource` in the response (see trustedNewsSourceName below) so the
-// client shows an honest "via <Outlet>" attribution — see dist/index.html's
-// "⭐ trusted-badge" — instead of implying it's an official station page or
-// a GasBuddy/AAA number.
-const TRUSTED_NEWS_DOMAINS = {
-  "apnews.com": "AP News", "reuters.com": "Reuters", "npr.org": "NPR",
-  "usatoday.com": "USA Today", "cbsnews.com": "CBS News",
-  "nbcnews.com": "NBC News", "abcnews.go.com": "ABC News",
-  "cnbc.com": "CNBC", "forbes.com": "Forbes", "patch.com": "Patch"
-};
-function trustedNewsSourceName(url) {
-  const h = hostname(url);
-  const domain = Object.keys(TRUSTED_NEWS_DOMAINS).find(d => h === d || h.endsWith("." + d));
-  return domain ? TRUSTED_NEWS_DOMAINS[domain] : null;
-}
 
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
@@ -379,13 +375,69 @@ async function findOfficialStationPage(env, chain) {
   }
 }
 
+// ---------- Foursquare Places API: which real brands are nearby ----------
+// Runs BEFORE any price search (see tier 0 in getWebSearchGasPrice) — asks
+// Foursquare which of GAS_STATION_DOMAINS' ~45 brands actually have a
+// location within the user's radius, so the price search can be anchored
+// to real nearby stations by name instead of guessing generically across
+// the whole country. Distinct from verifyNearbyGasStation below (which
+// checks for exactly ONE already-known station name AFTER a price is
+// found) — this returns a shortlist of BRANDS, not addresses, and never
+// blocks the rest of the lookup: no Foursquare key configured, a timeout,
+// or zero matches nearby all just mean tier 0 is skipped and tier 1 (the
+// existing generic domain-list search) runs instead, same as before this
+// existed.
+const NEARBY_STATION_LIMIT = 15;
+async function findNearbyStationBrands(env, location, radius) {
+  if (!env.FOURSQUARE_API_KEY || !location) return [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
+  try {
+    const radiusMeters = Math.min(100000, Math.round(radius * 1609)); // miles -> meters, Foursquare caps around 100km
+    const params = new URLSearchParams({
+      near: location,
+      radius: String(radiusMeters),
+      limit: String(NEARBY_STATION_LIMIT),
+      categories: GAS_STATION_CATEGORY_ID,
+      fields: "name"
+    });
+    const res = await fetch(`https://places-api.foursquare.com/places/search?${params.toString()}`, {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${env.FOURSQUARE_API_KEY}`,
+        "X-Places-Api-Version": "2025-06-17",
+        accept: "application/json"
+      }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const places = (data && Array.isArray(data.results)) ? data.results : [];
+    // Foursquare returns nearest-first, so the first name match per chain
+    // is also the closest branch of that chain — good enough to know "this
+    // brand has a real location nearby," which is all tier 0 needs.
+    const found = new Set();
+    for (const place of places) {
+      const name = (place.name || "").toLowerCase();
+      for (const chain of GAS_CHAINS) {
+        if (AGGREGATOR_CHAINS.has(chain) || found.has(chain)) continue;
+        if (name.includes(chain.toLowerCase())) found.add(chain);
+      }
+    }
+    return [...found];
+  } catch (err) {
+    return []; // best-effort only — never break the rest of the lookup
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
 // Same UNVERIFIED CONTRACT as restaurant-deals.js's verifyNearbyWithFoursquare
 // (see that file's header comment for the full caveat — endpoint/auth header
 // confirmed against one real working example, not Foursquare's own docs
 // directly). Generalized here so it fires on whatever station NAME the
 // price-extraction path actually identified — best.store from extractBest
-// above — whether or not that name matched one of the 22 chains in
+// above — whether or not that name matched one of the named chains in
 // GAS_STATION_DOMAINS. An independent/regional station the LLM correctly
 // read out of a snippet still gets a real address + maps link instead of
 // silently having nothing beyond a blog URL.
@@ -512,18 +564,56 @@ async function getOilPriceApiPrice(env, location) {
 }
 
 async function getWebSearchGasPrice(env, location, zip, radius) {
-  // Kept short and natural rather than stuffed with all 22 chain names —
-  // that bloat didn't buy relevance (tier 1 already restricts the domains
+  // Kept short and natural rather than stuffed with all the chain names —
+  // that bloat didn't buy relevance (tier 1+ already restrict the domains
   // being searched) and it drowned out the location terms that actually
   // matter for a keyword-matching search engine to key in on ${location}.
   // The ZIP is included explicitly since GasBuddy/AAA-style price pages
   // are usually indexed by ZIP, not by city name alone.
   const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
 
-  // Tier 1 — known gas station chains + GasBuddy/AAA only. Runs every
-  // configured engine in the currently-active tier in parallel (see
-  // searchAllSources above) — that parallelism is unaffected by this
-  // revert, only the tier-to-tier sequencing below is.
+  let best = null, usedProvider = null, usedEnsemble = false;
+
+  // Tier 0 — cross-check Foursquare FIRST for which real brands (of the
+  // ~45 in GAS_STATION_DOMAINS) actually have a location within the
+  // user's radius, then search ONLY those specific brands' domains with a
+  // query that names them explicitly. This is the highest-confidence
+  // tier: a price found here is tied to a station Foursquare has already
+  // confirmed is physically near the user, not just a same-named chain's
+  // page somewhere else. Skipped automatically (falls straight to tier 1)
+  // when Foursquare isn't configured or confirms no known chain nearby —
+  // this can never make a lookup worse, only more targeted when it hits.
+  const nearbyChains = await findNearbyStationBrands(env, location, radius);
+  if (nearbyChains.length) {
+    const nearbyDomains = nearbyChains.map(c => GAS_STATION_DOMAINS[c]).concat(["gasbuddy.com", "gasprices.aaa.com"]);
+    const nearbyQuery = `gas price today at ${nearbyChains.join(", ")} near ${location}${zip ? ` (ZIP ${zip})` : ""}`;
+    let nearbyResults = [], nearbyProviders = [];
+    try {
+      ({ results: nearbyResults, providers: nearbyProviders } = await searchAllSources(env, nearbyQuery, nearbyDomains));
+    } catch (err) {
+      nearbyResults = [];
+    }
+    // Same server-side enforcement as every other tier below — don't trust
+    // the search engine to have actually honored the domain restriction.
+    nearbyResults = nearbyResults.filter(r => {
+      const host = hostname(r.url);
+      return nearbyDomains.some(d => host === d || host.endsWith("." + d));
+    });
+    nearbyResults = filterByLocation(nearbyResults, location, zip, { allowLoose: true });
+    const nearbyEnsemble = nearbyResults.length > 0 && multipleLLMsConfigured(env);
+    best = await extractBest(env, nearbyResults, nearbyEnsemble, location);
+    if (best) {
+      usedProvider = nearbyProviders.join("+");
+      usedEnsemble = nearbyEnsemble;
+    }
+  }
+
+  // Tier 1 — full known gas station chains + GasBuddy/AAA list. Only runs
+  // when tier 0 was skipped (no Foursquare key / no known chain confirmed
+  // nearby) or came up empty. Runs every configured engine in the
+  // currently-active tier in parallel (see searchAllSources above) — that
+  // parallelism is unaffected by the note below, only the tier-to-tier
+  // sequencing is.
   //
   // NOTE: an earlier version of this function fired tier 1 and tier 2's
   // raw searches concurrently via Promise.all, on the theory that tier 1
@@ -543,36 +633,39 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   // all (search included, not just its LLM classification step) when
   // tier 1 truly comes up empty — so gas costs at most one extra search
   // pass beyond what grocery/restaurant/freebies already cost per lookup.
-  let officialResults = [], officialProviders = [];
-  try {
-    ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
-  } catch (err) {
-    officialResults = [];
+  if (!best) {
+    let officialResults = [], officialProviders = [];
+    try {
+      ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+    } catch (err) {
+      officialResults = [];
+    }
+    // Server-side enforcement of the domain restriction the engine was
+    // ASKED to apply — see restrictToOfficialDomains's header comment for
+    // why this can't just be trusted to have already happened (DuckDuckGo
+    // in particular).
+    officialResults = restrictToOfficialDomains(officialResults);
+    // Domain-restricted != location-restricted (see filterByLocation above)
+    // — every result has to actually mention the target place before a
+    // price can be extracted from it, or "cheapest near you" can quietly
+    // resolve to "cheapest anywhere in the country."
+    officialResults = filterByLocation(officialResults, location, zip);
+    const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
+    best = await extractBest(env, officialResults, tier1Ensemble, location);
+    usedProvider = best ? officialProviders.join("+") : null;
+    usedEnsemble = best ? tier1Ensemble : false;
   }
-  // Server-side enforcement of the domain restriction the engine was
-  // ASKED to apply — see restrictToOfficialDomains's header comment for
-  // why this can't just be trusted to have already happened (DuckDuckGo
-  // in particular).
-  officialResults = restrictToOfficialDomains(officialResults);
-  // Domain-restricted != location-restricted (see filterByLocation above)
-  // — every result has to actually mention the target place before a
-  // price can be extracted from it, or "cheapest near you" can quietly
-  // resolve to "cheapest anywhere in the country."
-  officialResults = filterByLocation(officialResults, location, zip);
-  const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
-  let best = await extractBest(env, officialResults, tier1Ensemble, location);
-  let usedProvider = best ? officialProviders.join("+") : null;
-  let usedEnsemble = best ? tier1Ensemble : false;
 
   // Tier 2 — same official domain list as tier 1 (GAS_DOMAIN_LIST), never
-  // the open web. Only fired when tier 1's STRICT location match came up
-  // empty, and only loosens the LOCATION matching (single-token, then
-  // unverified-but-flagged) — it never loosens which domains are eligible.
-  // Reason this pass exists at all: tier 1's strict city+state match can
-  // legitimately come up empty even on a real official-domain result (a
-  // GasBuddy/AAA page keyed to a ZIP that never spells out the city name
-  // verbatim), so it's worth re-checking the SAME restricted result set
-  // with a looser location bar before giving up on web search entirely.
+  // the open web, never news/blogs. Only fired when tier 1's STRICT
+  // location match came up empty, and only loosens the LOCATION matching
+  // (single-token, then unverified-but-flagged) — it never loosens which
+  // domains are eligible. Reason this pass exists at all: tier 1's strict
+  // city+state match can legitimately come up empty even on a real
+  // official-domain result (a GasBuddy/AAA page keyed to a ZIP that never
+  // spells out the city name verbatim), so it's worth re-checking the
+  // SAME restricted result set with a looser location bar before falling
+  // through to the OilPriceAPI state-average last resort below.
   if (!best) {
     let openResults = [], openProviders = [];
     try {
@@ -591,40 +684,6 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     usedEnsemble = best ? tier2Ensemble : false;
   }
 
-  // Tier 3 — small curated trusted-news fallback (see TRUSTED_NEWS_DOMAINS
-  // above). Only reached when tiers 1+2 — both restricted to
-  // GAS_DOMAIN_LIST (chains + GasBuddy/AAA) — found nothing at all, even
-  // with tier 2's loosened location match. Still a fixed domain allowlist,
-  // just a different and much smaller one — never the open web, never a
-  // blog or forum.
-  //
-  // Deliberately NOT passing allowFallback here, unlike tier 2. A national
-  // wire story that never mentions the person's city/state/ZIP anywhere is
-  // exactly the "state average pretending to be local" problem this app
-  // exists to avoid — better to fall through to the honestly-labeled
-  // OilPriceAPI state average below than to show an unrelated news price
-  // with just a small "unverified" flag easy to miss. So this is either
-  // STRICT (place + state, or a ZIP hit) or LOOSE (a single real
-  // place/state token) — a genuine local confirmation either way, never
-  // "matched nothing but showing it anyway."
-  if (!best) {
-    let newsResults = [], newsProviders = [];
-    try {
-      ({ results: newsResults, providers: newsProviders } = await searchAllSources(env, query, Object.keys(TRUSTED_NEWS_DOMAINS)));
-    } catch (err) {
-      newsResults = [];
-    }
-    // Same server-side enforcement as tiers 1/2 — don't trust the search
-    // engine to have actually honored the domain restriction it was asked
-    // for.
-    newsResults = newsResults.filter(r => trustedNewsSourceName(r.url));
-    newsResults = filterByLocation(newsResults, location, zip, { allowLoose: true, allowFallback: false });
-    const tier3Ensemble = newsResults.length > 0 && multipleLLMsConfigured(env);
-    best = await extractBest(env, newsResults, tier3Ensemble, location);
-    usedProvider = best ? newsProviders.join("+") : null;
-    usedEnsemble = best ? tier3Ensemble : false;
-  }
-
   if (!best) return null;
 
   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
@@ -638,17 +697,16 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     };
   }
 
-  // Price came from GasBuddy/AAA (an aggregator, not a station itself), a
-  // subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
-  // exact hostname, or tier 3's small trusted-news allowlist — never a
-  // blog/forum, since all three tiers above are restricted to a fixed
-  // domain list. Try to resolve an actual station-brand page AND check
-  // Foursquare for a real nearby branch. Fired concurrently (not
-  // one-then-the-other) since neither depends on the other's result — this
-  // is the "faster" half of the ask: adding the Foursquare check doesn't
-  // add a third sequential round trip on top of the search tiers above, it
-  // rides alongside the official-page lookup that was already happening
-  // here.
+  // Price came from GasBuddy/AAA (an aggregator, not a station itself) or
+  // a subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
+  // exact hostname — never a blog/forum/news page, since every tier above
+  // (0, 1, and 2) is restricted to a fixed gas-related domain list. Try to
+  // resolve an actual station-brand page AND check Foursquare for a real
+  // nearby branch. Fired concurrently (not one-then-the-other) since
+  // neither depends on the other's result — this is the "faster" half of
+  // the ask: adding the Foursquare check doesn't add a third sequential
+  // round trip on top of the search tiers above, it rides alongside the
+  // official-page lookup that was already happening here.
   const [productUrl, nearby] = await Promise.all([
     best.chain ? findOfficialStationPage(env, best.chain) : Promise.resolve(null),
     verifyNearbyGasStation(env, best.store, location, radius)
@@ -666,12 +724,6 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     url: productUrl || best.url,
     productUrl,
     blogUrl: best.url,
-    // Non-null only when best.url is one of TRUSTED_NEWS_DOMAINS (tier 3)
-    // — GasBuddy/AAA/chain-subdomain results (tiers 1/2) get null here, so
-    // the client's "⭐ via <Outlet>" badge only ever shows for the actual
-    // news-sourced case, never implies a GasBuddy/AAA number is "from AP
-    // News" or vice versa.
-    trustedSource: trustedNewsSourceName(best.url),
     provider: usedProvider,
     usedEnsemble,
     ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
@@ -715,7 +767,7 @@ export async function onRequestGet({ request, env }) {
     }
   }
 
-  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, trustedSource: null, provider: null, usedEnsemble: false });
+  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
 }
 
 function json(obj, status = 200) {
