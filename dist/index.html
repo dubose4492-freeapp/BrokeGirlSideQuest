@@ -745,7 +745,7 @@
   <div class="search-bar">
     <div class="search-field">
       <label for="zipInput">ZIP Code</label>
-      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); state.locationLabel=''; refreshGeminiPromptBox(); resolveLocationLabelFromZip(state.zip)" />
+      <input id="zipInput" type="text" placeholder="e.g. 37083" onchange="state.zip=this.value.trim(); lsSet('dff_zip', state.zip); state.locationLabel=''; state.lat=null; state.lon=null; lsSet('dff_lat_zip', ''); refreshGeminiPromptBox(); resolveLocationLabelFromZip(state.zip)" />
     </div>
     <div class="search-field">
       <label for="radiusInput">Radius (mi)</label>
@@ -1036,6 +1036,23 @@ let state = {
   // the old two-box setup so existing users don't lose their saved value.
   zip: lsGet("dff_zip") || lsGet("dff_kroger_zip") || "",
   radius: lsGet("dff_radius") || "25", // matches autoFillLocationFromGeo()'s own default — closest-to-user out of the box
+  // Rounded (~1km) geolocation coords, only ever set by autoFillLocationFromGeo()
+  // succeeding — restored here ONLY if they were cached alongside the SAME
+  // zip that's currently loaded, same staleness guard as locationLabel below;
+  // a manually-typed zip (see zipInput's onchange) clears both so a stale
+  // coordinate pair can never get sent for a place the user typed by hand.
+  lat: (() => {
+    const cachedZip = lsGet("dff_lat_zip");
+    const currentZip = lsGet("dff_zip") || lsGet("dff_kroger_zip") || "";
+    const v = lsGet("dff_lat");
+    return (v && cachedZip === currentZip) ? parseFloat(v) : null;
+  })(),
+  lon: (() => {
+    const cachedZip = lsGet("dff_lat_zip");
+    const currentZip = lsGet("dff_zip") || lsGet("dff_kroger_zip") || "";
+    const v = lsGet("dff_lon");
+    return (v && cachedZip === currentZip) ? parseFloat(v) : null;
+  })(),
   // Resolved "City, ST" for the current zip — every search call sends
   // this (via searchLocation() below) instead of the bare zip digits, so
   // the LLM classifier and search engines have a real place name to judge
@@ -2376,8 +2393,18 @@ function autoFillLocationFromGeo() {
         if (!zip) return;
         state.zip = zip;
         state.radius = "25";
+        // Same already-rounded (~1km) coordinates used for the reverse-geocode
+        // call above, kept in state so the gas lookup can hand them to our
+        // OWN backend (see searchGasItem() below) for a Google Places nearby-
+        // station pass — never sent anywhere beyond that, and never any more
+        // precise than what BigDataCloud already received.
+        state.lat = roundedLat;
+        state.lon = roundedLon;
         lsSet("dff_zip", state.zip);
         lsSet("dff_radius", state.radius);
+        lsSet("dff_lat", String(state.lat));
+        lsSet("dff_lon", String(state.lon));
+        lsSet("dff_lat_zip", state.zip);
         // Same response already carries city/state — no second network
         // call needed. Falls back to leaving locationLabel unset (silent
         // fallback to the raw zip in searchLocation()) if either piece is
@@ -2616,6 +2643,15 @@ function recordProviderTier(key, provider, usedEnsemble) {
 // still reads as a distinct "today's gas pick" rather than a plain card.
 async function searchGasItem(signal) {
   const params = new URLSearchParams({ zip: state.zip, location: searchLocation(), radius: state.radius });
+  // Only present when geolocation succeeded for the CURRENT zip (see
+  // state.lat/lon's staleness guard above) — lets the backend run its
+  // Google Places nearby-station pass anchored to a real point instead of
+  // just the zip's city/state text. Gas-only for now since that's the tab
+  // this was asked about; every other tab still works off zip/location text.
+  if (typeof state.lat === "number" && typeof state.lon === "number") {
+    params.set("lat", String(state.lat));
+    params.set("lon", String(state.lon));
+  }
   const response = await fetch(`/api/gas-price?${params}`, { signal, cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `Gas price lookup failed (${response.status}).`);

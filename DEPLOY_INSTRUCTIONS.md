@@ -364,6 +364,35 @@ wrangler login
    npx wrangler pages secret put SEARXNG_URL --project-name=brokegirlsidequest
    ```
 
+   Optional — gas-price accuracy specifically (`functions/api/gas-price.js`).
+   None of these are required; the gas tab works without them, just less
+   precisely:
+   ```bash
+   npx wrangler pages secret put FOURSQUARE_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put GOOGLE_PLACES_API_KEY --project-name=brokegirlsidequest
+   npx wrangler pages secret put OILPRICEAPI_KEY --project-name=brokegirlsidequest
+   ```
+   - `FOURSQUARE_API_KEY` — free at https://foursquare.com/developers.
+     Used to confirm which real gas-station brands are actually near the
+     user (by ZIP/city-state text) before a price search runs, and to
+     attach a real address + map link to whichever station the price
+     turned out to be from.
+   - `GOOGLE_PLACES_API_KEY` — from Google Cloud Console, with the
+     **Places API (New)** enabled ($200/mo free usage credit as of this
+     writing, no cost until that's exceeded). Does the same job as
+     Foursquare above but from real lat/lon coordinates instead of a
+     city/state string, when the browser's geolocation succeeded (see
+     `autoFillLocationFromGeo()` in `dist/index.html`) — generally denser,
+     more current gas-station coverage, especially outside major metros,
+     and the two run in parallel and get merged rather than one replacing
+     the other. This is also what lets the app pick up regional/independent
+     stations that aren't in the ~45-brand chain list at all.
+   - `OILPRICEAPI_KEY` — free tier (200 requests/month, no card) at
+     https://oilpriceapi.com. A state-level EIA retail-average price,
+     used only as a LAST RESORT when web search (with or without the two
+     keys above) finds nothing at all — never a real per-station price,
+     and never compared against one.
+
 4. Deploy:
    ```bash
    npx wrangler pages deploy dist --project-name=brokegirlsidequest

@@ -388,7 +388,7 @@ async function findOfficialStationPage(env, chain) {
 // existing generic domain-list search) runs instead, same as before this
 // existed.
 const NEARBY_STATION_LIMIT = 15;
-async function findNearbyStationBrands(env, location, radius) {
+async function findNearbyStationBrandsFoursquare(env, location, radius) {
   if (!env.FOURSQUARE_API_KEY || !location) return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
@@ -431,6 +431,102 @@ async function findNearbyStationBrands(env, location, radius) {
   }
 }
 
+// Google Places (New) equivalent of the Foursquare pass above — returns
+// full candidate objects (name/address/coords/mapsUrl), not just a chain
+// name list, because Google is also used below to build a MORE PRECISE
+// tier-0 query (real station addresses, not just "Shell near Lafayette,
+// TN") and to skip a second verify round-trip once a price is found (see
+// nearbyStationDetails' use in getWebSearchGasPrice). Requires real
+// lat/lon — Places API (New) Nearby Search takes a circle center, not a
+// free-text place name the way Foursquare's `near` does, so this is
+// skipped (not an error, just empty) whenever the client didn't send
+// coordinates, same fail-open contract as everything else here.
+async function findNearbyStationsGoogle(env, lat, lon, radius) {
+  if (!env.GOOGLE_PLACES_API_KEY || typeof lat !== "number" || typeof lon !== "number") return [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GOOGLE_PLACES_TIMEOUT_MS);
+  try {
+    const radiusMeters = Math.min(50000, Math.round(radius * 1609)); // miles -> meters; Places API (New) circle caps at 50km
+    const res = await fetch("https://places.googleapis.com/v1/places:searchNearby", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.googleMapsUri"
+      },
+      body: JSON.stringify({
+        includedTypes: ["gas_station"],
+        maxResultCount: NEARBY_STATION_LIMIT,
+        rankPreference: "DISTANCE", // nearest-first, not Google's default popularity ranking
+        locationRestriction: { circle: { center: { latitude: lat, longitude: lon }, radius: radiusMeters } }
+      })
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const places = Array.isArray(data.places) ? data.places : [];
+    return places
+      .map(p => ({
+        name: (p.displayName && p.displayName.text) || "",
+        address: p.formattedAddress || null,
+        lat: typeof (p.location && p.location.latitude) === "number" ? p.location.latitude : null,
+        lng: typeof (p.location && p.location.longitude) === "number" ? p.location.longitude : null,
+        mapsUrl: p.googleMapsUri || null
+      }))
+      .filter(p => p.name);
+  } catch (err) {
+    return []; // best-effort only, same contract as Foursquare above
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Runs Foursquare (text-location-based) and Google (coordinate-based) in
+// parallel and merges them into one candidate set — neither replaces the
+// other since they key off different inputs (Foursquare works from
+// whatever ZIP/city-state text the client has; Google needs real lat/lon,
+// which is only there if the browser's geolocation succeeded), and their
+// coverage genuinely differs by area. Returns:
+//   - chains: deduped brand names (from GAS_CHAINS) confirmed nearby by
+//     EITHER provider — same shape callers used before this existed.
+//   - details: chain name -> {address, mapsUrl, lat, lng} for whichever
+//     brands Google specifically matched, so a price found for that chain
+//     later can be labeled with a REAL nearby address without a second
+//     network round-trip (see verifyNearbyGasStation's caller below).
+//   - independents: raw Google place names that didn't match any known
+//     chain — real nearby stations (regional/independent brands not in
+//     GAS_STATION_DOMAINS) that would otherwise be invisible to a
+//     domain-restricted search. Kept as name-only candidates; priced (if
+//     at all) only via the GasBuddy/AAA aggregator domains, same as any
+//     other unbranded result already is.
+async function findNearbyStationBrands(env, location, radius, lat, lon) {
+  const [foursquareChains, googlePlaces] = await Promise.all([
+    findNearbyStationBrandsFoursquare(env, location, radius),
+    findNearbyStationsGoogle(env, lat, lon, radius)
+  ]);
+  const chains = new Set(foursquareChains);
+  const details = {};
+  const independents = [];
+  for (const place of googlePlaces) {
+    const name = place.name.toLowerCase();
+    let matched = null;
+    for (const chain of GAS_CHAINS) {
+      if (AGGREGATOR_CHAINS.has(chain)) continue;
+      if (name.includes(chain.toLowerCase())) { matched = chain; break; }
+    }
+    if (matched) {
+      chains.add(matched);
+      // Google returns nearest-first (rankPreference: DISTANCE), so the
+      // first match per chain is that chain's closest branch — keep it,
+      // ignore any farther duplicate of the same brand.
+      if (!details[matched]) details[matched] = { address: place.address, mapsUrl: place.mapsUrl, lat: place.lat, lng: place.lng };
+    } else {
+      independents.push(place);
+    }
+  }
+  return { chains: [...chains], details, independents };
+}
+
 // ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
 // Same UNVERIFIED CONTRACT as restaurant-deals.js's verifyNearbyWithFoursquare
 // (see that file's header comment for the full caveat — endpoint/auth header
@@ -460,7 +556,8 @@ async function findNearbyStationBrands(env, location, radius) {
 //      failure (timeout included) still just returns null, never throws.
 const GAS_STATION_CATEGORY_ID = "4bf58dd8d48988d113951735"; // Foursquare taxonomy: "Gas Station / Garage"
 const FOURSQUARE_TIMEOUT_MS = 3000;
-async function verifyNearbyGasStation(env, name, location, radius) {
+const GOOGLE_PLACES_TIMEOUT_MS = 4000;
+async function verifyNearbyGasStationFoursquare(env, name, location, radius) {
   if (!env.FOURSQUARE_API_KEY || !name || !location) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
@@ -496,6 +593,58 @@ async function verifyNearbyGasStation(env, name, location, radius) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Google Places (New) Text Search equivalent of the Foursquare verify
+// above — used when the client supplied real lat/lon. Text Search (rather
+// than Nearby Search) is used here on purpose: unlike the discovery pass
+// above, this needs to confirm ONE specific already-named station, and
+// Nearby Search has no text-query parameter to match a name against —
+// only Text Search does, biased toward the user's coordinates via
+// locationBias so "Shell" resolves to the nearby branch, not just any
+// Shell in the country.
+async function verifyNearbyGasStationGoogle(env, name, lat, lon, radius) {
+  if (!env.GOOGLE_PLACES_API_KEY || !name || typeof lat !== "number" || typeof lon !== "number") return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GOOGLE_PLACES_TIMEOUT_MS);
+  try {
+    const radiusMeters = Math.min(50000, Math.round(radius * 1609));
+    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.formattedAddress,places.location,places.googleMapsUri"
+      },
+      body: JSON.stringify({
+        textQuery: `${name} gas station`,
+        includedType: "gas_station",
+        maxResultCount: 1,
+        locationBias: { circle: { center: { latitude: lat, longitude: lon }, radius: radiusMeters } }
+      })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const place = Array.isArray(data.places) && data.places[0];
+    if (!place) return null;
+    return { verifiedNearby: true, address: place.formattedAddress || null, mapsUrl: place.googleMapsUri || null };
+  } catch (err) {
+    return null; // best-effort only — never break a real price card
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Combined verify step used by getWebSearchGasPrice — tries Google first
+// (when the client sent lat/lon, it's the more precise, coordinate-based
+// check), falling back to Foursquare's text-location-based check if
+// Google isn't configured/available or comes up empty. Same "never blocks
+// the rest of the lookup" contract as either provider alone.
+async function verifyNearbyGasStation(env, name, location, radius, lat, lon) {
+  const viaGoogle = await verifyNearbyGasStationGoogle(env, name, lat, lon, radius);
+  if (viaGoogle) return viaGoogle;
+  return verifyNearbyGasStationFoursquare(env, name, location, radius);
 }
 
 // ---------- OilPriceAPI (state-average LAST-RESORT fallback) ----------
@@ -563,7 +712,7 @@ async function getOilPriceApiPrice(env, location) {
   };
 }
 
-async function getWebSearchGasPrice(env, location, zip, radius) {
+async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
   // Kept short and natural rather than stuffed with all the chain names —
   // that bloat didn't buy relevance (tier 1+ already restrict the domains
   // being searched) and it drowned out the location terms that actually
@@ -574,19 +723,32 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
 
   let best = null, usedProvider = null, usedEnsemble = false;
 
-  // Tier 0 — cross-check Foursquare FIRST for which real brands (of the
-  // ~45 in GAS_STATION_DOMAINS) actually have a location within the
-  // user's radius, then search ONLY those specific brands' domains with a
-  // query that names them explicitly. This is the highest-confidence
-  // tier: a price found here is tied to a station Foursquare has already
-  // confirmed is physically near the user, not just a same-named chain's
-  // page somewhere else. Skipped automatically (falls straight to tier 1)
-  // when Foursquare isn't configured or confirms no known chain nearby —
-  // this can never make a lookup worse, only more targeted when it hits.
-  const nearbyChains = await findNearbyStationBrands(env, location, radius);
-  if (nearbyChains.length) {
+  // Tier 0 — cross-check Foursquare (text-location-based) AND Google
+  // Places (coordinate-based, when the client sent lat/lon) FIRST for
+  // which real brands (of the ~45 in GAS_STATION_DOMAINS) actually have a
+  // location within the user's radius, then search ONLY those specific
+  // brands' domains with a query that names them explicitly — plus, when
+  // Google resolved a matched chain's actual address, name that address
+  // too, so the query is anchored to the real closest branch instead of
+  // just the brand generically. This is the highest-confidence tier: a
+  // price found here is tied to a station one of the two providers has
+  // already confirmed is physically near the user, not just a same-named
+  // chain's page somewhere else. Skipped automatically (falls straight to
+  // tier 1) when neither provider is configured or neither confirms a
+  // known chain nearby — this can never make a lookup worse, only more
+  // targeted when it hits.
+  const { chains: nearbyChains, details: nearbyDetails, independents } = await findNearbyStationBrands(env, location, radius, lat, lon);
+  if (nearbyChains.length || independents.length) {
     const nearbyDomains = nearbyChains.map(c => GAS_STATION_DOMAINS[c]).concat(["gasbuddy.com", "gasprices.aaa.com"]);
-    const nearbyQuery = `gas price today at ${nearbyChains.join(", ")} near ${location}${zip ? ` (ZIP ${zip})` : ""}`;
+    const namedStations = nearbyChains
+      .map(c => nearbyDetails[c] && nearbyDetails[c].address ? `${c} (${nearbyDetails[c].address})` : c)
+      // Independent/regional stations Google found nearby that don't match
+      // any known chain — no domain of their own to search, but naming
+      // them (GasBuddy/AAA are already in nearbyDomains above) still gives
+      // a real shot at a price a chains-only query would never surface.
+      .concat(independents.slice(0, 5).map(p => p.address ? `${p.name} (${p.address})` : p.name))
+      .join(", ");
+    const nearbyQuery = `gas price today at ${namedStations} near ${location}${zip ? ` (ZIP ${zip})` : ""}`;
     let nearbyResults = [], nearbyProviders = [];
     try {
       ({ results: nearbyResults, providers: nearbyProviders } = await searchAllSources(env, nearbyQuery, nearbyDomains));
@@ -688,7 +850,12 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
 
   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
-    const nearby = await verifyNearbyGasStation(env, domainChain, location, radius);
+    // If tier 0's Google Places pass already resolved this exact chain's
+    // nearest branch, use that address directly instead of spending a
+    // second network round-trip re-verifying something already confirmed.
+    const nearby = nearbyDetails[domainChain]
+      ? { verifiedNearby: true, address: nearbyDetails[domainChain].address, mapsUrl: nearbyDetails[domainChain].mapsUrl }
+      : await verifyNearbyGasStation(env, domainChain, location, radius, lat, lon);
     return {
       price: best.price, store: domainChain, unconfirmedStore: false, sourceHost: hostname(best.url),
       url: best.url, productUrl: best.url, blogUrl: null,
@@ -709,7 +876,9 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   // official-page lookup that was already happening here.
   const [productUrl, nearby] = await Promise.all([
     best.chain ? findOfficialStationPage(env, best.chain) : Promise.resolve(null),
-    verifyNearbyGasStation(env, best.store, location, radius)
+    (best.chain && nearbyDetails[best.chain])
+      ? Promise.resolve({ verifiedNearby: true, address: nearbyDetails[best.chain].address, mapsUrl: nearbyDetails[best.chain].mapsUrl })
+      : verifyNearbyGasStation(env, best.store, location, radius, lat, lon)
   ]);
   return {
     price: best.price,
@@ -742,13 +911,23 @@ export async function onRequestGet({ request, env }) {
   const zip = searchParams.get("zip");
   const location = searchParams.get("location") || zip;
   const radius = Math.min(100, Math.max(1, parseInt(searchParams.get("radius") || "100", 10)));
+  // Optional — only present when the browser's geolocation succeeded and
+  // the client opted to forward it (see dist/index.html's
+  // autoFillLocationFromGeo(); same rounded ~1km-precision coordinates
+  // already used there, never a raw pinpoint). Powers the Google Places
+  // pass in findNearbyStationBrands/verifyNearbyGasStation above; every
+  // other tier works fine without it, same as before this existed.
+  const rawLat = parseFloat(searchParams.get("lat"));
+  const rawLon = parseFloat(searchParams.get("lon"));
+  const lat = (Number.isFinite(rawLat) && rawLat >= -90 && rawLat <= 90) ? rawLat : null;
+  const lon = (Number.isFinite(rawLon) && rawLon >= -180 && rawLon <= 180) ? rawLon : null;
 
   if (!zip) return json({ error: "zip query param is required." }, 400);
   if (zip.length > 20) return json({ error: "zip is invalid or too long." }, 400);
 
   let result;
   try {
-    result = await getWebSearchGasPrice(env, location, zip, radius);
+    result = await getWebSearchGasPrice(env, location, zip, radius, lat, lon);
   } catch (err) {
     console.error("gas-price lookup failed:", err.message);
     return json({ error: "Gas price lookup is temporarily unavailable. Please try again in a few minutes." }, 502);
