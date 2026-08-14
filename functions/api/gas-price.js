@@ -322,21 +322,30 @@ function findChainName(text) {
 // produces is still tagged `locationUnverified: true` — price-closeness
 // to a state average is a real signal, but weaker than a page actually
 // naming the location, so the client should keep showing it as unconfirmed.
-const STATE_AVG_MAX_DELTA = 0.35; // dollars/gallon — how far a candidate can drift from the average and still count as "close"
+const STATE_AVG_MAX_DELTA = 0.35; // dollars/gallon — how far a candidate can drift from the average and still count as plausible for the area (both directions — see below for how above/below get treated once inside that band)
 function extractClosestPriceRegex(results, targetPrice) {
-  let best = null, bestDelta = Infinity;
+  // Within the plausible band around the state average, prefer the
+  // CHEAPEST candidate, not whichever is numerically nearest to the
+  // average. The average only exists to bound out implausible/wrong-
+  // market prices (a stray price from a completely different region, a
+  // typo) — once a candidate clears that plausibility check, a price
+  // below the average is a genuinely better find for someone using a
+  // deal-finding app, not something that should lose to a price sitting
+  // closer to the midpoint. Picking "nearest to average" would have
+  // actively favored an above-average price over a legitimately cheaper
+  // below-average one whenever the cheaper one happened to sit a few
+  // cents farther from the mean — exactly backwards here.
+  let best = null;
   for (const r of results) {
     const combinedText = (r.content || "") + " " + (r.title || "");
     const matches = combinedText.match(/\$\s?\d\.\d{2,3}/g) || [];
     for (const m of matches) {
       const val = parseFloat(m.replace(/[$\s]/g, ""));
       if (isNaN(val) || val < 1.5 || val > 8) continue;
-      const delta = Math.abs(val - targetPrice);
-      if (delta > STATE_AVG_MAX_DELTA) continue; // too far from the average to trust as "this area"
-      if (delta < bestDelta) {
+      if (Math.abs(val - targetPrice) > STATE_AVG_MAX_DELTA) continue; // too far from the average to trust as "this area"
+      if (!best || val < best.price) {
         const domainChain = DOMAIN_TO_CHAIN[hostname(r.url)];
         const chain = (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) ? domainChain : findChainName(combinedText);
-        bestDelta = delta;
         best = { price: val, store: chain || null, chain, url: r.url, sourceHost: hostname(r.url) };
       }
     }
