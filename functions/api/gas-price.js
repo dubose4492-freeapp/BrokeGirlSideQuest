@@ -8,7 +8,7 @@
 // general web at any point. Every pass (see getWebSearchGasPrice below)
 // stays restricted to gas-specific sources: known gas station chain sites
 // (see GAS_STATION_DOMAINS — a broad, ~45-brand list, not just a handful)
-// plus GasBuddy/AAA, the two trusted, frequently-updated price-aggregator
+// plus GasBuddy, the trusted, frequently-updated price-aggregator
 // sites GasBuddy's own app effectively rolls up. No news sites, no blogs,
 // no forums, ever — that fallback existed briefly and was deliberately
 // removed; gas price data is either a real gas-related source or the
@@ -28,7 +28,7 @@ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
 import { fetchWithTimeout } from "../_shared/fetch-timeout.js";
 
 // Real gas station chains, mapped to their own domain so results can be
-// restricted to a station's actual site — plus GasBuddy and AAA, which
+// restricted to a station's actual site — plus GasBuddy, which
 // aren't stores but are the two most commonly-cited, frequently-refreshed
 // crowd-sourced price trackers, so including them in the domain-restricted
 // tier 1 pass (instead of only in an open-web fallback that no longer
@@ -57,16 +57,16 @@ const GAS_STATION_DOMAINS = {
   "Giant Eagle GetGo": "gianteagle.com", "H-E-B Fuel": "heb.com", "Safeway Fuel": "safeway.com",
   "Albertsons Fuel": "albertsons.com", "Road Ranger": "roadrangerusa.com", "Stripes": "stripesstore.com",
   "Holiday Stationstores": "holidaystationstores.com", "Sinclair": "sinclairoil.com",
-  "GasBuddy": "gasbuddy.com", "AAA": "gasprices.aaa.com"
+  "GasBuddy": "gasbuddy.com"
 };
 const GAS_CHAINS = Object.keys(GAS_STATION_DOMAINS);
 const GAS_DOMAIN_LIST = Object.values(GAS_STATION_DOMAINS);
 const DOMAIN_TO_CHAIN = Object.fromEntries(Object.entries(GAS_STATION_DOMAINS).map(([chain, domain]) => [domain, chain]));
-// GasBuddy/AAA are aggregators, not the actual station — never label a
+// GasBuddy is an aggregator, not the actual station — never label a
 // card with them as the "store", even when the domain matched them
 // directly (see the two spots below that check this before trusting
 // domainChain as the display store name).
-const AGGREGATOR_CHAINS = new Set(["GasBuddy", "AAA"]);
+const AGGREGATOR_CHAINS = new Set(["GasBuddy"]);
 
 function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
 
@@ -178,7 +178,7 @@ function resultMentionsLocationStrict(r, keywords) {
 // LOOSE: the old single-token behavior — any one token, city or state,
 // anywhere in the text. Kept only as a second-chance pass (see
 // filterByLocation) for small towns whose name plus state genuinely never
-// appears verbatim together in a snippet (common with GasBuddy/AAA pages
+// appears verbatim together in a snippet (common with GasBuddy pages
 // that key off a ZIP or a nearby metro instead). Loose is intentionally
 // weaker, so it's never the FIRST thing tried — see filterByLocation.
 function resultMentionsLocationLoose(r, keywords) {
@@ -264,7 +264,7 @@ async function extractLowestPriceLLM(env, results, { ensemble = false, location 
     : "";
   const prompt = `You are finding the lowest real current price per gallon for regular unleaded gasoline, from these search result snippets.${locationGuard} Ignore prices for premium/diesel unless that's all a snippet gives, ignore prices for unrelated products (snacks, car washes, other cities), and ignore vague "prices range from X to Y" statements unless a specific station price is given.
 
-For the winning snippet, identify the actual STATION BRAND the price is from (e.g. "Shell", "QuikTrip", "Costco") — read this out of the text itself, not the website's domain name. GasBuddy and AAA are price-tracking sites, not stations — if the underlying station brand is named in the text, use that instead. If a specific location is mentioned (e.g. a street or city), include it. If no station brand is stated anywhere, set store to null.
+For the winning snippet, identify the actual STATION BRAND the price is from (e.g. "Shell", "QuikTrip", "Costco") — read this out of the text itself, not the website's domain name. GasBuddy is a price-tracking site, not a station — if the underlying station brand is named in the text, use that instead. If a specific location is mentioned (e.g. a street or city), include it. If no station brand is stated anywhere, set store to null.
 
 Return ONLY strict JSON, no other text, in this shape:
 {"found": true, "price": 3.19, "index": 2, "store": "QuikTrip"}
@@ -497,7 +497,7 @@ async function findNearbyStationsGoogle(env, lat, lon, radius) {
 //     chain — real nearby stations (regional/independent brands not in
 //     GAS_STATION_DOMAINS) that would otherwise be invisible to a
 //     domain-restricted search. Kept as name-only candidates; priced (if
-//     at all) only via the GasBuddy/AAA aggregator domains, same as any
+//     at all) only via the GasBuddy aggregator domain, same as any
 //     other unbranded result already is.
 async function findNearbyStationBrands(env, location, radius, lat, lon) {
   const [foursquareChains, googlePlaces] = await Promise.all([
@@ -717,7 +717,7 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
   // that bloat didn't buy relevance (tier 1+ already restrict the domains
   // being searched) and it drowned out the location terms that actually
   // matter for a keyword-matching search engine to key in on ${location}.
-  // The ZIP is included explicitly since GasBuddy/AAA-style price pages
+  // The ZIP is included explicitly since GasBuddy-style price pages
   // are usually indexed by ZIP, not by city name alone.
   const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
 
@@ -739,12 +739,12 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
   // targeted when it hits.
   const { chains: nearbyChains, details: nearbyDetails, independents } = await findNearbyStationBrands(env, location, radius, lat, lon);
   if (nearbyChains.length || independents.length) {
-    const nearbyDomains = nearbyChains.map(c => GAS_STATION_DOMAINS[c]).concat(["gasbuddy.com", "gasprices.aaa.com"]);
+    const nearbyDomains = nearbyChains.map(c => GAS_STATION_DOMAINS[c]).concat(["gasbuddy.com"]);
     const namedStations = nearbyChains
       .map(c => nearbyDetails[c] && nearbyDetails[c].address ? `${c} (${nearbyDetails[c].address})` : c)
       // Independent/regional stations Google found nearby that don't match
       // any known chain — no domain of their own to search, but naming
-      // them (GasBuddy/AAA are already in nearbyDomains above) still gives
+      // them (GasBuddy is already in nearbyDomains above) still gives
       // a real shot at a price a chains-only query would never surface.
       .concat(independents.slice(0, 5).map(p => p.address ? `${p.name} (${p.address})` : p.name))
       .join(", ");
@@ -770,7 +770,7 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
     }
   }
 
-  // Tier 1 — full known gas station chains + GasBuddy/AAA list. Only runs
+  // Tier 1 — full known gas station chains + GasBuddy list. Only runs
   // when tier 0 was skipped (no Foursquare key / no known chain confirmed
   // nearby) or came up empty. Runs every configured engine in the
   // currently-active tier in parallel (see searchAllSources above) — that
@@ -824,7 +824,7 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
   // (single-token, then unverified-but-flagged) — it never loosens which
   // domains are eligible. Reason this pass exists at all: tier 1's strict
   // city+state match can legitimately come up empty even on a real
-  // official-domain result (a GasBuddy/AAA page keyed to a ZIP that never
+  // official-domain result (a GasBuddy page keyed to a ZIP that never
   // spells out the city name verbatim), so it's worth re-checking the
   // SAME restricted result set with a looser location bar before falling
   // through to the OilPriceAPI state-average last resort below.
@@ -864,7 +864,7 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
     };
   }
 
-  // Price came from GasBuddy/AAA (an aggregator, not a station itself) or
+  // Price came from GasBuddy (an aggregator, not a station itself) or
   // a subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
   // exact hostname — never a blog/forum/news page, since every tier above
   // (0, 1, and 2) is restricted to a fixed gas-related domain list. Try to
