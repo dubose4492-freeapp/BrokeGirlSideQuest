@@ -124,6 +124,13 @@ const STATE_ABBR = {
   virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi",
   wyoming: "wy"
 };
+// Reverse of STATE_ABBR (abbr -> Title Case full name) — used to build a
+// readable "cheapest gas in Tennessee" search query for
+// getCheapestChainInState below; search engines key off real state names
+// far better than a bare two-letter code.
+const ABBR_TO_STATE_NAME = Object.fromEntries(
+  Object.keys(STATE_ABBR).map(full => [STATE_ABBR[full], full.replace(/\b\w/g, c => c.toUpperCase())])
+);
 // Words too generic to prove a result is actually about the target place
 // (a page can say "county" or "near" without being anywhere close).
 const LOCATION_STOPWORDS = new Set(["near", "county", "area", "city", "town", "usa", "us"]);
@@ -1039,6 +1046,68 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
   };
 }
 
+// ---------- Statewide cheapest chain (GasBuddy + chain domains) ----------
+// Separate from every tier above, which all search for a price NEAR the
+// user (a specific ZIP/city within `radius`). This instead asks "what's
+// the single cheapest real chain price anywhere in the user's STATE right
+// now" — GasBuddy in particular runs state-level "cheapest gas prices in
+// <State>" rankings/trend pages that are exactly built for this kind of
+// query, separate from its per-station city pages the tiers above already
+// search. Same domain restriction as everything else here (GAS_DOMAIN_LIST
+// — real chain sites + GasBuddy, never the open web) — this only changes
+// the geographic scope of the query, not which sites are eligible.
+// Runs ALONGSIDE the near-you result (see getWebSearchGasPrice's caller),
+// never replacing it — a statewide cheapest price is a genuinely different
+// piece of information (might be hours away) from "the price near you",
+// so both get returned and the client decides how to show them together.
+async function getCheapestChainInState(env, location, zip) {
+  const stateAbbr = deriveStateAbbr(location, zip);
+  if (!stateAbbr) return null; // couldn't tell the state from location text or ZIP — nothing to search for
+  const stateName = ABBR_TO_STATE_NAME[stateAbbr] || stateAbbr.toUpperCase();
+
+  const query = `cheapest regular unleaded gas price today in ${stateName} gasbuddy`;
+  let results = [], providers = [];
+  try {
+    ({ results, providers } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+  } catch (err) {
+    return null;
+  }
+  results = restrictToOfficialDomains(results); // real chain/GasBuddy domains only, same as every other tier
+
+  // Only require the STATE to be mentioned — deliberately no city/ZIP
+  // requirement, since "cheapest in the whole state" legitimately could be
+  // (and often is) a city other than the user's own. Falls back to the
+  // unfiltered domain-restricted set (flagged unverified) rather than
+  // going empty, same "always get something" contract as the other tiers.
+  const stateLower = stateName.toLowerCase();
+  const stateMatched = results.filter(r => {
+    const text = ((r.title || "") + " " + (r.content || "") + " " + (r.url || "")).toLowerCase();
+    return text.includes(stateAbbr) || text.includes(stateLower);
+  });
+  const pool = stateMatched.length ? stateMatched : results;
+  const stateVerified = stateMatched.length > 0;
+
+  const ensemble = pool.length > 0 && multipleLLMsConfigured(env);
+  const best = await extractBest(env, pool, ensemble, stateName);
+  console.error(`gas-price statewide: state=${stateAbbr} providers=${providers.join(",") || "none"} candidates=${results.length} stateMatched=${stateMatched.length} -> ${best ? `hit ${best.store || "unconfirmed"} @ ${best.price}` : "empty"}`);
+  if (!best) return null;
+
+  const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
+  const store = (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) ? domainChain : best.store;
+  return {
+    price: best.price,
+    store: store || null,
+    unconfirmedStore: !store,
+    sourceHost: best.sourceHost || hostname(best.url),
+    locationUnverified: !stateVerified,
+    stateAbbr: stateAbbr.toUpperCase(),
+    stateName,
+    url: best.url,
+    provider: providers.join("+") || null,
+    usedEnsemble: ensemble
+  };
+}
+
 // ---------- Entry point ----------
 export async function onRequestGet({ request, env }) {
   // Gas is a single lookup per scan (unlike grocery's 11-items-per-scan),
@@ -1066,8 +1135,25 @@ export async function onRequestGet({ request, env }) {
   if (zip.length > 20) return json({ error: "zip is invalid or too long." }, 400);
 
   let result;
+  let cheapestInState = null;
   try {
-    result = await getWebSearchGasPrice(env, location, zip, radius, lat, lon);
+    // Run alongside the near-you lookup (not sequentially after it) so
+    // this doesn't add extra wait time on top of everything else already
+    // happening per scan — it's a genuinely separate question ("cheapest
+    // anywhere in the state" vs "price near you"), not a fallback for the
+    // main lookup, so there's no reason to make it wait its turn.
+    const [webResult, stateResult] = await Promise.allSettled([
+      getWebSearchGasPrice(env, location, zip, radius, lat, lon),
+      getCheapestChainInState(env, location, zip)
+    ]);
+    if (webResult.status === "rejected") throw webResult.reason;
+    result = webResult.value;
+    cheapestInState = stateResult.status === "fulfilled" ? stateResult.value : null;
+    if (stateResult.status === "rejected") {
+      console.error("statewide cheapest-chain lookup failed:", stateResult.reason && stateResult.reason.message);
+      // never fail the whole request over this — it's a bonus data point,
+      // not something the rest of the response depends on
+    }
   } catch (err) {
     console.error("gas-price lookup failed:", err.message);
     return json({ error: "Gas price lookup is temporarily unavailable. Please try again in a few minutes." }, 502);
@@ -1102,7 +1188,11 @@ export async function onRequestGet({ request, env }) {
     }
   }
 
-  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
+  const base = result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false };
+  // cheapestInState rides alongside the main price, always under its own
+  // key — never merged into/overwriting the near-you fields above, since
+  // it answers a different question and the client renders it separately.
+  return json({ ...base, cheapestInState });
 }
 
 function json(obj, status = 200) {

@@ -1386,12 +1386,29 @@ function itemCard(item) {
     gasCaveat = `<div class="verified-note">⚠️ ${item.unconfirmedStore ? "Station not confirmed" : "Location not confirmed"} &middot; via ${srcLink}</div>`;
   }
 
+  // Separate line for the statewide cheapest-chain data point (see
+  // gas-price.js's getCheapestChainInState) — deliberately kept apart from
+  // gasCaveat above, which describes confidence in the NEAR-YOU price;
+  // this is a different price entirely (might be a city away) so it's
+  // never merged into that line or allowed to look like the same number.
+  let cheapestStateHtml = "";
+  if (isGas && item.cheapestInState && item.cheapestInState.price) {
+    const cis = item.cheapestInState;
+    const cisUrl = isSafeUrl(cis.url);
+    const cisStoreLabel = cis.store || "Unconfirmed station";
+    const cisLink = cisUrl
+      ? `<a href="${escapeHtml(cisUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(cisStoreLabel)}</a>`
+      : escapeHtml(cisStoreLabel);
+    cheapestStateHtml = `<div class="verified-note">💡 Cheapest in ${escapeHtml(cis.stateAbbr || "")} today: ${cisLink} &middot; $${cis.price.toFixed(2)}/gal${cis.locationUnverified ? " (unconfirmed)" : ""}</div>`;
+  }
+
   return `<div class="item-card${isGas ? " gas-card" : ""}" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}" data-maps="${escapeHtml(mapsUrl || "")}">
     <div class="item-media">${ribbon}${media}</div>
     <div class="item-body">
       <p class="item-name">${safeTitle}</p>
       <div class="item-store">${safeStore}</div>
       ${gasCaveat}
+      ${cheapestStateHtml}
       ${item.trustedSource ? `<div class="trusted-badge">⭐ ${escapeHtml(item.trustedSource)}</div>` : ""}
       <div class="item-price-row">
         <span class="item-price ${item.isFree ? "" : "paid"}">${escapeHtml(priceLabel(item, cat))}</span>
@@ -2717,7 +2734,12 @@ async function searchGasItem(signal) {
     sourceHost: data.sourceHost || null,
     verifiedNearby: data.verifiedNearby || false,
     address: data.address || null,
-    mapsUrl: data.mapsUrl || null
+    mapsUrl: data.mapsUrl || null,
+    // Separate statewide "cheapest chain anywhere in your state" data
+    // point from gas-price.js's getCheapestChainInState — rides alongside
+    // the near-you price, never replaces it. Passed through as-is; null
+    // when the backend couldn't derive a state or found nothing.
+    cheapestInState: data.cheapestInState || null
   };
 }
 
