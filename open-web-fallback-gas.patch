@@ -1,0 +1,224 @@
+--- a/functions/api/gas-price.js
++++ b/functions/api/gas-price.js
+@@ -4,15 +4,18 @@
+ // productUrl, blogUrl, provider, usedEnsemble } — but for regular unleaded
+ // gas instead of a grocery item. There's no Kroger-style official-API side
+ // here (no free, keyless fuel-price API exists the way Kroger's product API
+-// does for groceries), so this is web search — but it NEVER opens up to the
+-// general web at any point. Every pass (see getWebSearchGasPrice below)
+-// stays restricted to gas-specific sources: known gas station chain sites
+-// (see GAS_STATION_DOMAINS — a broad, ~45-brand list, not just a handful)
+-// plus GasBuddy, the trusted, frequently-updated price-aggregator
+-// sites GasBuddy's own app effectively rolls up. No news sites, no blogs,
+-// no forums, ever — that fallback existed briefly and was deliberately
+-// removed; gas price data is either a real gas-related source or the
+-// OilPriceAPI state-average last resort, nothing in between. Tier 0 (see
++// does for groceries), so this is web search. Tiers 0-2 (see
++// getWebSearchGasPrice below) stay restricted to gas-specific sources:
++// known gas station chain sites (see GAS_STATION_DOMAINS — a broad,
++// ~45-brand list, not just a handful) plus GasBuddy, the trusted,
++// frequently-updated price-aggregator site GasBuddy's own app effectively
++// rolls up. An open-web fallback (no domain restriction at all — could be
++// a blog, tracker, or news page) briefly existed, was deliberately
++// removed, and has now been reinstated as tier 3 — the true LAST resort,
++// only reached when every domain-restricted tier above finds nothing at
++// all. Results from it are flagged `openWebSource: true` so the client can
++// show an honest "unofficial source" caveat instead of presenting it with
++// the same confidence as a real chain-domain result. Tier 0 (see
+ // below) additionally cross-checks Foursquare for which of those brands
+ // are ACTUALLY near the user before searching, so a found price is tied to
+ // a station Foursquare confirms is really nearby, not just a same-named
+@@ -524,7 +527,26 @@
+       independents.push(place);
+     }
+   }
+-  return { chains: [...chains], details, independents };
++  // `closest`: the single nearest real station Google found nearby,
++  // regardless of chain-vs-independent — googlePlaces is already
++  // nearest-first (rankPreference: DISTANCE), so this is just the first
++  // entry, reshaped as a display-ready candidate (real name + real
++  // address + maps link). Used as a last-resort attribution target when
++  // a price is found but the text it came from never names a specific
++  // station (see getWebSearchGasPrice's final return) — so the card can
++  // show "closest real station nearby" instead of just a bare aggregator
++  // link with no station info at all. Null when Google Places wasn't
++  // configured/available (no lat/lon, no key, or zero nearby results) —
++  // same fail-open contract as everything else here.
++  const closest = googlePlaces.length
++    ? (() => {
++        const p = googlePlaces[0];
++        const name = p.name.toLowerCase();
++        const matchedChain = GAS_CHAINS.find(c => !AGGREGATOR_CHAINS.has(c) && name.includes(c.toLowerCase()));
++        return { name: matchedChain || p.name, address: p.address, mapsUrl: p.mapsUrl, lat: p.lat, lng: p.lng };
++      })()
++    : null;
++  return { chains: [...chains], details, independents, closest };
+ }
+ 
+ // ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
+@@ -737,7 +759,7 @@
+   // tier 1) when neither provider is configured or neither confirms a
+   // known chain nearby — this can never make a lookup worse, only more
+   // targeted when it hits.
+-  const { chains: nearbyChains, details: nearbyDetails, independents } = await findNearbyStationBrands(env, location, radius, lat, lon);
++  const { chains: nearbyChains, details: nearbyDetails, independents, closest: closestStation } = await findNearbyStationBrands(env, location, radius, lat, lon);
+   if (nearbyChains.length || independents.length) {
+     const nearbyDomains = nearbyChains.map(c => GAS_STATION_DOMAINS[c]).concat(["gasbuddy.com"]);
+     const namedStations = nearbyChains
+@@ -846,6 +868,42 @@
+     usedEnsemble = best ? tier2Ensemble : false;
+   }
+ 
++  // Tier 3 — TRUE open web, no domain restriction at all. Absolute last
++  // resort: only fires when tiers 0-2 (every one of them restricted to
++  // GAS_STATION_DOMAINS + GasBuddy) found genuinely nothing. Some real
++  // areas/chains just don't have anything indexed on the official-domain
++  // list at all — a local BP with no GasBuddy page covering it, e.g. —
++  // and for those, every tier above always comes back empty no matter how
++  // many engines run. This is the tradeoff being made here on purpose: a
++  // real (if less-certain) number beats another blank card. Passing `null`
++  // for includeDomains means the underlying engines apply no site
++  // restriction at all — this CAN return ordinary blogs/news/tracker pages
++  // the strict tiers above deliberately exclude. Every result still has to
++  // pass filterByLocation before a price can be pulled from it (same as
++  // every tier above), so "near you" still can't quietly resolve to
++  // "cheapest anywhere in the country" — only which SITES are eligible is
++  // being loosened here, not the location check. Every price built from
++  // this tier is flagged `openWebSource: true` below so the client shows
++  // an explicit "unofficial source" caveat instead of presenting it with
++  // the same confidence as a domain-restricted result.
++  let usedOpenWeb = false;
++  if (!best) {
++    let webResults = [], webProviders = [];
++    try {
++      ({ results: webResults, providers: webProviders } = await searchAllSources(env, query, null));
++    } catch (err) {
++      webResults = [];
++    }
++    webResults = filterByLocation(webResults, location, zip, { allowLoose: true, allowFallback: true });
++    const tier3Ensemble = webResults.length > 0 && multipleLLMsConfigured(env);
++    best = await extractBest(env, webResults, tier3Ensemble, location);
++    if (best) {
++      usedProvider = webProviders.join("+");
++      usedEnsemble = tier3Ensemble;
++      usedOpenWeb = true;
++    }
++  }
++
+   if (!best) return null;
+ 
+   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
+@@ -860,14 +918,16 @@
+       price: best.price, store: domainChain, unconfirmedStore: false, sourceHost: hostname(best.url),
+       url: best.url, productUrl: best.url, blogUrl: null,
+       provider: usedProvider, usedEnsemble, locationUnverified: best.locationUnverified === true,
++      openWebSource: usedOpenWeb,
+       ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
+     };
+   }
+ 
+-  // Price came from GasBuddy (an aggregator, not a station itself) or
+-  // a subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
+-  // exact hostname — never a blog/forum/news page, since every tier above
+-  // (0, 1, and 2) is restricted to a fixed gas-related domain list. Try to
++  // Price came from GasBuddy (an aggregator, not a station itself), a
++  // subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
++  // exact hostname, or — only when usedOpenWeb is true — an ordinary blog/
++  // tracker/news page tier 3 above was allowed to return since tiers 0-2
++  // all came up empty. Try to
+   // resolve an actual station-brand page AND check Foursquare for a real
+   // nearby branch. Fired concurrently (not one-then-the-other) since
+   // neither depends on the other's result — this is the "faster" half of
+@@ -878,16 +938,34 @@
+     best.chain ? findOfficialStationPage(env, best.chain) : Promise.resolve(null),
+     (best.chain && nearbyDetails[best.chain])
+       ? Promise.resolve({ verifiedNearby: true, address: nearbyDetails[best.chain].address, mapsUrl: nearbyDetails[best.chain].mapsUrl })
+-      : verifyNearbyGasStation(env, best.store, location, radius, lat, lon)
++      // best.store is null right here exactly when there's no name to
++      // verify against — skip the round-trip instead of calling
++      // verifyNearbyGasStation with name=null (both providers early-return
++      // null on that anyway, see their own guards above).
++      : (best.store ? verifyNearbyGasStation(env, best.store, location, radius, lat, lon) : Promise.resolve(null))
+   ]);
++
++  // best.store is null when no real station brand could be identified in
++  // the text the price came from (see extractLowestPriceRegex/
++  // parsePriceResponse) — this is the common case for GasBuddy/aggregator
++  // "as low as $X in your area" pages that never name a specific pump.
++  // Previously that meant the card fell back to a bare "Station not
++  // confirmed · via gasbuddy.com" line with no address at all — technically
++  // honest, but useless for "which station do I actually drive to." Tier 0
++  // already ran a real nearby-stations lookup (Foursquare/Google Places)
++  // before any of this searching started, so instead of showing nothing,
++  // attach the CLOSEST real confirmed-nearby station from that lookup —
++  // still labeled honestly (priceIsAreaEstimate: true) as "this is the
++  // nearest real station, the price itself is an area figure, not verified
++  // at this specific pump" rather than pretending the aggregator's number
++  // was posted at that exact address.
++  const fallbackStation = (!best.store && closestStation) ? closestStation : null;
+   return {
+     price: best.price,
+-    // best.store is null when no real station brand could be identified
+-    // in the text (see extractLowestPriceRegex/parsePriceResponse) — the
+-    // client shows an honest "unconfirmed" label instead of a fabricated
+-    // one in that case, using sourceHost for the "where this came from" link.
+-    store: best.store,
+-    unconfirmedStore: !best.store,
++    store: fallbackStation ? fallbackStation.name : best.store,
++    unconfirmedStore: !best.store && !fallbackStation,
++    priceIsAreaEstimate: !!fallbackStation,
++    openWebSource: usedOpenWeb,
+     sourceHost: best.sourceHost || hostname(best.url),
+     locationUnverified: best.locationUnverified === true,
+     url: productUrl || best.url,
+@@ -895,7 +973,9 @@
+     blogUrl: best.url,
+     provider: usedProvider,
+     usedEnsemble,
+-    ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
++    ...(fallbackStation
++      ? { verifiedNearby: true, address: fallbackStation.address, mapsUrl: fallbackStation.mapsUrl }
++      : (nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {}))
+   };
+ }
+ 
+--- a/dist/index.html
++++ b/dist/index.html
+@@ -1372,6 +1372,13 @@
+   const mapsUrl = isSafeUrl(item.mapsUrl);
+   if (isGas && item.isStateAverage) {
+     gasCaveat = `<div class="verified-note">📊 Statewide average, not a specific station${item.sourceAttribution ? ` &middot; ${escapeHtml(item.sourceAttribution)}` : ""}</div>`;
++  } else if (isGas && item.priceIsAreaEstimate && item.address) {
++    // Closest real station tier-0 confirmed nearby, but the price itself
++    // came from an aggregator page that never named a specific pump —
++    // show the real nearest station (so there's always somewhere to
++    // actually drive to) while staying honest that the price is an area
++    // figure, not something confirmed at that exact address.
++    gasCaveat = `<div class="verified-note">📍 Closest station: ${escapeHtml(item.address)} &middot; price is an area estimate, not confirmed at this pump</div>`;
+   } else if (isGas && item.address) {
+     gasCaveat = `<div class="verified-note">📍 ${escapeHtml(item.address)}</div>`;
+   } else if (isGas && (item.unconfirmedStore || item.locationUnverified)) {
+@@ -1380,6 +1387,14 @@
+       : escapeHtml(item.sourceHost || "source unclear");
+     gasCaveat = `<div class="verified-note">⚠️ ${item.unconfirmedStore ? "Station not confirmed" : "Location not confirmed"} &middot; via ${srcLink}</div>`;
+   }
++  // Tier 3 (true open web — see gas-price.js) can win even when one of the
++  // cases above already set a caveat (e.g. it found a real address AND
++  // came from an unrestricted source) — append rather than replace, so
++  // the reader always sees "this came from an ordinary web page, not an
++  // official chain/GasBuddy source" regardless of which other case fired.
++  if (isGas && item.openWebSource) {
++    gasCaveat += `<div class="verified-note">🌐 Unofficial web source &middot; double-check before you drive there</div>`;
++  }
+ 
+   return `<div class="item-card${isGas ? " gas-card" : ""}" data-id="${safeId}" data-title="${safeTitle}" data-store="${safeStore}" data-claim="${escapeHtml(claimUrl)}" data-maps="${escapeHtml(mapsUrl || "")}">
+     <div class="item-media">${ribbon}${media}</div>
+@@ -2685,6 +2700,8 @@
+     isStateAverage: data.isStateAverage || false,
+     sourceAttribution: data.sourceAttribution || null,
+     unconfirmedStore: data.unconfirmedStore || false,
++    priceIsAreaEstimate: data.priceIsAreaEstimate || false,
++    openWebSource: data.openWebSource || false,
+     locationUnverified: data.locationUnverified || false,
+     sourceHost: data.sourceHost || null,
+     verifiedNearby: data.verifiedNearby || false,
