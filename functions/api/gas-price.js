@@ -128,6 +128,45 @@ const STATE_ABBR = {
 // (a page can say "county" or "near" without being anywhere close).
 const LOCATION_STOPWORDS = new Set(["near", "county", "area", "city", "town", "usa", "us"]);
 
+// ---------- ZIP3 -> state fallback ----------
+// The bug this fixes: both filterByLocation's state-matching AND the
+// OilPriceAPI last-resort fallback (deriveStateAbbr below) depend on
+// `location` actually containing a state name/abbreviation. The client
+// normally resolves ZIP -> "City, ST" before sending it (see
+// resolveLocationLabelFromZip in dist/index.html), but that lookup can
+// fail (no network, rate-limited, unrecognized ZIP) — and when it does,
+// `location` silently degrades to the bare ZIP digits with NO state
+// information in it at all. Previously that meant: tier 1/2's strict
+// state check could never pass on a state-bearing result even when one
+// was found, AND deriveStateAbbr had nothing to resolve, so the
+// last-resort state-average fallback returned null too — the two layers
+// meant to guarantee "you always get something" could both go empty at
+// once, purely because of a frontend geocoding hiccup, not because
+// nothing was actually found.
+// Standard USPS ZIP3-prefix-range -> state table (approximate at the
+// edges by design; this is a fallback signal, not the primary match).
+const ZIP3_STATE_RANGES = [
+  [5,9,"nj"],[10,27,"ma"],[28,29,"ri"],[30,38,"nh"],[39,49,"me"],[50,59,"vt"],
+  [60,69,"ct"],[70,89,"nj"],[100,149,"ny"],[150,196,"pa"],[197,199,"de"],
+  [200,205,"dc"],[206,219,"md"],[220,246,"va"],[247,268,"wv"],[270,289,"nc"],
+  [290,299,"sc"],[300,319,"ga"],[320,339,"fl"],[340,340,"fl"],[341,349,"fl"],
+  [350,369,"al"],[370,385,"tn"],[386,397,"ms"],[398,399,"ga"],[400,427,"ky"],
+  [430,458,"oh"],[459,459,"in"],[460,479,"in"],[480,499,"mi"],[500,528,"ia"],
+  [530,549,"wi"],[550,567,"mn"],[570,577,"sd"],[580,588,"nd"],[590,599,"mt"],
+  [600,629,"il"],[630,658,"mo"],[660,679,"ks"],[680,693,"ne"],[700,714,"la"],
+  [716,729,"ar"],[730,749,"ok"],[750,799,"tx"],[800,816,"co"],[820,831,"wy"],
+  [832,838,"id"],[840,847,"ut"],[850,865,"az"],[870,884,"nm"],[889,898,"nv"],
+  [900,961,"ca"],[967,968,"hi"],[970,979,"or"],[980,994,"wa"],[995,999,"ak"]
+];
+function zip3ToState(zip) {
+  const digits = (zip || "").replace(/[^0-9]/g, "");
+  if (digits.length < 3) return null;
+  const prefix = parseInt(digits.slice(0, 3), 10);
+  if (isNaN(prefix)) return null;
+  const hit = ZIP3_STATE_RANGES.find(([min, max]) => prefix >= min && prefix <= max);
+  return hit ? hit[2] : null;
+}
+
 // Pulls out the meaningful place-name tokens from whatever the client sent
 // as `location` (a city/state string, or just a raw ZIP) — e.g.
 // "Lafayette, TN" -> cityTokens: ["lafayette"], stateTokens: ["tn", "tennessee"].
@@ -153,6 +192,19 @@ function locationKeywords(location, zip) {
     if (STATE_ABBR[part]) stateTokens.add(STATE_ABBR[part]);
     for (const [full, abbr] of Object.entries(STATE_ABBR)) {
       if (abbr === part) stateTokens.add(full.replace(/\s+/g, ""));
+    }
+  }
+  // If nothing in the location text itself resolved to a state (e.g.
+  // `location` degraded to a bare ZIP — see the ZIP3 fallback comment
+  // above), derive one from the ZIP so the strict state check still has
+  // something to work with instead of silently having zero state tokens.
+  if (!stateTokens.size) {
+    const zipState = zip3ToState(zip);
+    if (zipState) {
+      stateTokens.add(zipState);
+      for (const [full, abbr] of Object.entries(STATE_ABBR)) {
+        if (abbr === zipState) stateTokens.add(full.replace(/\s+/g, ""));
+      }
     }
   }
   return { cityTokens: [...cityTokens], stateTokens: [...stateTokens], zipToken };
@@ -669,13 +721,16 @@ async function verifyNearbyGasStation(env, name, location, radius, lat, lon) {
 // domain to redisplay, but OilPriceAPI's terms require crediting
 // "Source: U.S. EIA" wherever it's shown — see `sourceAttribution` below;
 // surface it on the card if this fallback is the one that answers.
-function deriveStateAbbr(location) {
-  // Reuses the STATE_ABBR map above. Only works if `location` names a
-  // state/city (e.g. "Lafayette, TN") — a bare ZIP alone (what the client
-  // falls back to sending when no location text is set) can't be resolved
-  // to a state this way without a ZIP->state lookup table, which isn't
-  // wired in here. In that case this returns null and the fallback simply
-  // has nothing to offer, same as if it weren't configured at all.
+function deriveStateAbbr(location, zip) {
+  // Reuses the STATE_ABBR map above. Works if `location` names a
+  // state/city (e.g. "Lafayette, TN"); falls back to the ZIP3 table
+  // (zip3ToState, defined above) when it doesn't — e.g. `location`
+  // degraded to a bare ZIP because the client's zip->city resolution
+  // failed. That fallback used to not exist, which meant this LAST-RESORT
+  // safety net could itself return null in exactly the situation it's
+  // most needed: nothing else found a price, and there's no state name
+  // available to average against, even though the ZIP alone is enough to
+  // make a reasonable guess.
   const parts = (location || "").split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean);
   for (const part of parts) {
     if (STATE_ABBR[part]) return STATE_ABBR[part];
@@ -683,13 +738,13 @@ function deriveStateAbbr(location) {
       if (abbr === part) return abbr;
     }
   }
-  return null;
+  return zip3ToState(zip);
 }
 
-async function getOilPriceApiPrice(env, location) {
+async function getOilPriceApiPrice(env, location, zip) {
   if (!env.OILPRICEAPI_KEY) return null; // not configured — skip, don't fail the whole request
-  const stateAbbr = deriveStateAbbr(location);
-  if (!stateAbbr) return null; // couldn't tell which state from what the client sent
+  const stateAbbr = deriveStateAbbr(location, zip);
+  if (!stateAbbr) return null; // couldn't tell which state from what the client sent, even via ZIP
 
   const code = `GASOLINE_RETAIL_STATE_${stateAbbr.toUpperCase()}_USD`;
   const res = await fetchWithTimeout(`https://api.oilpriceapi.com/v1/prices/latest?by_code=${code}`, {
@@ -769,6 +824,7 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
       usedEnsemble = nearbyEnsemble;
     }
   }
+  console.error(`gas-price tier0: nearbyChains=${nearbyChains.length} independents=${independents.length} -> ${best ? "hit" : "empty"}`);
 
   // Tier 1 — full known gas station chains + GasBuddy list. Only runs
   // when tier 0 was skipped (no Foursquare key / no known chain confirmed
@@ -816,6 +872,7 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
     best = await extractBest(env, officialResults, tier1Ensemble, location);
     usedProvider = best ? officialProviders.join("+") : null;
     usedEnsemble = best ? tier1Ensemble : false;
+    console.error(`gas-price tier1: providers=${officialProviders.join(",") || "none"} rawResults=${officialResults.length} -> ${best ? "hit" : "empty"}`);
   }
 
   // Tier 2 — same official domain list as tier 1 (GAS_DOMAIN_LIST), never
@@ -844,9 +901,13 @@ async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
     best = await extractBest(env, openResults, tier2Ensemble, location);
     usedProvider = best ? openProviders.join("+") : null;
     usedEnsemble = best ? tier2Ensemble : false;
+    console.error(`gas-price tier2: providers=${openProviders.join(",") || "none"} rawResults=${openResults.length} -> ${best ? "hit" : "empty"}`);
   }
 
-  if (!best) return null;
+  if (!best) {
+    console.error("gas-price: all tiers (0-2) empty, falling through to OilPriceAPI last resort");
+    return null;
+  }
 
   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
@@ -938,7 +999,7 @@ export async function onRequestGet({ request, env }) {
   // in when web search found nothing at all.
   if (!result) {
     try {
-      result = await getOilPriceApiPrice(env, location);
+      result = await getOilPriceApiPrice(env, location, zip);
     } catch (err) {
       console.error("OilPriceAPI fallback failed:", err.message);
       // fall through to the "nothing found" response below — never surface
