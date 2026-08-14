@@ -1,0 +1,958 @@
+--- a/functions/api/gas-price.js
++++ b/functions/api/gas-price.js
+@@ -2,44 +2,39 @@
+ //
+ // Same shape/contract as grocery-price.js's response — { price, store, url,
+ // productUrl, blogUrl, provider, usedEnsemble } — but for regular unleaded
+-// gas instead of a grocery item. There's no Kroger-style official-API side
+-// here (no free, keyless fuel-price API exists the way Kroger's product API
+-// does for groceries), so this is web search — but it NEVER opens up to the
+-// general web at any point. Every pass (see getWebSearchGasPrice below)
+-// stays restricted to gas-specific sources: known gas station chain sites
+-// (see GAS_STATION_DOMAINS — a broad, ~45-brand list, not just a handful)
+-// plus GasBuddy, the trusted, frequently-updated price-aggregator
+-// sites GasBuddy's own app effectively rolls up. No news sites, no blogs,
+-// no forums, ever — that fallback existed briefly and was deliberately
+-// removed; gas price data is either a real gas-related source or the
+-// OilPriceAPI state-average last resort, nothing in between. Tier 0 (see
+-// below) additionally cross-checks Foursquare for which of those brands
+-// are ACTUALLY near the user before searching, so a found price is tied to
+-// a station Foursquare confirms is really nearby, not just a same-named
+-// chain page somewhere else in the country.
++// gas instead of a grocery item.
++//
++// SIMPLIFIED BY DESIGN (see conversation that led here): earlier versions
++// of this file ran a multi-tier pipeline — a Foursquare/Google Places
++// nearby-brand lookup, then a strict location-match search, then a looser
++// location-match search, then an open-web fallback — all built to
++// guarantee the winning price was tied to a station confirmed physically
++// near the user. That pipeline is gone. This version does exactly one
++// thing: search the ~45 known gas station chain domains (see
++// GAS_STATION_DOMAINS below) plus GasBuddy for today's cheapest regular
++// unleaded price, with NO location/geo filtering at all — the winning
++// price is simply the lowest one found across those domains, wherever
++// that happens to be. That's a deliberate tradeoff: it's far less likely
++// to come back empty than the old pipeline was, but it no longer
++// guarantees "near you" — the winning station could be anywhere the
++// search engines indexed a price for one of these 45 brands. If you want
++// the location-aware behavior back, it's preserved in
++// closest-gas-station-fallback.patch / open-web-fallback-gas.patch.
+ //
+ // Client never sees any search/LLM keys — same trust boundary as every
+ // other endpoint here.
+ import { searchWithFallback as sharedSearchWithFallback, searchAllSources as sharedSearchAllSources } from "../_shared/search-providers.js";
+ import { chatWithFallback, chatWithEnsemble, anyLLMConfigured, multipleLLMsConfigured } from "../_shared/llm-providers.js";
+ import { checkRateLimit, rateLimitResponse } from "../_shared/rate-limit.js";
+-// Wraps the OilPriceAPI call in an 8s timeout — the Foursquare call below
+-// already had its own (see FOURSQUARE_TIMEOUT_MS), this one didn't.
+ import { fetchWithTimeout } from "../_shared/fetch-timeout.js";
+ 
+ // Real gas station chains, mapped to their own domain so results can be
+-// restricted to a station's actual site — plus GasBuddy, which
+-// aren't stores but are the two most commonly-cited, frequently-refreshed
+-// crowd-sourced price trackers, so including them in the domain-restricted
+-// tier 1 pass (instead of only in an open-web fallback that no longer
+-// exists) gets a sourced, current price far more often than chain sites
+-// alone, which rarely publish per-station pricing on their own domains.
++// restricted to a station's actual site — plus GasBuddy, the most
++// commonly-cited, frequently-refreshed crowd-sourced price tracker.
+ // Deliberately broad (~45 brands) rather than just the dozen biggest
+ // national names — regional chains (Kwik Trip, Casey's, Sheetz, QuikTrip,
+ // Wawa, etc.) are exactly what someone outside a handful of major metro
+-// areas is actually going to find nearby, so leaving them out would mean
+-// tier 0's "which of these are near the user" cross-check (below) misses
+-// real local options.
++// areas is actually going to find nearby.
+ const GAS_STATION_DOMAINS = {
+   "Shell": "shell.com", "Chevron": "chevron.com", "ExxonMobil": "exxon.com",
+   "Mobil": "mobil.com", "BP": "bp.com", "Marathon": "marathon.com",
+@@ -62,35 +57,18 @@
+ const GAS_CHAINS = Object.keys(GAS_STATION_DOMAINS);
+ const GAS_DOMAIN_LIST = Object.values(GAS_STATION_DOMAINS);
+ const DOMAIN_TO_CHAIN = Object.fromEntries(Object.entries(GAS_STATION_DOMAINS).map(([chain, domain]) => [domain, chain]));
+-// GasBuddy is an aggregator, not the actual station — never label a
+-// card with them as the "store", even when the domain matched them
+-// directly (see the two spots below that check this before trusting
+-// domainChain as the display store name).
++// GasBuddy is an aggregator, not the actual station — never label a card
++// with them as the "store", even when the domain matched them directly.
+ const AGGREGATOR_CHAINS = new Set(["GasBuddy"]);
+ 
+ function hostname(url) { try { return new URL(url).hostname.replace("www.", ""); } catch { return "Web"; } }
+ 
+-// Tier 1 asks each search engine to restrict itself to GAS_DOMAIN_LIST via
+-// that engine's own `includeDomains`/`site:` mechanism — but that's a
+-// per-engine best-effort hint, not a guarantee. Tavily/Serper/Exa's real
+-// `include_domains` params are reliable; DuckDuckGo (the free, no-key,
+-// always-available terminal tier — see DEPLOY_INSTRUCTIONS.md, and the
+-// only tier active at all if no search API key is configured) works by
+-// appending `(site:shell.com OR site:chevron.com OR ...)` — 22 ORed
+-// site: clauses — to a plain HTML-scrape query, and DDG's lite search
+-// frequently drops or partially ignores long boolean site: chains like
+-// that instead of erroring. When it does, "tier 1, official chains only"
+-// silently comes back full of ordinary web results (blogs, forums,
+-// price-comparison sites) that were never actually restricted to a real
+-// station's own domain — which is exactly what read as "gas prices are
+-// pulling from blogs, not real stations." This is the actual server-side
+-// enforcement tier 1 was always supposed to have: keep only results whose
+-// URL hostname genuinely IS one of GAS_STATION_DOMAINS, and drop anything
+-// else, regardless of whether the search engine says it already filtered.
+-// Tier 2 (the open web) is intentionally NOT run through this — it's
+-// allowed to return third-party pages by design, which is why those cards
+-// get an honest "unconfirmed"/blog-sourced label instead of a real chain
+-// name (see getWebSearchGasPrice below).
++// Server-side enforcement of the domain restriction the search engines
++// were ASKED to apply — never trust that they actually honored it (a
++// per-engine `includeDomains`/`site:` hint is best-effort, not a
++// guarantee; DuckDuckGo in particular often ignores or partially matches
++// a long boolean site: chain). Keeps only results whose URL hostname
++// genuinely IS one of GAS_STATION_DOMAINS, and drops anything else.
+ function restrictToOfficialDomains(results) {
+   return results.filter(r => {
+     const host = hostname(r.url);
+@@ -98,127 +76,6 @@
+   });
+ }
+ 
+-// ---------- Location relevance filter ----------
+-// The bug this fixes: GAS_STATION_DOMAINS are national chain homepages
+-// (shell.com, gasbuddy.com, etc.) — restricting a search to those domains
+-// does NOT restrict it geographically, and the search engines used here
+-// are keyword-matchers, not geocoders. A query stuffed with 22 chain names
+-// plus "near Lafayette, TN" can easily come back with a real, current gas
+-// price... for a station in Ohio, because the page matched on chain name
+-// and the word "gas" and nothing enforced that Lafayette/TN actually
+-// appears anywhere in the result. This filter rejects any result that
+-// doesn't actually mention the target location before a price is ever
+-// extracted from it, so "cheapest near you" can't silently resolve to
+-// "cheapest anywhere Google could find."
+-const STATE_ABBR = {
+-  alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
+-  colorado: "co", connecticut: "ct", delaware: "de", florida: "fl", georgia: "ga",
+-  hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia",
+-  kansas: "ks", kentucky: "ky", louisiana: "la", maine: "me", maryland: "md",
+-  massachusetts: "ma", michigan: "mi", minnesota: "mn", mississippi: "ms",
+-  missouri: "mo", montana: "mt", nebraska: "ne", nevada: "nv",
+-  "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm", "new york": "ny",
+-  "north carolina": "nc", "north dakota": "nd", ohio: "oh", oklahoma: "ok",
+-  oregon: "or", pennsylvania: "pa", "rhode island": "ri", "south carolina": "sc",
+-  "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
+-  virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi",
+-  wyoming: "wy"
+-};
+-// Words too generic to prove a result is actually about the target place
+-// (a page can say "county" or "near" without being anywhere close).
+-const LOCATION_STOPWORDS = new Set(["near", "county", "area", "city", "town", "usa", "us"]);
+-
+-// Pulls out the meaningful place-name tokens from whatever the client sent
+-// as `location` (a city/state string, or just a raw ZIP) — e.g.
+-// "Lafayette, TN" -> cityTokens: ["lafayette"], stateTokens: ["tn", "tennessee"].
+-// Split into two buckets (instead of one flat list) because a match on
+-// EITHER alone isn't good enough to prove a result is about the right
+-// place — "Lafayette" is a real city name in at least a dozen states
+-// (LA, IN, CA, CO, GA...), so a snippet that only says "Lafayette" with no
+-// Tennessee/TN anywhere near it is just as likely to be about one of
+-// those as about this one. See resultMentionsLocation for how the two
+-// buckets get combined.
+-function locationKeywords(location, zip) {
+-  const cityTokens = new Set();
+-  const stateTokens = new Set();
+-  const zipToken = zip ? zip.toLowerCase() : null;
+-  const parts = (location || "").split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean);
+-  for (const part of parts) {
+-    const partIsState = !!STATE_ABBR[part] || Object.values(STATE_ABBR).includes(part);
+-    for (const word of part.split(/\s+/)) {
+-      const clean = word.replace(/[^a-z0-9]/g, "");
+-      if (clean.length < 2 || LOCATION_STOPWORDS.has(clean)) continue;
+-      (partIsState ? stateTokens : cityTokens).add(clean);
+-    }
+-    if (STATE_ABBR[part]) stateTokens.add(STATE_ABBR[part]);
+-    for (const [full, abbr] of Object.entries(STATE_ABBR)) {
+-      if (abbr === part) stateTokens.add(full.replace(/\s+/g, ""));
+-    }
+-  }
+-  return { cityTokens: [...cityTokens], stateTokens: [...stateTokens], zipToken };
+-}
+-
+-// STRICT: requires a real place-name token, AND (when we actually have a
+-// state to check) a state token too, before trusting a result names the
+-// target place. A bare ZIP match also counts as strict on its own — ZIPs
+-// aren't shared across states, so no second token is needed to trust one.
+-function resultMentionsLocationStrict(r, keywords) {
+-  const { cityTokens, stateTokens, zipToken } = keywords;
+-  if (!cityTokens.length && !stateTokens.length && !zipToken) return true; // nothing usable to match against
+-  const text = ((r.title || "") + " " + (r.content || "") + " " + (r.url || "")).toLowerCase();
+-  if (zipToken && text.includes(zipToken)) return true;
+-  const hasCity = cityTokens.length === 0 || cityTokens.some(kw => kw.length >= 3 && text.includes(kw));
+-  const hasState = stateTokens.length === 0 || stateTokens.some(kw => text.includes(kw));
+-  // Require whichever of the two buckets actually has tokens to match —
+-  // if we only ever had a city name (no state was given to us at all),
+-  // don't demand a state hit that could never happen either way.
+-  return (cityTokens.length === 0 || hasCity) && (stateTokens.length === 0 || hasState) && (cityTokens.length > 0 || stateTokens.length > 0);
+-}
+-
+-// LOOSE: the old single-token behavior — any one token, city or state,
+-// anywhere in the text. Kept only as a second-chance pass (see
+-// filterByLocation) for small towns whose name plus state genuinely never
+-// appears verbatim together in a snippet (common with GasBuddy pages
+-// that key off a ZIP or a nearby metro instead). Loose is intentionally
+-// weaker, so it's never the FIRST thing tried — see filterByLocation.
+-function resultMentionsLocationLoose(r, keywords) {
+-  const { cityTokens, stateTokens, zipToken } = keywords;
+-  const all = [...cityTokens, ...stateTokens, ...(zipToken ? [zipToken] : [])];
+-  if (!all.length) return true;
+-  const text = ((r.title || "") + " " + (r.content || "") + " " + (r.url || "")).toLowerCase();
+-  return all.some(kw => kw.length >= 3 && text.includes(kw));
+-}
+-
+-// Keeps only results that actually mention the target location, so a
+-// price can never be extracted from a page about some other state/city
+-// just because it matched on chain name or the word "gas". Three passes,
+-// each only tried if the one before it came back empty:
+-//   1. STRICT  — place name AND state both present (or a ZIP hit alone).
+-//      This is the only pass tier 1 (see gas-price.js's caller) ever
+-//      gets — an empty strict match there just means "try the open web
+-//      next," which is fine, tier 2 is right there waiting.
+-//   2. LOOSE   — `allowLoose` only (tier 2 passes this): single-token
+-//      match, for small towns that genuinely never get their state named
+-//      alongside them in a snippet.
+-//   3. UNFILTERED — `allowFallback` only (tier 2's last resort): every
+-//      result mentioned nothing recognizable as the target place at all.
+-//      Returned results are flagged `locationUnverified: true` so the
+-//      caller can be honest with the client about it instead of quietly
+-//      presenting a possibly-wrong-city price as a confirmed local one.
+-function filterByLocation(results, location, zip, { allowLoose = false, allowFallback = false } = {}) {
+-  const keywords = locationKeywords(location, zip);
+-  const strict = results.filter(r => resultMentionsLocationStrict(r, keywords));
+-  if (strict.length) return strict;
+-  if (allowLoose) {
+-    const loose = results.filter(r => resultMentionsLocationLoose(r, keywords));
+-    if (loose.length) return loose;
+-  }
+-  if (allowFallback && results.length) {
+-    return results.map(r => ({ ...r, locationUnverified: true }));
+-  }
+-  return [];
+-}
+-
+ // Gas prices are commonly quoted to a third decimal (e.g. $3.199), unlike
+ // grocery prices — the regex allows 2 or 3 decimal places accordingly.
+ function extractLowestPriceRegex(results) {
+@@ -233,13 +90,7 @@
+       if (!isNaN(val) && val >= 1.5 && val <= 8 && (!best || val < best.price)) {
+         const domainChain = DOMAIN_TO_CHAIN[hostname(r.url)];
+         const chain = (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) ? domainChain : findChainName(combinedText);
+-        // Don't fabricate a "store" out of a blog/tracker's own domain
+-        // name when no real station brand was actually found in the text
+-        // — that's how a card used to end up labeled with something like
+-        // "gasprices.blogspot.com" as if it were a place. Leave store
+-        // null instead; getWebSearchGasPrice below turns that into an
+-        // honest "unconfirmed" label and keeps sourceHost for the link.
+-        best = { price: val, store: chain || null, chain, url: r.url, sourceHost: hostname(r.url), locationUnverified: r.locationUnverified === true };
++        best = { price: val, store: chain || null, chain, url: r.url, sourceHost: hostname(r.url) };
+       }
+     }
+   }
+@@ -255,14 +106,11 @@
+   return null;
+ }
+ 
+-async function extractLowestPriceLLM(env, results, { ensemble = false, location = null } = {}) {
++async function extractLowestPriceLLM(env, results, { ensemble = false } = {}) {
+   const snippetText = results
+     .map((r, i) => `[${i}] ${r.title}\nURL: ${r.url}\n${(r.content || "").slice(0, 500)}`)
+     .join("\n\n");
+-  const locationGuard = location
+-    ? ` These snippets are USUALLY pre-filtered to mention "${location}" somewhere, but not always (a small town's name doesn't always show up verbatim in a snippet) — so don't assume: only use a snippet if it's genuinely about a station in or near ${location}, not a different city/state that happens to share a chain name or a word.`
+-    : "";
+-  const prompt = `You are finding the lowest real current price per gallon for regular unleaded gasoline, from these search result snippets.${locationGuard} Ignore prices for premium/diesel unless that's all a snippet gives, ignore prices for unrelated products (snacks, car washes, other cities), and ignore vague "prices range from X to Y" statements unless a specific station price is given.
++  const prompt = `You are finding the lowest real current price per gallon for regular unleaded gasoline, from these search result snippets. Ignore prices for premium/diesel unless that's all a snippet gives, ignore prices for unrelated products (snacks, car washes), and ignore vague "prices range from X to Y" statements unless a specific station price is given.
+ 
+ For the winning snippet, identify the actual STATION BRAND the price is from (e.g. "Shell", "QuikTrip", "Costco") — read this out of the text itself, not the website's domain name. GasBuddy is a price-tracking site, not a station — if the underlying station brand is named in the text, use that instead. If a specific location is mentioned (e.g. a street or city), include it. If no station brand is stated anywhere, set store to null.
+ 
+@@ -289,7 +137,6 @@
+     return corroboratePrice(parsedList);
+   }
+ 
+-
+   let text;
+   try {
+     ({ text } = await chatWithFallback(env, prompt, { temperature: 0, maxTokens: 200 }));
+@@ -307,20 +154,16 @@
+ 
+   const raw = results[parsed.index];
+   const domainChain = DOMAIN_TO_CHAIN[hostname(raw.url)];
+-  const locationUnverified = raw.locationUnverified === true;
+   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
+-    return { price: parsed.price, store: domainChain, chain: domainChain, url: raw.url, locationUnverified };
++    return { price: parsed.price, store: domainChain, chain: domainChain, url: raw.url };
+   }
+   const chain = findChainName((parsed.store || "") + " " + (raw.content || "") + " " + (raw.title || "")) || null;
+-  // Trust the LLM's own read of the station brand (it read the actual
+-  // page text, could be a real regional chain not in GAS_CHAINS) — but
+-  // never fall back to the raw domain name the way this used to. A blog
+-  // or tracker's hostname is not a gas station; presenting it as `store`
+-  // made every blog-sourced price look like a real, named local place
+-  // when it wasn't. Leave store null in that case; sourceHost carries the
+-  // domain through for an honest "Source: X" link instead.
++  // Trust the LLM's own read of the station brand — but never fall back
++  // to the raw domain name. A blog or tracker's hostname is not a gas
++  // station; sourceHost carries the domain through for an honest
++  // "Source: X" link instead.
+   const store = (parsed.store && String(parsed.store).trim()) || chain || null;
+-  return { price: parsed.price, store, chain, url: raw.url, sourceHost: hostname(raw.url), locationUnverified };
++  return { price: parsed.price, store, chain, url: raw.url, sourceHost: hostname(raw.url) };
+ }
+ 
+ function corroboratePrice(parsedList) {
+@@ -335,23 +178,18 @@
+ }
+ 
+ const GAS_SEARCH_OPTS = { maxResults: 8 };
+-async function searchWithFallback(env, query, domains) {
+-  return sharedSearchWithFallback(env, query, domains, GAS_SEARCH_OPTS); // { results, provider }
+-}
+-// searchAllSources: fires the currently-ACTIVE tier's engines in parallel
+-// (see the strict sequential TIER system in search-providers.js — NOT
+-// every configured engine on every call) — used for both passes below.
+-// Gas is a single lookup per scan (unlike grocery-price.js's ~11 items),
+-// so this doesn't multiply cost the way it would there.
+ async function searchAllSources(env, query, domains) {
+   return sharedSearchAllSources(env, query, domains, GAS_SEARCH_OPTS);
+ }
++async function searchWithFallback(env, query, domains) {
++  return sharedSearchWithFallback(env, query, domains, GAS_SEARCH_OPTS);
++}
+ 
+-async function extractBest(env, results, useEnsemble, location) {
++async function extractBest(env, results, useEnsemble) {
+   if (!results.length) return null;
+   if (anyLLMConfigured(env)) {
+     try {
+-      const llmBest = await extractLowestPriceLLM(env, results, { ensemble: useEnsemble, location });
++      const llmBest = await extractLowestPriceLLM(env, results, { ensemble: useEnsemble });
+       if (llmBest) return llmBest;
+     } catch (err) {
+       // fall through to regex
+@@ -360,10 +198,9 @@
+   return extractLowestPriceRegex(results);
+ }
+ 
+-// Mirrors findOfficialProductPage in grocery-price.js — once we know the
+-// winning chain, try a second targeted search on that chain's own site so
+-// "Claim" can point at the station brand's page instead of the blog/
+-// aggregator page where the price was actually found.
++// Once we know the winning chain, try a second targeted search on that
++// chain's own site so "Claim" can point at the station brand's page
++// instead of the blog/aggregator page where the price was actually found.
+ async function findOfficialStationPage(env, chain) {
+   const domain = GAS_STATION_DOMAINS[chain];
+   if (!domain || AGGREGATOR_CHAINS.has(chain)) return null;
+@@ -375,313 +212,30 @@
+   }
+ }
+ 
+-// ---------- Foursquare Places API: which real brands are nearby ----------
+-// Runs BEFORE any price search (see tier 0 in getWebSearchGasPrice) — asks
+-// Foursquare which of GAS_STATION_DOMAINS' ~45 brands actually have a
+-// location within the user's radius, so the price search can be anchored
+-// to real nearby stations by name instead of guessing generically across
+-// the whole country. Distinct from verifyNearbyGasStation below (which
+-// checks for exactly ONE already-known station name AFTER a price is
+-// found) — this returns a shortlist of BRANDS, not addresses, and never
+-// blocks the rest of the lookup: no Foursquare key configured, a timeout,
+-// or zero matches nearby all just mean tier 0 is skipped and tier 1 (the
+-// existing generic domain-list search) runs instead, same as before this
+-// existed.
+-const NEARBY_STATION_LIMIT = 15;
+-async function findNearbyStationBrandsFoursquare(env, location, radius) {
+-  if (!env.FOURSQUARE_API_KEY || !location) return [];
+-  const controller = new AbortController();
+-  const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
+-  try {
+-    const radiusMeters = Math.min(100000, Math.round(radius * 1609)); // miles -> meters, Foursquare caps around 100km
+-    const params = new URLSearchParams({
+-      near: location,
+-      radius: String(radiusMeters),
+-      limit: String(NEARBY_STATION_LIMIT),
+-      categories: GAS_STATION_CATEGORY_ID,
+-      fields: "name"
+-    });
+-    const res = await fetch(`https://places-api.foursquare.com/places/search?${params.toString()}`, {
+-      signal: controller.signal,
+-      headers: {
+-        Authorization: `Bearer ${env.FOURSQUARE_API_KEY}`,
+-        "X-Places-Api-Version": "2025-06-17",
+-        accept: "application/json"
+-      }
+-    });
+-    if (!res.ok) return [];
+-    const data = await res.json();
+-    const places = (data && Array.isArray(data.results)) ? data.results : [];
+-    // Foursquare returns nearest-first, so the first name match per chain
+-    // is also the closest branch of that chain — good enough to know "this
+-    // brand has a real location nearby," which is all tier 0 needs.
+-    const found = new Set();
+-    for (const place of places) {
+-      const name = (place.name || "").toLowerCase();
+-      for (const chain of GAS_CHAINS) {
+-        if (AGGREGATOR_CHAINS.has(chain) || found.has(chain)) continue;
+-        if (name.includes(chain.toLowerCase())) found.add(chain);
+-      }
+-    }
+-    return [...found];
+-  } catch (err) {
+-    return []; // best-effort only — never break the rest of the lookup
+-  } finally {
+-    clearTimeout(timer);
+-  }
+-}
+-
+-// Google Places (New) equivalent of the Foursquare pass above — returns
+-// full candidate objects (name/address/coords/mapsUrl), not just a chain
+-// name list, because Google is also used below to build a MORE PRECISE
+-// tier-0 query (real station addresses, not just "Shell near Lafayette,
+-// TN") and to skip a second verify round-trip once a price is found (see
+-// nearbyStationDetails' use in getWebSearchGasPrice). Requires real
+-// lat/lon — Places API (New) Nearby Search takes a circle center, not a
+-// free-text place name the way Foursquare's `near` does, so this is
+-// skipped (not an error, just empty) whenever the client didn't send
+-// coordinates, same fail-open contract as everything else here.
+-async function findNearbyStationsGoogle(env, lat, lon, radius) {
+-  if (!env.GOOGLE_PLACES_API_KEY || typeof lat !== "number" || typeof lon !== "number") return [];
+-  const controller = new AbortController();
+-  const timer = setTimeout(() => controller.abort(), GOOGLE_PLACES_TIMEOUT_MS);
+-  try {
+-    const radiusMeters = Math.min(50000, Math.round(radius * 1609)); // miles -> meters; Places API (New) circle caps at 50km
+-    const res = await fetch("https://places.googleapis.com/v1/places:searchNearby", {
+-      method: "POST",
+-      signal: controller.signal,
+-      headers: {
+-        "Content-Type": "application/json",
+-        "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
+-        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.googleMapsUri"
+-      },
+-      body: JSON.stringify({
+-        includedTypes: ["gas_station"],
+-        maxResultCount: NEARBY_STATION_LIMIT,
+-        rankPreference: "DISTANCE", // nearest-first, not Google's default popularity ranking
+-        locationRestriction: { circle: { center: { latitude: lat, longitude: lon }, radius: radiusMeters } }
+-      })
+-    });
+-    if (!res.ok) return [];
+-    const data = await res.json();
+-    const places = Array.isArray(data.places) ? data.places : [];
+-    return places
+-      .map(p => ({
+-        name: (p.displayName && p.displayName.text) || "",
+-        address: p.formattedAddress || null,
+-        lat: typeof (p.location && p.location.latitude) === "number" ? p.location.latitude : null,
+-        lng: typeof (p.location && p.location.longitude) === "number" ? p.location.longitude : null,
+-        mapsUrl: p.googleMapsUri || null
+-      }))
+-      .filter(p => p.name);
+-  } catch (err) {
+-    return []; // best-effort only, same contract as Foursquare above
+-  } finally {
+-    clearTimeout(timer);
+-  }
+-}
+-
+-// Runs Foursquare (text-location-based) and Google (coordinate-based) in
+-// parallel and merges them into one candidate set — neither replaces the
+-// other since they key off different inputs (Foursquare works from
+-// whatever ZIP/city-state text the client has; Google needs real lat/lon,
+-// which is only there if the browser's geolocation succeeded), and their
+-// coverage genuinely differs by area. Returns:
+-//   - chains: deduped brand names (from GAS_CHAINS) confirmed nearby by
+-//     EITHER provider — same shape callers used before this existed.
+-//   - details: chain name -> {address, mapsUrl, lat, lng} for whichever
+-//     brands Google specifically matched, so a price found for that chain
+-//     later can be labeled with a REAL nearby address without a second
+-//     network round-trip (see verifyNearbyGasStation's caller below).
+-//   - independents: raw Google place names that didn't match any known
+-//     chain — real nearby stations (regional/independent brands not in
+-//     GAS_STATION_DOMAINS) that would otherwise be invisible to a
+-//     domain-restricted search. Kept as name-only candidates; priced (if
+-//     at all) only via the GasBuddy aggregator domain, same as any
+-//     other unbranded result already is.
+-async function findNearbyStationBrands(env, location, radius, lat, lon) {
+-  const [foursquareChains, googlePlaces] = await Promise.all([
+-    findNearbyStationBrandsFoursquare(env, location, radius),
+-    findNearbyStationsGoogle(env, lat, lon, radius)
+-  ]);
+-  const chains = new Set(foursquareChains);
+-  const details = {};
+-  const independents = [];
+-  for (const place of googlePlaces) {
+-    const name = place.name.toLowerCase();
+-    let matched = null;
+-    for (const chain of GAS_CHAINS) {
+-      if (AGGREGATOR_CHAINS.has(chain)) continue;
+-      if (name.includes(chain.toLowerCase())) { matched = chain; break; }
+-    }
+-    if (matched) {
+-      chains.add(matched);
+-      // Google returns nearest-first (rankPreference: DISTANCE), so the
+-      // first match per chain is that chain's closest branch — keep it,
+-      // ignore any farther duplicate of the same brand.
+-      if (!details[matched]) details[matched] = { address: place.address, mapsUrl: place.mapsUrl, lat: place.lat, lng: place.lng };
+-    } else {
+-      independents.push(place);
+-    }
+-  }
+-  return { chains: [...chains], details, independents };
+-}
+-
+-// ---------- Foursquare Places API (nearby-existence check, UNVERIFIED) ----------
+-// Same UNVERIFIED CONTRACT as restaurant-deals.js's verifyNearbyWithFoursquare
+-// (see that file's header comment for the full caveat — endpoint/auth header
+-// confirmed against one real working example, not Foursquare's own docs
+-// directly). Generalized here so it fires on whatever station NAME the
+-// price-extraction path actually identified — best.store from extractBest
+-// above — whether or not that name matched one of the named chains in
+-// GAS_STATION_DOMAINS. An independent/regional station the LLM correctly
+-// read out of a snippet still gets a real address + maps link instead of
+-// silently having nothing beyond a blog URL.
+-//
+-// Two things this version adds on top of the restaurant one, both from the
+-// "only gas stations, and faster" ask:
+-//   1. `categories` — restricts Foursquare's OWN matching to the "Gas
+-//      Station / Garage" taxonomy id, confirmed against Foursquare's
+-//      published category list (id 4bf58dd8d48988d113951735). Without this,
+-//      a `query: name` search can match a same-named restaurant, car wash,
+-//      or convenience store that isn't actually a pump — this is what
+-//      keeps the nearby-check itself honest the way the location filter
+-//      keeps the price search honest.
+-//   2. `fields` + a short timeout — this call only ever reads
+-//      name/location/lat/lng (see below), so asking Foursquare to skip
+-//      computing photos/hours/ratings/tips/features cuts real response
+-//      size, and a 3s AbortController means one slow Foursquare request
+-//      can't stall the whole gas lookup past what tier 1+2 search already
+-//      cost. Both are additive to the existing best-effort contract: any
+-//      failure (timeout included) still just returns null, never throws.
+-const GAS_STATION_CATEGORY_ID = "4bf58dd8d48988d113951735"; // Foursquare taxonomy: "Gas Station / Garage"
+-const FOURSQUARE_TIMEOUT_MS = 3000;
+-const GOOGLE_PLACES_TIMEOUT_MS = 4000;
+-async function verifyNearbyGasStationFoursquare(env, name, location, radius) {
+-  if (!env.FOURSQUARE_API_KEY || !name || !location) return null;
+-  const controller = new AbortController();
+-  const timer = setTimeout(() => controller.abort(), FOURSQUARE_TIMEOUT_MS);
+-  try {
+-    const radiusMeters = Math.min(100000, Math.round(radius * 1609)); // miles -> meters, Foursquare caps around 100km
+-    const params = new URLSearchParams({
+-      query: name,
+-      near: location,
+-      radius: String(radiusMeters),
+-      limit: "1",
+-      categories: GAS_STATION_CATEGORY_ID,
+-      fields: "name,location,latitude,longitude"
+-    });
+-    const res = await fetch(`https://places-api.foursquare.com/places/search?${params.toString()}`, {
+-      signal: controller.signal,
+-      headers: {
+-        Authorization: `Bearer ${env.FOURSQUARE_API_KEY}`,
+-        "X-Places-Api-Version": "2025-06-17",
+-        accept: "application/json"
+-      }
+-    });
+-    if (!res.ok) return null; // don't throw — best-effort only, see header comment
+-    const data = await res.json();
+-    const place = data && Array.isArray(data.results) && data.results[0];
+-    if (!place) return null;
+-    const address = place.location && (place.location.formatted_address || place.location.address);
+-    const mapsUrl = (typeof place.latitude === "number" && typeof place.longitude === "number")
+-      ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
+-      : null;
+-    return { verifiedNearby: true, address: address || null, mapsUrl };
+-  } catch (err) {
+-    return null; // covers fetch/timeout/JSON errors alike — never break a real price card
+-  } finally {
+-    clearTimeout(timer);
+-  }
+-}
+-
+-// Google Places (New) Text Search equivalent of the Foursquare verify
+-// above — used when the client supplied real lat/lon. Text Search (rather
+-// than Nearby Search) is used here on purpose: unlike the discovery pass
+-// above, this needs to confirm ONE specific already-named station, and
+-// Nearby Search has no text-query parameter to match a name against —
+-// only Text Search does, biased toward the user's coordinates via
+-// locationBias so "Shell" resolves to the nearby branch, not just any
+-// Shell in the country.
+-async function verifyNearbyGasStationGoogle(env, name, lat, lon, radius) {
+-  if (!env.GOOGLE_PLACES_API_KEY || !name || typeof lat !== "number" || typeof lon !== "number") return null;
+-  const controller = new AbortController();
+-  const timer = setTimeout(() => controller.abort(), GOOGLE_PLACES_TIMEOUT_MS);
+-  try {
+-    const radiusMeters = Math.min(50000, Math.round(radius * 1609));
+-    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+-      method: "POST",
+-      signal: controller.signal,
+-      headers: {
+-        "Content-Type": "application/json",
+-        "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
+-        "X-Goog-FieldMask": "places.formattedAddress,places.location,places.googleMapsUri"
+-      },
+-      body: JSON.stringify({
+-        textQuery: `${name} gas station`,
+-        includedType: "gas_station",
+-        maxResultCount: 1,
+-        locationBias: { circle: { center: { latitude: lat, longitude: lon }, radius: radiusMeters } }
+-      })
+-    });
+-    if (!res.ok) return null;
+-    const data = await res.json();
+-    const place = Array.isArray(data.places) && data.places[0];
+-    if (!place) return null;
+-    return { verifiedNearby: true, address: place.formattedAddress || null, mapsUrl: place.googleMapsUri || null };
+-  } catch (err) {
+-    return null; // best-effort only — never break a real price card
+-  } finally {
+-    clearTimeout(timer);
+-  }
+-}
+-
+-// Combined verify step used by getWebSearchGasPrice — tries Google first
+-// (when the client sent lat/lon, it's the more precise, coordinate-based
+-// check), falling back to Foursquare's text-location-based check if
+-// Google isn't configured/available or comes up empty. Same "never blocks
+-// the rest of the lookup" contract as either provider alone.
+-async function verifyNearbyGasStation(env, name, location, radius, lat, lon) {
+-  const viaGoogle = await verifyNearbyGasStationGoogle(env, name, lat, lon, radius);
+-  if (viaGoogle) return viaGoogle;
+-  return verifyNearbyGasStationFoursquare(env, name, location, radius);
+-}
+-
+ // ---------- OilPriceAPI (state-average LAST-RESORT fallback) ----------
+-// Free tier confirmed against oilpriceapi.com/pricing (Aug 2026): 200
+-// requests/month, no credit card. Deliberately called ONLY when the web
+-// search below finds nothing usable — never run in parallel on every scan
+-// the way Kroger's real per-item price is in grocery-price.js. Two reasons:
+-//   1. 200/month is a small budget; spending it on every single scan
+-//      regardless of whether web search already succeeded would burn
+-//      through it in days for an app with any real traffic.
+-//   2. This is a STATE-LEVEL RETAIL AVERAGE (GASOLINE_RETAIL_STATE_<XX>_USD),
+-//      not a specific station's price the way web search finds. It's a
+-//      "here's roughly what gas costs in your state" backstop when nothing
+-//      else turns up anything at all — never compared against a real found
+-//      price the way Kroger's number competes with web search's number,
+-//      since an average being lower than someone's real local price
+-//      wouldn't mean it's actually available anywhere nearby.
+-// Contract confirmed directly against OilPriceAPI's docs (GET
+-// /v1/prices/latest?by_code=..., `Authorization: Token <key>` header,
+-// response shape { status, data: { price, ... } }).
+-// Attribution requirement: this specific series is EIA-sourced and public
+-// domain to redisplay, but OilPriceAPI's terms require crediting
+-// "Source: U.S. EIA" wherever it's shown — see `sourceAttribution` below;
+-// surface it on the card if this fallback is the one that answers.
++// Only reached when the chain-domain search above finds nothing at all —
++// a rough statewide number beats a totally blank card, but is clearly
++// labeled (isStateAverage) so the client never presents it as a real
++// per-station price.
+ function deriveStateAbbr(location) {
+-  // Reuses the STATE_ABBR map above. Only works if `location` names a
+-  // state/city (e.g. "Lafayette, TN") — a bare ZIP alone (what the client
+-  // falls back to sending when no location text is set) can't be resolved
+-  // to a state this way without a ZIP->state lookup table, which isn't
+-  // wired in here. In that case this returns null and the fallback simply
+-  // has nothing to offer, same as if it weren't configured at all.
++  const STATE_ABBR = {
++    alabama: "al", alaska: "ak", arizona: "az", arkansas: "ar", california: "ca",
++    colorado: "co", connecticut: "ct", delaware: "de", florida: "fl", georgia: "ga",
++    hawaii: "hi", idaho: "id", illinois: "il", indiana: "in", iowa: "ia",
++    kansas: "ks", kentucky: "ky", louisiana: "la", maine: "me", maryland: "md",
++    massachusetts: "ma", michigan: "mi", minnesota: "mn", mississippi: "ms",
++    missouri: "mo", montana: "mt", nebraska: "ne", nevada: "nv",
++    "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm", "new york": "ny",
++    "north carolina": "nc", "north dakota": "nd", ohio: "oh", oklahoma: "ok",
++    oregon: "or", pennsylvania: "pa", "rhode island": "ri", "south carolina": "sc",
++    "south dakota": "sd", tennessee: "tn", texas: "tx", utah: "ut", vermont: "vt",
++    virginia: "va", washington: "wa", "west virginia": "wv", wisconsin: "wi",
++    wyoming: "wy"
++  };
+   const parts = (location || "").split(/[,\n]/).map(p => p.trim().toLowerCase()).filter(Boolean);
+   for (const part of parts) {
+     if (STATE_ABBR[part]) return STATE_ABBR[part];
+-    for (const [full, abbr] of Object.entries(STATE_ABBR)) {
+-      if (abbr === part) return abbr;
+-    }
++    if (Object.values(STATE_ABBR).includes(part)) return part;
+   }
+   return null;
+ }
+@@ -707,246 +261,88 @@
+     blogUrl: null,
+     provider: "oilpriceapi",
+     usedEnsemble: false,
+-    isStateAverage: true, // client should label this distinctly from a real per-station price
++    isStateAverage: true,
+     sourceAttribution: "Source: U.S. EIA"
+   };
+ }
+ 
+-async function getWebSearchGasPrice(env, location, zip, radius, lat, lon) {
+-  // Kept short and natural rather than stuffed with all the chain names —
+-  // that bloat didn't buy relevance (tier 1+ already restrict the domains
+-  // being searched) and it drowned out the location terms that actually
+-  // matter for a keyword-matching search engine to key in on ${location}.
+-  // The ZIP is included explicitly since GasBuddy-style price pages
+-  // are usually indexed by ZIP, not by city name alone.
+-  const query = `cheapest regular unleaded gas price today near ${location}${zip ? ` (ZIP ${zip})` : ""}, within ${radius} miles`;
+-
+-  let best = null, usedProvider = null, usedEnsemble = false;
+-
+-  // Tier 0 — cross-check Foursquare (text-location-based) AND Google
+-  // Places (coordinate-based, when the client sent lat/lon) FIRST for
+-  // which real brands (of the ~45 in GAS_STATION_DOMAINS) actually have a
+-  // location within the user's radius, then search ONLY those specific
+-  // brands' domains with a query that names them explicitly — plus, when
+-  // Google resolved a matched chain's actual address, name that address
+-  // too, so the query is anchored to the real closest branch instead of
+-  // just the brand generically. This is the highest-confidence tier: a
+-  // price found here is tied to a station one of the two providers has
+-  // already confirmed is physically near the user, not just a same-named
+-  // chain's page somewhere else. Skipped automatically (falls straight to
+-  // tier 1) when neither provider is configured or neither confirms a
+-  // known chain nearby — this can never make a lookup worse, only more
+-  // targeted when it hits.
+-  const { chains: nearbyChains, details: nearbyDetails, independents } = await findNearbyStationBrands(env, location, radius, lat, lon);
+-  if (nearbyChains.length || independents.length) {
+-    const nearbyDomains = nearbyChains.map(c => GAS_STATION_DOMAINS[c]).concat(["gasbuddy.com"]);
+-    const namedStations = nearbyChains
+-      .map(c => nearbyDetails[c] && nearbyDetails[c].address ? `${c} (${nearbyDetails[c].address})` : c)
+-      // Independent/regional stations Google found nearby that don't match
+-      // any known chain — no domain of their own to search, but naming
+-      // them (GasBuddy is already in nearbyDomains above) still gives
+-      // a real shot at a price a chains-only query would never surface.
+-      .concat(independents.slice(0, 5).map(p => p.address ? `${p.name} (${p.address})` : p.name))
+-      .join(", ");
+-    const nearbyQuery = `gas price today at ${namedStations} near ${location}${zip ? ` (ZIP ${zip})` : ""}`;
+-    let nearbyResults = [], nearbyProviders = [];
+-    try {
+-      ({ results: nearbyResults, providers: nearbyProviders } = await searchAllSources(env, nearbyQuery, nearbyDomains));
+-    } catch (err) {
+-      nearbyResults = [];
+-    }
+-    // Same server-side enforcement as every other tier below — don't trust
+-    // the search engine to have actually honored the domain restriction.
+-    nearbyResults = nearbyResults.filter(r => {
+-      const host = hostname(r.url);
+-      return nearbyDomains.some(d => host === d || host.endsWith("." + d));
+-    });
+-    nearbyResults = filterByLocation(nearbyResults, location, zip, { allowLoose: true });
+-    const nearbyEnsemble = nearbyResults.length > 0 && multipleLLMsConfigured(env);
+-    best = await extractBest(env, nearbyResults, nearbyEnsemble, location);
+-    if (best) {
+-      usedProvider = nearbyProviders.join("+");
+-      usedEnsemble = nearbyEnsemble;
+-    }
+-  }
++// ---------- Main lookup: search all 45 chains, no location filtering ----------
++async function getWebSearchGasPrice(env) {
++  const query = "cheapest regular unleaded gas price today";
+ 
+-  // Tier 1 — full known gas station chains + GasBuddy list. Only runs
+-  // when tier 0 was skipped (no Foursquare key / no known chain confirmed
+-  // nearby) or came up empty. Runs every configured engine in the
+-  // currently-active tier in parallel (see searchAllSources above) — that
+-  // parallelism is unaffected by the note below, only the tier-to-tier
+-  // sequencing is.
+-  //
+-  // NOTE: an earlier version of this function fired tier 1 and tier 2's
+-  // raw searches concurrently via Promise.all, on the theory that tier 1
+-  // (domain-restricted to just the chain sites) almost always fails the
+-  // location filter anyway, so tier 2 was going to run regardless — firing
+-  // both at once just meant paying whichever was slower instead of their
+-  // sum. In practice that backfired: it doubles how many outbound calls
+-  // hit the search backend on EVERY gas lookup (not just the rare case
+-  // tier 1 succeeds), and when the active tier has already fallen to the
+-  // rate-limited terminal scrape tier (DuckDuckGo — see the tier table at
+-  // the top of search-providers.js), two simultaneous scrape requests are
+-  // far more likely to both get throttled/blocked than one, which reads
+-  // as "gas comes back fast but empty." It also burns that tier's quota
+-  // faster, which is what pushes OTHER calls (the grocery items search
+-  // loop) down to the same slow terminal tier sooner, matching "groceries
+-  // taking forever." Reverted to strictly sequential — tier 2 only runs at
+-  // all (search included, not just its LLM classification step) when
+-  // tier 1 truly comes up empty — so gas costs at most one extra search
+-  // pass beyond what grocery/restaurant/freebies already cost per lookup.
+-  if (!best) {
+-    let officialResults = [], officialProviders = [];
+-    try {
+-      ({ results: officialResults, providers: officialProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+-    } catch (err) {
+-      officialResults = [];
+-    }
+-    // Server-side enforcement of the domain restriction the engine was
+-    // ASKED to apply — see restrictToOfficialDomains's header comment for
+-    // why this can't just be trusted to have already happened (DuckDuckGo
+-    // in particular).
+-    officialResults = restrictToOfficialDomains(officialResults);
+-    // Domain-restricted != location-restricted (see filterByLocation above)
+-    // — every result has to actually mention the target place before a
+-    // price can be extracted from it, or "cheapest near you" can quietly
+-    // resolve to "cheapest anywhere in the country."
+-    officialResults = filterByLocation(officialResults, location, zip);
+-    const tier1Ensemble = officialResults.length > 0 && multipleLLMsConfigured(env);
+-    best = await extractBest(env, officialResults, tier1Ensemble, location);
+-    usedProvider = best ? officialProviders.join("+") : null;
+-    usedEnsemble = best ? tier1Ensemble : false;
+-  }
+-
+-  // Tier 2 — same official domain list as tier 1 (GAS_DOMAIN_LIST), never
+-  // the open web, never news/blogs. Only fired when tier 1's STRICT
+-  // location match came up empty, and only loosens the LOCATION matching
+-  // (single-token, then unverified-but-flagged) — it never loosens which
+-  // domains are eligible. Reason this pass exists at all: tier 1's strict
+-  // city+state match can legitimately come up empty even on a real
+-  // official-domain result (a GasBuddy page keyed to a ZIP that never
+-  // spells out the city name verbatim), so it's worth re-checking the
+-  // SAME restricted result set with a looser location bar before falling
+-  // through to the OilPriceAPI state-average last resort below.
+-  if (!best) {
+-    let openResults = [], openProviders = [];
+-    try {
+-      ({ results: openResults, providers: openProviders } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
+-    } catch (err) {
+-      openResults = [];
+-    }
+-    // Same server-side domain enforcement as tier 1 — never trust that the
+-    // search engine actually honored the domain restriction it was asked
+-    // for (see restrictToOfficialDomains's header comment).
+-    openResults = restrictToOfficialDomains(openResults);
+-    openResults = filterByLocation(openResults, location, zip, { allowLoose: true, allowFallback: true });
+-    const tier2Ensemble = openResults.length > 0 && multipleLLMsConfigured(env);
+-    best = await extractBest(env, openResults, tier2Ensemble, location);
+-    usedProvider = best ? openProviders.join("+") : null;
+-    usedEnsemble = best ? tier2Ensemble : false;
++  let results = [], providers = [];
++  try {
++    ({ results, providers } = await searchAllSources(env, query, GAS_DOMAIN_LIST));
++  } catch (err) {
++    results = [];
+   }
++  results = restrictToOfficialDomains(results);
++  if (!results.length) return null;
+ 
++  const useEnsemble = multipleLLMsConfigured(env);
++  const best = await extractBest(env, results, useEnsemble);
+   if (!best) return null;
+ 
++  const usedProvider = providers.join("+") || null;
++
+   const domainChain = DOMAIN_TO_CHAIN[hostname(best.url)];
+   if (domainChain && !AGGREGATOR_CHAINS.has(domainChain)) {
+-    // If tier 0's Google Places pass already resolved this exact chain's
+-    // nearest branch, use that address directly instead of spending a
+-    // second network round-trip re-verifying something already confirmed.
+-    const nearby = nearbyDetails[domainChain]
+-      ? { verifiedNearby: true, address: nearbyDetails[domainChain].address, mapsUrl: nearbyDetails[domainChain].mapsUrl }
+-      : await verifyNearbyGasStation(env, domainChain, location, radius, lat, lon);
+     return {
+-      price: best.price, store: domainChain, unconfirmedStore: false, sourceHost: hostname(best.url),
+-      url: best.url, productUrl: best.url, blogUrl: null,
+-      provider: usedProvider, usedEnsemble, locationUnverified: best.locationUnverified === true,
+-      ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
++      price: best.price, store: domainChain, unconfirmedStore: false,
++      sourceHost: hostname(best.url), url: best.url, productUrl: best.url,
++      blogUrl: null, provider: usedProvider, usedEnsemble
+     };
+   }
+ 
+-  // Price came from GasBuddy (an aggregator, not a station itself) or
+-  // a subdomain of an official chain site that didn't match DOMAIN_TO_CHAIN's
+-  // exact hostname — never a blog/forum/news page, since every tier above
+-  // (0, 1, and 2) is restricted to a fixed gas-related domain list. Try to
+-  // resolve an actual station-brand page AND check Foursquare for a real
+-  // nearby branch. Fired concurrently (not one-then-the-other) since
+-  // neither depends on the other's result — this is the "faster" half of
+-  // the ask: adding the Foursquare check doesn't add a third sequential
+-  // round trip on top of the search tiers above, it rides alongside the
+-  // official-page lookup that was already happening here.
+-  const [productUrl, nearby] = await Promise.all([
+-    best.chain ? findOfficialStationPage(env, best.chain) : Promise.resolve(null),
+-    (best.chain && nearbyDetails[best.chain])
+-      ? Promise.resolve({ verifiedNearby: true, address: nearbyDetails[best.chain].address, mapsUrl: nearbyDetails[best.chain].mapsUrl })
+-      : verifyNearbyGasStation(env, best.store, location, radius, lat, lon)
+-  ]);
++  // Price came from GasBuddy or a page where no specific station brand
++  // could be pulled from the text — best.store is null in that case (see
++  // extractLowestPriceRegex/parsePriceResponse); the client shows an
++  // honest "unconfirmed" label instead of a fabricated one.
++  const productUrl = best.chain ? await findOfficialStationPage(env, best.chain) : null;
+   return {
+     price: best.price,
+-    // best.store is null when no real station brand could be identified
+-    // in the text (see extractLowestPriceRegex/parsePriceResponse) — the
+-    // client shows an honest "unconfirmed" label instead of a fabricated
+-    // one in that case, using sourceHost for the "where this came from" link.
+     store: best.store,
+     unconfirmedStore: !best.store,
+     sourceHost: best.sourceHost || hostname(best.url),
+-    locationUnverified: best.locationUnverified === true,
+     url: productUrl || best.url,
+     productUrl,
+     blogUrl: best.url,
+     provider: usedProvider,
+-    usedEnsemble,
+-    ...(nearby ? { verifiedNearby: nearby.verifiedNearby, address: nearby.address, mapsUrl: nearby.mapsUrl } : {})
++    usedEnsemble
+   };
+ }
+ 
+ // ---------- Entry point ----------
+ export async function onRequestGet({ request, env }) {
+-  // Gas is a single lookup per scan (unlike grocery's 11-items-per-scan),
+-  // so it shares the same lower default limit as freebies/restaurant-deals
+-  // rather than grocery-price's raised-for-11-calls limit.
+   const rl = await checkRateLimit(env, request, "gas-price", { limit: 60 });
+   if (!rl.allowed) return rateLimitResponse();
+ 
+   const { searchParams } = new URL(request.url);
+   const zip = searchParams.get("zip");
+   const location = searchParams.get("location") || zip;
+-  const radius = Math.min(100, Math.max(1, parseInt(searchParams.get("radius") || "100", 10)));
+-  // Optional — only present when the browser's geolocation succeeded and
+-  // the client opted to forward it (see dist/index.html's
+-  // autoFillLocationFromGeo(); same rounded ~1km-precision coordinates
+-  // already used there, never a raw pinpoint). Powers the Google Places
+-  // pass in findNearbyStationBrands/verifyNearbyGasStation above; every
+-  // other tier works fine without it, same as before this existed.
+-  const rawLat = parseFloat(searchParams.get("lat"));
+-  const rawLon = parseFloat(searchParams.get("lon"));
+-  const lat = (Number.isFinite(rawLat) && rawLat >= -90 && rawLat <= 90) ? rawLat : null;
+-  const lon = (Number.isFinite(rawLon) && rawLon >= -180 && rawLon <= 180) ? rawLon : null;
+ 
+   if (!zip) return json({ error: "zip query param is required." }, 400);
+   if (zip.length > 20) return json({ error: "zip is invalid or too long." }, 400);
+ 
+   let result;
+   try {
+-    result = await getWebSearchGasPrice(env, location, zip, radius, lat, lon);
++    result = await getWebSearchGasPrice(env);
+   } catch (err) {
+     console.error("gas-price lookup failed:", err.message);
+     return json({ error: "Gas price lookup is temporarily unavailable. Please try again in a few minutes." }, 502);
+   }
+ 
+-  // Last-resort fallback only — see getOilPriceApiPrice's header comment for
+-  // why this never competes with a real web-search-found price, only fills
+-  // in when web search found nothing at all.
++  // Last-resort fallback only — a rough statewide number, only tried when
++  // the chain-domain search above found nothing at all.
+   if (!result) {
+     try {
+       result = await getOilPriceApiPrice(env, location);
+     } catch (err) {
+       console.error("OilPriceAPI fallback failed:", err.message);
+-      // fall through to the "nothing found" response below — never surface
+-      // a 502 just because the LAST-RESORT fallback also came up empty
+     }
+   }
+ 
+-  return json(result || { price: null, store: null, unconfirmedStore: false, locationUnverified: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
++  return json(result || { price: null, store: null, unconfirmedStore: false, url: null, productUrl: null, blogUrl: null, provider: null, usedEnsemble: false });
+ }
+ 
+ function json(obj, status = 200) {
