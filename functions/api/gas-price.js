@@ -597,6 +597,16 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
   // with tier 2's loosened location match. Still a fixed domain allowlist,
   // just a different and much smaller one — never the open web, never a
   // blog or forum.
+  //
+  // Deliberately NOT passing allowFallback here, unlike tier 2. A national
+  // wire story that never mentions the person's city/state/ZIP anywhere is
+  // exactly the "state average pretending to be local" problem this app
+  // exists to avoid — better to fall through to the honestly-labeled
+  // OilPriceAPI state average below than to show an unrelated news price
+  // with just a small "unverified" flag easy to miss. So this is either
+  // STRICT (place + state, or a ZIP hit) or LOOSE (a single real
+  // place/state token) — a genuine local confirmation either way, never
+  // "matched nothing but showing it anyway."
   if (!best) {
     let newsResults = [], newsProviders = [];
     try {
@@ -608,7 +618,7 @@ async function getWebSearchGasPrice(env, location, zip, radius) {
     // engine to have actually honored the domain restriction it was asked
     // for.
     newsResults = newsResults.filter(r => trustedNewsSourceName(r.url));
-    newsResults = filterByLocation(newsResults, location, zip, { allowLoose: true, allowFallback: true });
+    newsResults = filterByLocation(newsResults, location, zip, { allowLoose: true, allowFallback: false });
     const tier3Ensemble = newsResults.length > 0 && multipleLLMsConfigured(env);
     best = await extractBest(env, newsResults, tier3Ensemble, location);
     usedProvider = best ? newsProviders.join("+") : null;

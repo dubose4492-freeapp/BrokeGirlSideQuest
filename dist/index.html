@@ -275,6 +275,10 @@
   .status-badge.status-yellow { background: #fff6da; color: #6b4e00; }
   .status-badge.status-red { background: #fde8e8; color: #7a1414; }
   .status-badge.status-upcoming { background: #e9e5fa; color: #3a2a7a; }
+  .status-badge.tier-free, .status-badge.tier-under5 { background: #e6f7ec; color: #14532d; }
+  .status-badge.tier-5to10 { background: #fff6da; color: #6b4e00; }
+  .status-badge.tier-assistance { background: #e3f0fb; color: #0c3f66; }
+  .status-badge.tier-giveaway { background: #e9e5fa; color: #3a2a7a; }
   .verified-note { font-size: 10px; color: var(--ink-soft, #6b6b6b); margin-top: 2px; }
   .extra-tag { font-size: 10px; font-weight: 700; padding: 2px 6px; border: 1px solid var(--ink); white-space: nowrap; display: inline-block; margin: 2px 4px 0 0; background: var(--paper, #fff); }
   .provider-note { font-size: 12.5px; font-weight: 700; color: #4a3d68; background: var(--lav-soft); border: 2px solid var(--ink); padding: 8px 12px; margin-bottom: 12px; }
@@ -907,7 +911,7 @@ const CATEGORIES = {
   events: { label: "Events", icon: "🎉", timeRange: "month", query: (loc, r) =>
     `free events near ${loc} within ${r} miles` },
   community: { label: "Community", icon: "📦", timeRange: null, query: (loc, r) =>
-    `food pantries community fridges clothing closets soup kitchens near ${loc} within ${r} miles` },
+    `food pantries community fridges clothing closets soup kitchens government assistance programs SNAP WIC utility assistance emergency rental assistance near ${loc} within ${r} miles` },
   mail: { label: "By Mail", icon: "✉️", timeRange: null, query: () =>
     `free samples and free items by mail no purchase necessary` },
   // Static content tab — no search/API call, just evergreen tips.
@@ -944,6 +948,7 @@ const REQ_TYPES = {
   giveaway: "Giveaway / Contest",
   bogo: "BOGO Free",
   min_purchase: "Min. Purchase",
+  assistance: "Assistance Program",
   unknown: "See Details"
 };
 // Any requirementType not covered above (current or future) falls back to
@@ -1190,6 +1195,51 @@ function priceLabel(item, cat) {
   return cat.isPriced ? "See price" : "FREE / Varies";
 }
 
+// --- Affordability tier badge --------------------------------------------
+//
+// Separate from statusBadge (which is about freshness/confidence) and from
+// priceLabel (the raw price string shown next to the item). This is the
+// "what tier of afford-ability is this" read the person asked for, shown
+// as its own small badge so someone scanning the list fast can tell FREE
+// apart from UNDER $5 apart from $5-$10 without reading each price string:
+//   🟢 FREE       — $0 out of pocket (a true freebie, or BOGO's free item)
+//   🟢 UNDER $5   — real cost, but under $5 (includes "free w/ $X purchase"
+//                   offers, using the REQUIRED SPEND as the actual cost —
+//                   a "free item w/ $12 purchase" costs $12, not $0)
+//   🟡 $5-$10     — same cost logic, $5 to $10 inclusive
+//   🔵 ASSISTANCE — a formal aid program (SNAP/WIC, food banks, utility or
+//                   rental assistance, emergency funds), which isn't a
+//                   dollar price at all, it's an application/eligibility
+//                   process — see requirementType "assistance" in
+//                   freebies.js
+//   🟣 GIVEAWAY   — a raffle/contest/sweepstakes entry, also not a fixed
+//                   cost — you might win it, not buy it
+// Grocery/gas items (item.price like "$3.29" or "$3.19/gal") fall through
+// to the dollar-amount branch same as everything else — no special-casing
+// needed since the regex just reads the leading $ figure either way.
+// Returns null (renders nothing) for anything over $10 — that's still
+// shown via the normal price string, just without an affordability badge,
+// since $10+ isn't the "can I actually afford this" bucket this is for.
+function effectiveDollarCost(item) {
+  if (item.isFree && !item.spendRequired) return 0;
+  const str = typeof item.price === "string" ? item.price : "";
+  if (!str) return item.isFree ? 0 : null;
+  if (/^free$/i.test(str.trim())) return 0;
+  if (/^bogo free$/i.test(str.trim())) return 0;
+  const m = str.match(/\$\s?([\d,]+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1].replace(/,/g, "")) : (item.isFree ? 0 : null);
+}
+function priceTierBadge(item) {
+  if (item.requirementType === "giveaway") return { emoji: "🟣", label: "GIVEAWAY", cls: "tier-giveaway" };
+  if (item.requirementType === "assistance") return { emoji: "🔵", label: "ASSISTANCE", cls: "tier-assistance" };
+  const cost = effectiveDollarCost(item);
+  if (cost == null) return null;
+  if (cost <= 0) return { emoji: "🟢", label: "FREE", cls: "tier-free" };
+  if (cost < 5) return { emoji: "🟢", label: "UNDER $5", cls: "tier-under5" };
+  if (cost <= 10) return { emoji: "🟡", label: "$5\u2013$10", cls: "tier-5to10" };
+  return null;
+}
+
 // Picks an emoji based on what the item actually IS (from its title/store
 // text) rather than just its category — e.g. a free smoothie shows a
 // smoothie cup instead of the generic Restaurant Deals burger. Order
@@ -1277,6 +1327,7 @@ function itemCard(item) {
   const safeStore = escapeHtml(item.store);
 
   const sBadge = statusBadge(item);
+  const tierBadge = priceTierBadge(item);
   const verifiedAgo = timeAgo(state.scannedAt[item.category]);
   const tags = extraTags(item);
 
@@ -1324,7 +1375,7 @@ function itemCard(item) {
         <span class="item-price ${item.isFree ? "" : "paid"}">${escapeHtml(priceLabel(item, cat))}</span>
         ${badge}
       </div>
-      <div><span class="status-badge ${sBadge.cls}">${sBadge.emoji} ${escapeHtml(sBadge.label)}</span></div>
+      <div><span class="status-badge ${sBadge.cls}">${sBadge.emoji} ${escapeHtml(sBadge.label)}</span>${tierBadge ? ` <span class="status-badge ${tierBadge.cls}">${tierBadge.emoji} ${escapeHtml(tierBadge.label)}</span>` : ""}</div>
       ${verifiedAgo ? `<div class="verified-note">Last verified: ${escapeHtml(verifiedAgo)}</div>` : ""}
       ${tags.length ? `<div>${tags.map(t => `<span class="extra-tag">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
       <div class="item-meta">

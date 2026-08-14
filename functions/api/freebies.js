@@ -135,6 +135,15 @@ function looksFree(text) { return /\bfree\b/i.test(text || ""); }
 function extractRequirementType(text) {
   const t = (text || "").toLowerCase();
   if (looksBogo(t)) return "bogo";
+  // Formal aid programs (SNAP/WIC, food banks/pantries, utility/rental
+  // assistance, emergency funds) — checked before the more generic
+  // "no_purchase"/signup patterns below since a food bank's own page often
+  // also says something like "no purchase necessary," but "apply for
+  // assistance" is a meaningfully different thing to show someone than a
+  // simple free-item offer: it's an eligibility/application process, not
+  // a $0 checkout. See requirementType "assistance" in dist/index.html's
+  // REQ_TYPES/priceTierBadge for how this renders (🔵 ASSISTANCE badge).
+  if (/\bsnap\b|\bwic\b|food (bank|pantry|pantries)|rental assistance|utility assistance|emergency (assistance|funds?|financial)|government assistance|eviction (prevention|assistance)|energy assistance|liheap|income[\s-]?qualified|eligibility (requirements?|guidelines?)/.test(t)) return "assistance";
   if (/no purchase (necessary|required)/.test(t)) return "no_purchase";
   if (extractMinSpend(t) != null) return "min_purchase";
   if (/sign[\s-]?up|register|create an account/.test(t)) return "signup";
@@ -425,7 +434,7 @@ const CATEGORY_HINTS = {
   // online/nationwide with no venue near the person, and not a mail-in
   // program (that belongs on the Mail tab, not Events).
   events: "100% free events happening at a real physical location — charity events, giveaways, festivals, concerts, community gatherings, or a business/venue's free promotions — near the person and within the distance they said they're willing to drive",
-  community: "food pantries, food banks, food drives, clothing drives, clothing closets, community fridges, soup kitchens, shelters, or other completely free charitable resources for people in need — no purchase or spend threshold applies to this category at all",
+  community: "food pantries, food banks, food drives, clothing drives, clothing closets, community fridges, soup kitchens, shelters, or other completely free charitable resources for people in need — no purchase or spend threshold applies to this category at all. ALSO include formal government/nonprofit assistance programs: SNAP, WIC, utility assistance (LIHEAP etc.), rental/eviction-prevention assistance, and other emergency financial support — these qualify as \"assistance\" resources even though they involve an application/eligibility process rather than simply picking up a free item.",
   mail: "free items (not just samples) available by mail — no local/radius matching applies here since these ship anywhere"
 };
 // Extra qualifying rules appended per-category, for categories where "free"
@@ -480,7 +489,7 @@ For EACH snippet below, return an "offers" array (empty if nothing in it qualifi
 - orgName: the specific company, brand, or organization behind it (e.g. "Old Navy", "Second Harvest Food Bank"). Always fill this in if the snippet names one.
 - qualifies: true only if it's genuinely about a real free offer/resource in this category (not a paid product, an unrelated article, or something whose stated end date is before today).${extraRule}${locationRule}
 - title: a short clean description of that specific offer/resource.
-- requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "unknown".
+- requirementType: one of "no_purchase", "signup", "loyalty", "rebate", "giveaway", "bogo", "min_purchase", "assistance", "unknown". Use "assistance" for a formal aid program (SNAP/WIC, a food bank/pantry, utility/rental assistance, an emergency fund) that involves an application or eligibility check rather than simply claiming a free item.
 - minSpend: the dollar amount required to spend if requirementType is "min_purchase", else null.
 - isLocal: true if this is a local/independent org or event, false if it's a well-known national brand/chain.
 - expires: a short date string if an end date is mentioned, else null.
