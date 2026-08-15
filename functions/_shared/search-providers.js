@@ -685,13 +685,25 @@ function daysToSearch1ApiRange(days) {
   if (days <= 31) return "month";
   return "year";
 }
+// `options.scrapeContent`: crawl_results (0 by default) tells Search1API
+// how many of the top results to actually crawl for full page content —
+// each successful crawl is 1 extra credit on top of the base search, same
+// "opt in, pay per page" shape as Firecrawl's scrapeOptions above. Capped
+// at 5 here for the same reason firecrawlSearch caps its own limit when
+// scraping: bound the extra cost per call rather than crawling every result.
+// Unconfirmed whether Search1API's crawler renders JavaScript the way
+// Firecrawl's headless-browser scrape does, or just fetches raw HTML like
+// the generic enrichShortResultsWithFetchedContent fallback below — Search1API's
+// docs don't say either way. Treat it as "probably at least as good as a
+// plain fetch, maybe as good as Firecrawl" rather than a confirmed fix for
+// JS-rendered pages specifically.
 export async function search1ApiSearch(env, query, includeDomains, options = {}) {
-  const { maxResults = 10, days } = options;
+  const { maxResults = 10, days, scrapeContent = false } = options;
   const body = {
     query,
     search_service: "google",
     max_results: maxResults,
-    crawl_results: 0,
+    crawl_results: scrapeContent ? Math.min(maxResults, 5) : 0,
     ...(includeDomains && includeDomains.length ? { include_sites: includeDomains } : {}),
     ...(days ? { time_range: daysToSearch1ApiRange(days) } : {})
   };
@@ -1132,6 +1144,86 @@ function decodeResultText(results) {
   return results.map(r => ({ ...r, title: decodeHtmlEntities(r.title), content: decodeHtmlEntities(r.content) }));
 }
 
+// ---------- Generic direct-fetch content enrichment ----------
+// Covers every engine here that has NO built-in way to return more than a
+// plain SERP snippet — Serper, Searlo, Zenserp, Olostep, SearchApi.io,
+// Value SERP, Serpent API, ContextWire, Google CSE, and the DuckDuckGo
+// scrape. Unlike Firecrawl's scrapeOptions or Search1API's crawl_results
+// (both real provider-side features), there's no equivalent request these
+// engines' own APIs accept — the only way to get more than their snippet
+// is a separate, ordinary fetch() of the result's own URL, done here.
+//
+// IMPORTANT LIMITATION — this is a bare fetch(), not a headless browser:
+// it only sees whatever HTML the server sends on the initial request, not
+// anything a client-side script inserts afterward. GasBuddy's actual
+// per-station price table is loaded by its own JS after the page loads, so
+// this pass will usually still come back without a price for a GasBuddy
+// URL specifically — same gap the raw SERP snippet had. It DOES help for
+// genuinely server-rendered pages (chain sites' static pages, forums,
+// blogs, most non-SPA content), just not for GasBuddy. Firecrawl (real
+// headless-render scrape) and, unconfirmed, Search1API's crawl are the
+// only engines here that can actually see JS-inserted content — if gas
+// pricing goes stale again on one of these ten engines specifically, that
+// gap (not this function) is almost certainly why.
+const ENRICH_TIMEOUT_MS = 5000;
+const ENRICH_MAX_RESULTS = 5; // bounds extra latency/requests per call, same reasoning as the scrape caps above
+const SNIPPET_LOOKS_SHORT = 220; // below this, content reads as "just a SERP snippet" and is worth trying to enrich
+const ENRICH_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+function htmlToPlainText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Best-effort only, same contract as every other fetch in this file: any
+// failure (timeout, non-2xx, non-HTML) just means "couldn't enrich this
+// one," never throws, never blocks the rest of the results.
+async function fetchPageText(url) {
+  try {
+    const res = await fetchWithTimeout(url, {
+      headers: { "User-Agent": ENRICH_USER_AGENT, Accept: "text/html,application/xhtml+xml" }
+    }, ENRICH_TIMEOUT_MS);
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType && !contentType.includes("html")) return null; // don't try to "extract text" from a PDF/image/etc.
+    const html = await res.text();
+    const text = decodeHtmlEntities(htmlToPlainText(html));
+    return text ? text.slice(0, 4000) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Enriches up to ENRICH_MAX_RESULTS short-snippet results with real fetched
+// page text, fetched in parallel. Only touches results whose content
+// already looks like a bare snippet (see SNIPPET_LOOKS_SHORT) — a result
+// that already carries real content (Tavily, Exa, Firecrawl/Search1API with
+// scrapeContent) is long enough to skip this automatically, so this is
+// safe to run unconditionally across a mixed-provider merge without
+// double-fetching anything. A fetch that fails or comes back short just
+// leaves the original snippet in place — this can only add content, never
+// remove a result.
+async function enrichShortResultsWithFetchedContent(results) {
+  const candidates = results
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => (r.content || "").length < SNIPPET_LOOKS_SHORT && r.url)
+    .slice(0, ENRICH_MAX_RESULTS);
+  if (!candidates.length) return results;
+  const fetched = await Promise.all(candidates.map(({ r }) => fetchPageText(r.url)));
+  const out = results.slice();
+  candidates.forEach(({ i }, idx) => {
+    if (fetched[idx] && fetched[idx].length > (out[i].content || "").length) {
+      out[i] = { ...out[i], content: fetched[idx] };
+    }
+  });
+  return out;
+}
+
 // Narrow, single-answer lookups (e.g. "find this one company's official
 // site"). Uses the currently-active tier's engines, primary first; only
 // spills into the NEXT tier down if every engine in the active tier fails
@@ -1148,7 +1240,10 @@ export async function searchWithFallback(env, query, includeDomains, options = {
     if (!configuredEngines(env, tier).length) continue;
     const outcome = await runTierSequential(env, tier, query, includeDomains, options);
     if (outcome.failures) failures.push(...outcome.failures);
-    if (outcome.results.length) return { results: decodeResultText(outcome.results), provider: outcome.provider };
+    if (outcome.results.length) {
+      const results = options.scrapeContent ? await enrichShortResultsWithFetchedContent(outcome.results) : outcome.results;
+      return { results: decodeResultText(results), provider: outcome.provider };
+    }
   }
   const err = new Error(`All search tiers failed — ${failures.join(" | ") || "no engines configured"}`);
   err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
@@ -1173,7 +1268,8 @@ export async function searchAllSources(env, query, includeDomains, options = {})
         err.publicMessage = "Search is temporarily unavailable. Please try again in a few minutes.";
         throw err;
       }
-      return { results: decodeResultText(outcome.results), providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
+      const results = options.scrapeContent ? await enrichShortResultsWithFetchedContent(outcome.results) : outcome.results;
+      return { results: decodeResultText(results), providers: outcome.providers, failedProviders: outcome.failedProviders, tier: outcome.tierId };
     }
     lastFailures = outcome.failedProviders;
   }
