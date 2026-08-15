@@ -472,7 +472,7 @@ function corroboratePrice(parsedList) {
   return null;
 }
 
-const GAS_SEARCH_OPTS = { maxResults: 8 };
+const GAS_SEARCH_OPTS = { maxResults: 8, scrapeContent: true };
 async function searchWithFallback(env, query, domains) {
   return sharedSearchWithFallback(env, query, domains, GAS_SEARCH_OPTS); // { results, provider }
 }

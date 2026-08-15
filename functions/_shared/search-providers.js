@@ -491,14 +491,37 @@ export async function googleCseSearch(env, query, includeDomains, options = {}) 
 // other engine's shape), not full-page markdown, since scraping each result
 // would burn credits far faster for no benefit to the classifier step
 // downstream (which only reads title+snippet text anyway).
+// `options.scrapeContent`: without it, `content` below is just `r.description`
+// — Firecrawl's plain SEO meta-description for the page, NOT real page text.
+// That's fine for callers whose signal (a deal blurb, an offer description)
+// is often already sitting right in the meta description. It's NOT fine for
+// a caller that needs a specific fact — like a literal "$3.19"/gallon price —
+// that's rendered into the page by JavaScript (GasBuddy, chain sites) and
+// never appears in the static meta tag at all: every result comes back with
+// a real URL and a plausible-looking snippet, but no price ever extracts
+// from it, which silently looks like "nothing found" rather than "found the
+// page, just not the number." gas-price.js hit exactly this — Tavily (tier 1,
+// which already sends include_raw_content: true, see tavilySearch above) was
+// masking it until Tavily's quota ran out and the tier rotation dropped to
+// Firecrawl.
+// When scrapeContent is set, ask Firecrawl to actually render+scrape each
+// result (real markdown, JS included) instead of just returning the SERP-
+// style snippet. This costs real credits on top of the base search (roughly
+// 1 credit/page scraped vs. 2 credits/10 results for a plain search — see
+// docs.firecrawl.dev/api-reference/endpoint/search), so it's opt-in per
+// caller, and the result count is capped lower than a plain search's
+// maxResults to keep that cost bounded.
 export async function firecrawlSearch(env, query, includeDomains, options = {}) {
-  const { maxResults = 10 } = options;
+  const { maxResults = 10, scrapeContent = false } = options;
   const body = {
     query,
-    limit: Math.min(maxResults, 10),
+    limit: scrapeContent ? Math.min(maxResults, 5) : Math.min(maxResults, 10),
     sources: [{ type: "web" }]
   };
   if (includeDomains && includeDomains.length) body.includeDomains = includeDomains;
+  if (scrapeContent) {
+    body.scrapeOptions = { formats: [{ type: "markdown" }], onlyMainContent: true };
+  }
   const res = await fetchWithTimeout("https://api.firecrawl.dev/v2/search", {
     method: "POST",
     headers: {
@@ -513,7 +536,11 @@ export async function firecrawlSearch(env, query, includeDomains, options = {}) 
   }
   const data = await res.json();
   const items = (data.data && data.data.web) || [];
-  return items.map(r => ({ title: r.title, url: r.url, content: r.description || "", publishedDate: null }));
+  // markdown is only present when scrapeOptions was requested (and only on
+  // results that scraped successfully — a failed scrape falls back to the
+  // plain description, per Firecrawl's docs, so this still degrades
+  // gracefully per-result rather than losing the whole call).
+  return items.map(r => ({ title: r.title, url: r.url, content: r.markdown || r.description || "", publishedDate: null }));
 }
 
 // Linkup — RAG-focused search. Free tier is 4,000 queries at signup, then
