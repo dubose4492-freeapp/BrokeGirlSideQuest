@@ -1109,6 +1109,10 @@ let state = {
   // so the plan is still there next visit, same pattern as zip/radius.
   walletBudget: lsGet("dff_wallet_budget") || "",
   walletDays: lsGet("dff_wallet_days") || "",
+  // Gallons entered on the Gas tab's calculator — read by both the Gas
+  // tab (to compute this week's gas cost) and the Wallet tab (to show
+  // that same entry there, per request, without re-asking for it).
+  gasGallonsNeeded: lsGet("dff_gas_gallons") || "",
   // Monthly Budget tab — monthly income, amounts per prefilled category
   // (object keyed by BUDGET_CATEGORIES' .key), and any custom categories
   // the person added on top of those. All persisted the same way as the
@@ -1507,6 +1511,11 @@ function renderList(key) {
   const activeFilter = isPricedTab ? "all" : (state.filters[key] || "all");
   const filtered = activeFilter === "all" ? items : items.filter(i => i.requirementType === activeFilter);
 
+  // Gas-tab-only calculator card, shown above everything else on that tab
+  // (see renderGasCalculator() near submitWalletPlan()) — empty string on
+  // every other tab.
+  const gasCalculator = key === "gas" ? renderGasCalculator() : "";
+
   const filterBar = isPricedTab ? "" : `<div class="filter-bar">
     ${["all", "no_purchase", "signup", "loyalty", "rebate", "giveaway"].map(f => `
       <button class="filter-chip ${activeFilter === f ? "active" : ""}" onclick="setFilter('${key}','${f}')">
@@ -1549,7 +1558,7 @@ function renderList(key) {
       : `Scanning ${cat.label.toLowerCase()}`;
     scanningBanner = `<div class="empty-state" style="padding:10px;font-size:0.9em;opacity:0.85">${progressText}<span class="scan-dots"><span>.</span><span>.</span><span>.</span></span>${countdownHtml()}</div>`;
   }
-  return filterBar + providerNote + scanningBanner + `<div class="grid">${body}</div>`;
+  return gasCalculator + filterBar + providerNote + scanningBanner + `<div class="grid">${body}</div>`;
 }
 
 // Human-readable label + confidence styling for whichever search provider
@@ -2015,6 +2024,90 @@ function buildWalletPlan(budget, days) {
   return { perDay: days > 0 ? budget / days : budget, freeFinds, fitted, spent: budget - remaining, remaining, anyScanned };
 }
 
+// ---------- Gas calculator (Gas tab) ----------
+// Reads the price straight off whatever the Gas tab last scanned
+// (state.results.gas[0].price, formatted like "$3.19/gal" — see
+// searchGasItem() above) so the calculator is always quoting today's
+// actual scanned price, never a guess. Returns null before any gas scan
+// has run.
+function gasPricePerGallon() {
+  const gasItem = (state.results.gas || [])[0];
+  if (!gasItem || !gasItem.price) return null;
+  const n = parseFloat(String(gasItem.price).replace(/[^0-9.]/g, ""));
+  return isNaN(n) ? null : n;
+}
+
+// Sum of every priced item the Grocery tab has scanned so far (the whole
+// basket, not just whatever the Wallet tab's budget plan happened to fit)
+// — this is the number the Gas tab's "combined" total and the Wallet
+// tab's gas summary both add gas cost to. null until Grocery has been
+// scanned at least once.
+function groceryTotalCost() {
+  const items = state.results.grocery || [];
+  let total = 0, count = 0;
+  items.forEach(it => {
+    const n = parseFloat(String(it.price || "").replace(/[^0-9.]/g, ""));
+    if (!isNaN(n)) { total += n; count++; }
+  });
+  return count > 0 ? total : null;
+}
+
+// Saves the gallons-needed entry (persisted under its own key so it
+// survives a refresh independent of the wallet budget/days fields) and
+// re-renders — cheap enough to just re-render fully like
+// submitWalletPlan() does, since this only fires on change/blur, not on
+// every keystroke.
+function setGasGallons(val) {
+  const n = parseFloat(val);
+  state.gasGallonsNeeded = (isNaN(n) || n < 0) ? "" : String(n);
+  lsSet("dff_gas_gallons", state.gasGallonsNeeded);
+  checkAchievements();
+  render();
+}
+
+// Renders as a card at the top of the Gas tab (see renderList()'s
+// key === "gas" branch). Shows the weekly gas cost once gallons are
+// entered and a price has been scanned, then — once Grocery has also
+// been scanned — a combined gas + grocery total underneath, per request.
+function renderGasCalculator() {
+  const gallons = parseFloat(state.gasGallonsNeeded);
+  const hasGallons = !isNaN(gallons) && gallons > 0;
+  const pricePerGal = gasPricePerGallon();
+  const gasCost = hasGallons && pricePerGal != null ? gallons * pricePerGal : null;
+
+  let resultHtml = "";
+  if (hasGallons && pricePerGal == null) {
+    resultHtml = `<p class="tip-note">Scan gas above first so I know today's price per gallon — then this'll total it up.</p>`;
+  } else if (gasCost != null) {
+    resultHtml = `<div class="quest-complete" style="margin-top:10px;">
+      <div class="quest-complete-xp">$${gasCost.toFixed(2)}</div>
+      <div class="quest-complete-text"><b>${gallons} gal × $${pricePerGal.toFixed(2)}/gal</b><br>What this week's gas runs you at today's scanned price.</div>
+    </div>`;
+    const groceryTotal = groceryTotalCost();
+    if (groceryTotal != null) {
+      const combined = gasCost + groceryTotal;
+      resultHtml += `<div class="tip-card" style="margin-top:10px;">
+        <h3>⛽ + 🛒 Combined weekly cost</h3>
+        <p>Gas $${gasCost.toFixed(2)} + Grocery total $${groceryTotal.toFixed(2)} (everything scanned on the Grocery tab) = <b>$${combined.toFixed(2)}</b></p>
+      </div>`;
+    } else {
+      resultHtml += `<p class="tip-note">Scan the Grocery tab too and this'll add its total in for a combined gas + grocery number.</p>`;
+    }
+  }
+
+  return `<div class="help-banner" style="margin-bottom:16px;">
+    <h2>⛽ Gas Calculator</h2>
+    <p>Enter how many gallons you need to get through the week and I'll total it up at today's scanned price.</p>
+    <div class="search-bar" style="margin-top:8px;">
+      <div class="search-field">
+        <label for="gasGallonsInput">Gallons needed this week</label>
+        <input id="gasGallonsInput" type="number" min="0" step="0.1" placeholder="e.g. 10" value="${escapeHtml(state.gasGallonsNeeded)}" onchange="setGasGallons(this.value)" />
+      </div>
+    </div>
+    ${resultHtml}
+  </div>`;
+}
+
 function submitWalletPlan() {
   const budgetEl = document.getElementById("walletBudgetInput");
   const daysEl = document.getElementById("walletDaysInput");
@@ -2030,6 +2123,24 @@ function renderWallet() {
   const budget = parseFloat(state.walletBudget);
   const days = parseInt(state.walletDays);
   const hasPlan = !isNaN(budget) && budget >= 0 && !isNaN(days) && days > 0;
+
+  // Mirrors whatever's entered on the Gas tab's calculator (state is
+  // shared — see setGasGallons()) so the person doesn't have to re-enter
+  // it here. Shown whenever gallons have been entered, regardless of
+  // whether a budget/days plan below has been filled in.
+  const gasGallons = parseFloat(state.gasGallonsNeeded);
+  const hasGasEntry = !isNaN(gasGallons) && gasGallons > 0;
+  let gasSummaryHtml = "";
+  if (hasGasEntry) {
+    const pricePerGal = gasPricePerGallon();
+    const gasCost = pricePerGal != null ? gasGallons * pricePerGal : null;
+    gasSummaryHtml = `<div class="tip-card" style="margin-bottom:16px;">
+      <h3>⛽ This week's gas (from the Gas tab)</h3>
+      <p>${gasGallons} gal${gasCost != null
+        ? ` × $${pricePerGal.toFixed(2)}/gal = <b>$${gasCost.toFixed(2)}</b>`
+        : " — scan the Gas tab so this can price it out"}</p>
+    </div>`;
+  }
 
   let planHtml = "";
   if (hasPlan) {
@@ -2081,6 +2192,7 @@ function renderWallet() {
     </div>
     <button class="help-hotline-btn" style="margin-top:12px; border:none; cursor:pointer;" onclick="submitWalletPlan()">🎒 Build my plan</button>
   </div>
+  ${gasSummaryHtml}
   ${planHtml}`;
 }
 
@@ -2325,6 +2437,13 @@ function toggleHeaderCollapse(force) {
   if (saved === "1") toggleHeaderCollapse(true);
 })();
 
+// Tracks the tab shown on the previous render() call so scroll-to-top
+// (below) only fires on an actual tab change — not on every render(),
+// which runs far more often than that (any input's onchange, a scan
+// finishing, a claim, etc.) and would otherwise yank the page to the top
+// while someone's mid-scroll reading results.
+let lastScrolledTab = null;
+
 function render() {
   // Marks the CURRENT tab visited on every render, regardless of how it
   // got here (nav click, confirmCharacter() landing on "dashboard", a
@@ -2332,6 +2451,13 @@ function render() {
   // can't be permanently blocked by the dashboard being the default
   // landing tab that never routes through a nav onclick handler.
   markTabVisited(state.tab);
+  // Same "current tab, however it changed" logic as markTabVisited above —
+  // covers nav clicks and confirmCharacter()'s landing on "dashboard"
+  // alike, so switching tabs always starts back at the top of the page.
+  if (state.tab !== lastScrolledTab) {
+    window.scrollTo(0, 0);
+    lastScrolledTab = state.tab;
+  }
   buildNav();
   renderHud();
   updateScanButton();
@@ -2516,7 +2642,9 @@ const ACHIEVEMENTS = [
   { id: "prepared", emoji: "🆘", name: "Prepared", description: "Visit the Emergency Help tab" },
   { id: "bag_secured", emoji: "🎮", name: "Bag Secured", description: "Play a round of Coin Dash" },
   { id: "coin_crusher", emoji: "🪙", name: "Coin Crusher", description: "Score 20+ in Coin Dash" },
-  { id: "explorer", emoji: "🗺️", name: "Explorer", description: "Visit every tab in the app" }
+  { id: "explorer", emoji: "🗺️", name: "Explorer", description: "Visit every tab in the app" },
+  { id: "fill_er_up", emoji: "⛽", name: "Fill 'Er Up", description: "Use the Gas tab's calculator to price out a week of gas" },
+  { id: "full_tank_math", emoji: "🧮", name: "Full Tank Math", description: "See your combined gas + grocery total on the Gas tab" }
 ];
 
 const earnedAchievements = new Set(JSON.parse(lsGet("dff_achievements_earned") || "[]"));
@@ -2576,6 +2704,15 @@ function checkAchievements() {
   const allocated = Object.values(state.budgetAmounts).reduce((sum, v) => sum + budgetNum(v), 0)
     + state.budgetExtras.reduce((sum, e) => sum + budgetNum(e.amount), 0);
   if (income > 0 && allocated >= income) awardAchievement("every_dollar");
+
+  // Gas calculator (see setGasGallons()/renderGasCalculator() — this is
+  // called from both, plus scanSingleCategory(), so entering gallons and
+  // scanning gas/grocery in any order both re-check these).
+  const gallons = parseFloat(state.gasGallonsNeeded);
+  if (!isNaN(gallons) && gallons > 0) {
+    awardAchievement("fill_er_up");
+    if (gasPricePerGallon() != null && groceryTotalCost() != null) awardAchievement("full_tank_math");
+  }
 }
 
 function achievementsGridHtml() {
