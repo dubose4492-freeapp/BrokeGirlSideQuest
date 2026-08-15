@@ -358,14 +358,14 @@
     display: flex; align-items: center; gap: 10px; color: var(--ink);
   }
   .quest-board-head .dash-line { flex: 1; border-bottom: 3px dotted var(--ink); height: 0; }
-  .badges-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px; margin-bottom: 20px; }
-  .badge-tile {
+  .achievements-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .achievement-tile {
     background: var(--panel); border: 3px solid var(--ink); padding: 14px 10px; text-align: center;
     box-shadow: 4px 4px 0 var(--pink); display: flex; flex-direction: column; align-items: center; gap: 6px;
   }
-  .badge-tile.locked { filter: grayscale(1); opacity: .55; }
-  .badge-tile-emoji { font-size: 30px; line-height: 1; }
-  .badge-tile-name { font-size: 11px; font-weight: 800; color: var(--ink); }
+  .achievement-tile.locked { filter: grayscale(1); opacity: .55; }
+  .achievement-tile-emoji { font-size: 30px; line-height: 1; }
+  .achievement-tile-name { font-size: 11px; font-weight: 800; color: var(--ink); }
 
   .quest-board { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; margin-bottom: 20px; }
   .quest-card {
@@ -900,12 +900,12 @@ const CATEGORIES = {
   tube: { label: "Watch & Chill", icon: "📺", static: true },
   game: { label: "Coin Dash", icon: "🎮", static: true },
   // Static content tab — no search/API call, just a grid of earned/locked
-  // badge tiles. Handled via renderBadges() in render(), same static-tab
-  // pattern as "help"/"tips" elsewhere; kept out of the scan/category
-  // loops the same way (see those exclusion filters elsewhere in this
-  // file — "badges" is added alongside them). Placed right after "game"
-  // per request.
-  badges: { label: "Badges", icon: "🏅", static: true },
+  // achievement tiles. Handled via renderAchievements() in render(), same
+  // static-tab pattern as "help"/"tips" elsewhere; kept out of the
+  // scan/category loops the same way (see those exclusion filters
+  // elsewhere in this file — "achievements" is added alongside them).
+  // Placed right after "game" per request.
+  achievements: { label: "Achievements", icon: "🏆", static: true },
   // Static content tab — no search/API call of its own. Instead of
   // fetching anything new, renderWallet() builds a "get to Friday" plan
   // out of whatever's already sitting in state.results from prior scans
@@ -1196,7 +1196,7 @@ function bumpCharLevel(id) {
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges") state.results[k] = []; });
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements") state.results[k] = []; });
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -1600,7 +1600,7 @@ function providerNoteHtml(key) {
 // this is a gamified estimate, not a receipt), and how many of the 8
 // searchable categories have been scanned at least once this run.
 function computeStats() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
   let totalFound = 0, estValue = 0, scannedCount = 0;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1623,7 +1623,7 @@ function computeStats() {
 // beyond what computeStats already uses elsewhere in the HUD, so the
 // highlighted item's implied value always matches what's shown there.
 function findBestDeal() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
   let best = null, bestValue = -1, bestFresh = false;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1653,7 +1653,7 @@ function renderHud() {
 
 function renderDashboard() {
   const stats = computeStats();
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
   const bestDeal = findBestDeal();
 
   const boardCards = catKeys.map(k => {
@@ -1863,14 +1863,14 @@ function budgetNum(v) {
 function setBudgetIncome(val) {
   state.budgetIncome = String(Math.max(0, budgetNum(val)));
   lsSet("dff_budget_income", state.budgetIncome);
-  checkBadges();
+  checkAchievements();
   renderBudgetTotalsOnly();
 }
 
 function setBudgetAmount(key, val) {
   state.budgetAmounts[key] = String(Math.max(0, budgetNum(val)));
   lsSet("dff_budget_amounts", JSON.stringify(state.budgetAmounts));
-  checkBadges();
+  checkAchievements();
   renderBudgetTotalsOnly();
 }
 
@@ -1878,7 +1878,7 @@ function setBudgetExtraAmount(idx, val) {
   if (!state.budgetExtras[idx]) return;
   state.budgetExtras[idx].amount = String(Math.max(0, budgetNum(val)));
   lsSet("dff_budget_extras", JSON.stringify(state.budgetExtras));
-  checkBadges();
+  checkAchievements();
   renderBudgetTotalsOnly();
 }
 
@@ -1993,7 +1993,7 @@ function buildWalletPlan(budget, days) {
   // CATEGORIES) doesn't leak fuel prices into the free-finds list either.
   const freeCatKeys = Object.keys(CATEGORIES).filter(k =>
     k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
-    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges" && !CATEGORIES[k].isPriced);
+    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements" && !CATEGORIES[k].isPriced);
   const freeFinds = [];
   freeCatKeys.forEach(k => {
     (state.results[k] || []).forEach(it => { if (it.isFree || !it.price) freeFinds.push(it); });
@@ -2022,7 +2022,7 @@ function submitWalletPlan() {
   state.walletDays = String(Math.max(1, parseInt(daysEl.value) || 1));
   lsSet("dff_wallet_budget", state.walletBudget);
   lsSet("dff_wallet_days", state.walletDays);
-  awardBadge("wallet_wizard");
+  awardAchievement("wallet_wizard");
   render();
 }
 
@@ -2294,7 +2294,7 @@ function renderAbout() {
     <div class="tip-card">
       <h3>🔒 How your privacy is protected</h3>
       <ul>
-        <li><b>No account, no database.</b> There's no login and no central server storing who you are. Your character, badges, saved deals, and preferences live only in your own browser's storage — I never see them, and they never leave your device.</li>
+        <li><b>No account, no database.</b> There's no login and no central server storing who you are. Your character, achievements, saved deals, and preferences live only in your own browser's storage — I never see them, and they never leave your device.</li>
         <li><b>Your ZIP code stays purpose-built.</b> It's used only to fetch deals near you — it isn't logged, profiled, sold, or tied to a name or account, because there isn't one.</li>
         <li><b>Location, kept fuzzy.</b> If you use auto-detect location, your exact GPS spot is rounded down to roughly a half-mile before it's ever sent anywhere — plenty precise to find your ZIP, not precise enough to pin your exact doorstep.</li>
         <li><b>Locked-down by design.</b> API keys and credentials are kept server-side and are never exposed in the app itself, external links strip referrer data so other sites can't see you came from here, and the app enforces a strict content policy limiting exactly what it's allowed to load or connect to — closing the door on a lot of common ways an app like this could otherwise be abused.</li>
@@ -2328,7 +2328,7 @@ function toggleHeaderCollapse(force) {
 function render() {
   // Marks the CURRENT tab visited on every render, regardless of how it
   // got here (nav click, confirmCharacter() landing on "dashboard", a
-  // direct state.tab set) — so the "Explorer" badge (visit every tab)
+  // direct state.tab set) — so the "Explorer" achievement (visit every tab)
   // can't be permanently blocked by the dashboard being the default
   // landing tab that never routes through a nav onclick handler.
   markTabVisited(state.tab);
@@ -2338,9 +2338,9 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget" || state.tab === "badges") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget" || state.tab === "badges") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
@@ -2350,7 +2350,7 @@ function render() {
   else if (state.tab === "about") content.innerHTML = renderAbout();
   else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
-  else if (state.tab === "badges") content.innerHTML = renderBadges();
+  else if (state.tab === "achievements") content.innerHTML = renderAchievements();
   else content.innerHTML = renderList(state.tab);
 
   let statusHtml = "";
@@ -2364,7 +2364,7 @@ function setFilter(key, filter) { state.filters[key] = filter; render(); }
 function toggleSave(id) {
   if (state.saved.has(id)) state.saved.delete(id); else state.saved.add(id);
   lsSet("dff_saved", JSON.stringify([...state.saved]));
-  checkBadges();
+  checkAchievements();
   render();
 }
 
@@ -2393,7 +2393,7 @@ function showClaimFlash(value, monthTotal, isNewHigh) {
   `;
   el.classList.add("show");
   clearTimeout(claimFlashTimer);
-  claimFlashTimer = setTimeout(() => el.classList.remove("show"), 2800);
+  claimFlashTimer = setTimeout(() => el.classList.remove("show"), 30000);
 }
 
 // Records a claim the first time an item's Claim button is clicked —
@@ -2417,7 +2417,7 @@ function markClaimed(id) {
   const value = !isNaN(priceNum) ? priceNum : 5;
   state.claimedLog[id] = { value, monthKey: monthKey(new Date()), ts: Date.now() };
   lsSet("dff_claimed_log", JSON.stringify(state.claimedLog));
-  checkBadges();
+  checkAchievements();
 
   const isNewHigh = value > claimHighScore;
   if (isNewHigh) {
@@ -2490,15 +2490,15 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove("show"), 1800);
 }
 
-// ---------- Badges ----------
-// 18 badges, defined once here and referenced only by id everywhere else
-// (awardBadge/checkBadges/markTabVisited below, plus the handful of
+// ---------- Achievements ----------
+// 18 achievements, defined once here and referenced only by id everywhere else
+// (awardAchievement/checkAchievements/markTabVisited below, plus the handful of
 // one-off trigger points scattered through the file — nav clicks via
 // render()'s markTabVisited() call, scanSingleCategory, markClaimed,
 // toggleSave, setBudgetIncome/setBudgetAmount, submitWalletPlan, gdEnd,
-// confirmCharacter). Add a new badge by adding one entry here and one
-// awardBadge()/checkBadges() call at whatever action earns it.
-const BADGES = [
+// confirmCharacter). Add a new achievement by adding one entry here and one
+// awardAchievement()/checkAchievements() call at whatever action earns it.
+const ACHIEVEMENTS = [
   { id: "hero_chosen", emoji: "🦸", name: "Hero Chosen", description: "Pick your character" },
   { id: "first_scan", emoji: "🔍", name: "First Scan", description: "Run your first quest scan" },
   { id: "quest_master", emoji: "🎯", name: "Quest Master", description: "Scan every searchable category at least once" },
@@ -2519,84 +2519,84 @@ const BADGES = [
   { id: "explorer", emoji: "🗺️", name: "Explorer", description: "Visit every tab in the app" }
 ];
 
-const earnedBadges = new Set(JSON.parse(lsGet("dff_badges_earned") || "[]"));
+const earnedAchievements = new Set(JSON.parse(lsGet("dff_achievements_earned") || "[]"));
 const visitedTabs = new Set(JSON.parse(lsGet("dff_tabs_visited") || "[]"));
 
 // Idempotent — re-earning something already logged is a silent no-op, no
-// repeat toast. Live-updates the grid if the Badges tab happens to be
+// repeat toast. Live-updates the grid if the Achievements tab happens to be
 // open right now instead of waiting for the next full render().
-function awardBadge(id) {
-  if (earnedBadges.has(id)) return;
-  earnedBadges.add(id);
-  lsSet("dff_badges_earned", JSON.stringify([...earnedBadges]));
-  const b = BADGES.find(x => x.id === id);
-  if (b) showToast(`🏅 Badge earned: ${b.name}!`);
-  if (state.tab === "badges") renderBadgesGridOnly();
+function awardAchievement(id) {
+  if (earnedAchievements.has(id)) return;
+  earnedAchievements.add(id);
+  lsSet("dff_achievements_earned", JSON.stringify([...earnedAchievements]));
+  const b = ACHIEVEMENTS.find(x => x.id === id);
+  if (b) showToast(`🏆 Achievement unlocked: ${b.name}!`);
+  if (state.tab === "achievements") renderAchievementsGridOnly();
 }
 
 // Called once per render() with the CURRENT tab (see render()'s own call
 // site) so visiting a tab always counts regardless of how the user got
 // there — nav click, confirmCharacter() landing on "dashboard", etc.
-// "badges" itself is excluded from the Explorer tally so opening the
-// Badges tab isn't required to complete it.
+// "achievements" itself is excluded from the Explorer tally so opening the
+// Achievements tab isn't required to complete it.
 function markTabVisited(tab) {
   if (!visitedTabs.has(tab)) {
     visitedTabs.add(tab);
     lsSet("dff_tabs_visited", JSON.stringify([...visitedTabs]));
   }
-  if (tab === "tube") awardBadge("cartoon_break");
-  if (tab === "tips") awardBadge("tip_collector");
-  if (tab === "help") awardBadge("prepared");
-  const allTabs = Object.keys(CATEGORIES).filter(k => k !== "badges");
-  if (allTabs.length && allTabs.every(k => visitedTabs.has(k))) awardBadge("explorer");
+  if (tab === "tube") awardAchievement("cartoon_break");
+  if (tab === "tips") awardAchievement("tip_collector");
+  if (tab === "help") awardAchievement("prepared");
+  const allTabs = Object.keys(CATEGORIES).filter(k => k !== "achievements");
+  if (allTabs.length && allTabs.every(k => visitedTabs.has(k))) awardAchievement("explorer");
 }
 
-// Re-evaluates every "count/threshold" style badge against current state
+// Re-evaluates every "count/threshold" style achievement against current state
 // — cheap enough to just call after any action that might have crossed a
 // threshold (a claim, a save, a scan, a budget number changing) rather
 // than trying to track deltas.
-function checkBadges() {
+function checkAchievements() {
   const claimCount = Object.keys(state.claimedLog).length;
-  if (claimCount >= 1) awardBadge("first_claim");
-  if (claimCount >= 5) awardBadge("claim_streak");
-  if (claimCount >= 10) awardBadge("deal_hunter");
+  if (claimCount >= 1) awardAchievement("first_claim");
+  if (claimCount >= 5) awardAchievement("claim_streak");
+  if (claimCount >= 10) awardAchievement("deal_hunter");
 
-  if (state.saved.size >= 1) awardBadge("bookmarked");
+  if (state.saved.size >= 1) awardAchievement("bookmarked");
 
-  if (Object.keys(state.scannedAt).length >= 1) awardBadge("first_scan");
+  if (Object.keys(state.scannedAt).length >= 1) awardAchievement("first_scan");
   const searchableCats = Object.keys(CATEGORIES).filter(k =>
     k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
-    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges");
-  if (searchableCats.length && searchableCats.every(k => state.scannedAt[k])) awardBadge("quest_master");
+    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
+  if (searchableCats.length && searchableCats.every(k => state.scannedAt[k])) awardAchievement("quest_master");
 
   const income = budgetNum(state.budgetIncome);
-  if (income >= 10) awardBadge("making_moves");
-  if (income >= 50) awardBadge("big_saver");
-  if (income > 0) awardBadge("budget_boss");
+  if (income >= 10) awardAchievement("making_moves");
+  if (income >= 50) awardAchievement("big_saver");
+  if (income > 0) awardAchievement("budget_boss");
   const allocated = Object.values(state.budgetAmounts).reduce((sum, v) => sum + budgetNum(v), 0)
     + state.budgetExtras.reduce((sum, e) => sum + budgetNum(e.amount), 0);
-  if (income > 0 && allocated >= income) awardBadge("every_dollar");
+  if (income > 0 && allocated >= income) awardAchievement("every_dollar");
 }
 
-function badgesGridHtml() {
-  return `<div class="badges-grid" id="badgesGrid">${BADGES.map(b => {
-    const earned = earnedBadges.has(b.id);
-    return `<div class="badge-tile ${earned ? "earned" : "locked"}" title="${escapeHtml(b.description)}">
-      <div class="badge-tile-emoji">${earned ? b.emoji : "🔒"}</div>
-      <div class="badge-tile-name">${escapeHtml(b.name)}</div>
+function achievementsGridHtml() {
+  return `<div class="achievements-grid" id="achievementsGrid">${ACHIEVEMENTS.map(b => {
+    const earned = earnedAchievements.has(b.id);
+    return `<div class="achievement-tile ${earned ? "earned" : "locked"}" title="${escapeHtml(b.description)}">
+      <div class="achievement-tile-emoji">${earned ? b.emoji : "🔒"}</div>
+      <div class="achievement-tile-name">${escapeHtml(b.name)}</div>
     </div>`;
   }).join("")}</div>`;
 }
 
-function renderBadgesGridOnly() {
-  const grid = document.getElementById("badgesGrid");
-  if (grid) grid.outerHTML = badgesGridHtml();
+function renderAchievementsGridOnly() {
+  const grid = document.getElementById("achievementsGrid");
+  if (grid) grid.outerHTML = achievementsGridHtml();
 }
 
-function renderBadges() {
-  return `<div class="badges-page">
-    <div class="quest-board-head"><span>🏅 BADGES — ${earnedBadges.size}/${BADGES.length} EARNED</span><span class="dash-line"></span></div>
-    ${badgesGridHtml()}
+function renderAchievements() {
+  return `<div class="achievements-page">
+    <div class="quest-board-head"><span>🏆 ACHIEVEMENTS — ${earnedAchievements.size}/${ACHIEVEMENTS.length} EARNED</span><span class="dash-line"></span></div>
+    ${achievementsGridHtml()}
   </div>`;
 }
 
@@ -3141,7 +3141,7 @@ function buildAiPrompt() {
   ];
 
   for (const key of Object.keys(CATEGORIES)) {
-    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "wallet" || key === "budget" || key === "badges") continue;
+    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "wallet" || key === "budget" || key === "achievements") continue;
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
@@ -3199,7 +3199,7 @@ async function runFullScan() {
   stopBtn.style.display = "flex";
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "badges");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
   for (let i = 0; i < categoryKeys.length; i++) {
     if (state.stopRequested || state.timedOut) break;
     const key = categoryKeys[i];
@@ -3273,7 +3273,7 @@ function stopScan() {
 // currentAbortController/state.results slot. Triggered via
 // handleScanClick() — never call this directly for "dashboard" or "tips".
 async function scanSingleCategory(key) {
-  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "wallet" || key === "budget" || key === "badges") return;
+  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "wallet" || key === "budget" || key === "achievements") return;
 
   state.scanning = true;
   state.scanningKey = key;
@@ -3306,7 +3306,7 @@ async function scanSingleCategory(key) {
       : await searchFreebiesCategory(key, currentAbortController.signal);
     state.scannedAt[key] = Date.now();
     state.error = null;
-    checkBadges();
+    checkAchievements();
   } catch (err) {
     if (err.name !== "AbortError") {
       recordFailure(key, err.message);
@@ -3596,7 +3596,7 @@ function confirmCharacter() {
   currentCharacterMascot = c.img;
   currentCharacterAlt = `${c.name} the ${c.animal}`;
 
-  awardBadge("hero_chosen");
+  awardAchievement("hero_chosen");
 
   const cs = document.getElementById("charSelectScreen");
   if (cs) cs.classList.add("hide");
@@ -3843,8 +3843,8 @@ function gdEnd() {
   }
   if (badgeWrap) badgeWrap.classList.remove("hidden");
   if (startBtn) startBtn.textContent = "RETRY";
-  awardBadge("bag_secured");
-  if (gdScore >= 20) awardBadge("coin_crusher");
+  awardAchievement("bag_secured");
+  if (gdScore >= 20) awardAchievement("coin_crusher");
 }
 
 renderCharGrid();
