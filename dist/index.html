@@ -452,6 +452,18 @@
   .tip-card ul:last-child { margin-bottom: 0; }
   .tip-card li { margin-bottom: 5px; }
   .tip-card a { color: var(--lav); font-weight: 800; text-decoration: underline; }
+
+  /* Wallet tab checklist — every scanned staple (plus gas, when priced
+     out) as its own checkbox line, so unchecking one just drops it out of
+     the spent/remaining math below instead of the old fixed cutoff. */
+  .wallet-checklist { list-style: none; margin: 0 0 10px; padding: 0; font-size: 14px; }
+  .wallet-checklist li { margin-bottom: 0; border-bottom: 1px dashed var(--ink); }
+  .wallet-checklist li:last-child { border-bottom: none; }
+  .wallet-checklist label { display: flex; align-items: center; gap: 10px; padding: 8px 2px; cursor: pointer; }
+  .wallet-checklist input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--mint); flex-shrink: 0; cursor: pointer; }
+  .wallet-checklist .wallet-check-price { margin-left: auto; font-weight: 800; padding-left: 10px; white-space: nowrap; }
+  .wallet-check-item.unchecked span { color: #8b8398; text-decoration: line-through; }
+  .wallet-check-item.unchecked .wallet-check-price { color: #8b8398; }
   .tip-card .tip-note { font-size: 12.5px; opacity: .75; }
 
   /* ---- Emergency Help tab ---- */
@@ -1113,6 +1125,13 @@ let state = {
   // tab (to compute this week's gas cost) and the Wallet tab (to show
   // that same entry there, per request, without re-asking for it).
   gasGallonsNeeded: lsGet("dff_gas_gallons") || "",
+  // Wallet tab checklist — { itemId: true|false }, set ONLY once the
+  // person has actually clicked a box for that item (grocery staple or
+  // the gas line — see GAS_ITEM_ID). Anything not in here yet still shows
+  // up checked/unchecked in buildWalletPlan()'s cheapest-first default;
+  // this only overrides that default, so a fresh scan or a changed budget
+  // never silently re-checks something someone deliberately unchecked.
+  walletChecked: JSON.parse(lsGet("dff_wallet_checked") || "{}"),
   // Monthly Budget tab — monthly income, amounts per prefilled category
   // (object keyed by BUDGET_CATEGORIES' .key), and any custom categories
   // the person added on top of those. All persisted the same way as the
@@ -1992,9 +2011,13 @@ function renderBudget() {
 // and never invents a price or deal the app hasn't actually seen. Two
 // halves: (1) real free/no-purchase finds across every non-grocery
 // category, since those stretch a tight budget without touching it at
-// all, and (2) a greedy cheapest-first fit of real Kroger grocery prices
-// against the dollar amount entered, so "these fit your budget" is
-// arithmetic on real numbers, not a guess.
+// all, and (2) a full checklist of every real scanned grocery price (plus
+// the gas line, if priced out) that the person can check/uncheck by hand —
+// NOT a hard greedy cutoff. A cheapest-first pass still decides sensible
+// starting checkmarks (same math the old cutoff used), but that's only a
+// default: every item shows up regardless of whether it "fit," and the
+// spent/remaining numbers always reflect whatever's actually checked right
+// now, in state.walletChecked, not where the cutoff would have landed.
 function buildWalletPlan(budget, days) {
   // Priced tabs (grocery, gas) aren't "free finds" — excluded by checking
   // CATEGORIES[k].isPriced generically instead of naming "grocery" alone,
@@ -2013,15 +2036,56 @@ function buildWalletPlan(budget, days) {
     .filter(it => !isNaN(priced(it)))
     .sort((a, b) => priced(a) - priced(b));
 
-  let remaining = budget;
-  const fitted = [];
-  groceryItems.forEach(it => {
+  // Gas joins the same checklist as one line, only when it's actually
+  // priced out (gallons entered on the Gas tab's calculator AND a gas
+  // price already scanned — see gasPricePerGallon()) — so "uncheck it if
+  // you don't need it" lives right here, not just on the Gas tab.
+  const gasGallons = parseFloat(state.gasGallonsNeeded);
+  const gasPerGal = gasPricePerGallon();
+  let gasItem = null;
+  if (!isNaN(gasGallons) && gasGallons > 0 && gasPerGal != null) {
+    gasItem = {
+      id: GAS_ITEM_ID,
+      title: "Regular Unleaded Gas",
+      note: `${gasGallons} gal × $${gasPerGal.toFixed(2)}/gal`,
+      price: `$${(gasGallons * gasPerGal).toFixed(2)}`,
+      isGasLine: true
+    };
+  }
+  const checklist = gasItem ? [gasItem, ...groceryItems] : groceryItems;
+
+  // Effective checked state per item: an explicit true/false the person
+  // already set wins outright; anything untouched falls back to the
+  // cheapest-first default, walking the SAME list the checklist shows so
+  // the starting checkmarks still land on "cheapest stuff that fits."
+  let budgetLeftForDefaults = budget;
+  const checked = {};
+  checklist.forEach(it => {
+    const explicit = state.walletChecked[it.id];
+    if (explicit !== undefined) { checked[it.id] = explicit; return; }
     const p = priced(it);
-    if (p <= remaining) { remaining -= p; fitted.push(it); }
+    const fits = p <= budgetLeftForDefaults;
+    if (fits) budgetLeftForDefaults -= p;
+    checked[it.id] = fits;
   });
 
+  let spent = 0;
+  checklist.forEach(it => { if (checked[it.id]) spent += priced(it); });
+  const remaining = budget - spent;
+
   const anyScanned = Object.keys(state.scannedAt).length > 0;
-  return { perDay: days > 0 ? budget / days : budget, freeFinds, fitted, spent: budget - remaining, remaining, anyScanned };
+  return { perDay: days > 0 ? budget / days : budget, freeFinds, checklist, checked, spent, remaining, anyScanned };
+}
+
+// Flips ONE checklist item (grocery staple or the gas line) and persists
+// it — never touches any other item's box, and never gets silently
+// overwritten by buildWalletPlan()'s default pass once it's set, since
+// that pass only fills in items missing from state.walletChecked.
+function setWalletItemChecked(id, isChecked) {
+  if (!id) return;
+  state.walletChecked[id] = !!isChecked;
+  lsSet("dff_wallet_checked", JSON.stringify(state.walletChecked));
+  render();
 }
 
 // ---------- Gas calculator (Gas tab) ----------
@@ -2154,9 +2218,18 @@ function renderWallet() {
       const freeHtml = plan.freeFinds.length
         ? `<div class="grid">${plan.freeFinds.slice(0, 6).map(itemCard).join("")}</div>`
         : `<p class="tip-note">No free/no-purchase finds in your scanned categories yet — try scanning Restaurant Deals, Community, or By Mail.</p>`;
-      const fittedHtml = plan.fitted.length
-        ? `<ul>${plan.fitted.map(it => `<li>${escapeHtml(it.title)} — ${escapeHtml(it.price)}</li>`).join("")}</ul>
-           <p class="tip-note">Spends ~$${plan.spent.toFixed(2)} of your $${budget.toFixed(2)}, leaves ~$${plan.remaining.toFixed(2)}.</p>`
+      const checklistHtml = plan.checklist.length
+        ? `<ul class="wallet-checklist">${plan.checklist.map(it => {
+            const isChecked = !!plan.checked[it.id];
+            return `<li class="wallet-check-item${isChecked ? "" : " unchecked"}">
+              <label>
+                <input type="checkbox" data-wallet-id="${escapeHtml(it.id)}" ${isChecked ? "checked" : ""} onchange="setWalletItemChecked(this.dataset.walletId, this.checked)" />
+                <span>${it.isGasLine ? "⛽ " : ""}${escapeHtml(it.title)}${it.note ? ` <small>(${escapeHtml(it.note)})</small>` : ""}</span>
+                <span class="wallet-check-price">${escapeHtml(it.price)}</span>
+              </label>
+            </li>`;
+          }).join("")}</ul>
+           <p class="tip-note">Spends ~$${plan.spent.toFixed(2)} of your $${budget.toFixed(2)}, leaves ~$${plan.remaining.toFixed(2)}. Uncheck anything you don't need — the totals update as you go.</p>`
         : `<p class="tip-note">No grocery prices scanned yet — run the Grocery quest to see what fits your budget.</p>`;
       const lowBudgetWarning = plan.perDay < 5 ? `<div class="help-banner" style="margin-bottom:16px;">
           <h2>🆘 That's a tight stretch</h2>
@@ -2169,8 +2242,8 @@ function renderWallet() {
           <div class="quest-complete-xp">$${plan.perDay.toFixed(2)}/day</div>
           <div class="quest-complete-text"><b>$${budget.toFixed(2)} over ${days} day${days === 1 ? "" : "s"}</b><br>That's your daily ceiling — everything below stretches it further.</div>
         </div>
-        <div class="quest-board-head">🛒 GROCERY STAPLES THAT FIT <span class="dash-line"></span></div>
-        <div class="tip-card" style="margin-bottom:24px;">${fittedHtml}</div>
+        <div class="quest-board-head">🛒 STAPLES &amp; GAS — CHECK OFF WHAT YOU NEED <span class="dash-line"></span></div>
+        <div class="tip-card" style="margin-bottom:24px;">${checklistHtml}</div>
         <div class="quest-board-head">🎁 FREE / NO-PURCHASE FINDS <span class="dash-line"></span></div>
         ${freeHtml}`;
     }
