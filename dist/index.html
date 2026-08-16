@@ -10,8 +10,11 @@
      and per-element styling are inline (no build step) — but this still
      blocks any injected <script src>, <iframe>, or fetch()/XHR to a domain
      that isn't explicitly whitelisted below, which is the main way a stray
-     unescaped-data bug turns into actual data exfiltration. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://api.bigdatacloud.net; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self';">
+     unescaped-data bug turns into actual data exfiltration. The
+     googlesyndication.com/doubleclick.net entries are for Google AdSense,
+     which only ever loads/renders on the Ads tab — see loadAdSenseScriptOnce()
+     and initAdsTab() in the script below. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net https://www.google.com; connect-src 'self' https://api.bigdatacloud.net https://pagead2.googlesyndication.com https://googleads.g.doubleclick.net; frame-src https://www.youtube-nocookie.com https://googleads.g.doubleclick.net https://tpc.googlesyndication.com; object-src 'none'; base-uri 'self'; form-action 'self';">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 
 <!-- Open Graph / Slack, Discord, iMessage, Facebook -->
@@ -2530,6 +2533,40 @@ function renderMerch() {
   </div>`;
 }
 
+// AdSense wiring — deliberately kept out of every other tab. loadAdSenseScriptOnce()
+// and initAdsTab() are ONLY ever called from render()'s "ads" branch below, so the
+// AdSense script never loads (and no ad unit ever renders) unless someone actually
+// opens the Ads tab. That's what keeps the "confined to this tab" promise real
+// rather than just a claim in the copy.
+//
+// TODO before this goes live: replace ADSENSE_CLIENT_ID and ADSENSE_SLOT_ID below
+// with the real values from your AdSense account (Ads -> By ad unit -> Display ads).
+// Until then this intentionally renders a blank/empty ad slot — Google won't serve
+// against a placeholder ID, so nothing fake or broken-looking shows to users.
+const ADSENSE_CLIENT_ID = "ca-pub-XXXXXXXXXXXXXXXX"; // TODO: your AdSense publisher ID
+const ADSENSE_SLOT_ID = "XXXXXXXXXX"; // TODO: your ad unit's slot ID
+let adsenseScriptLoaded = false;
+
+function loadAdSenseScriptOnce() {
+  if (adsenseScriptLoaded) return;
+  adsenseScriptLoaded = true;
+  const s = document.createElement("script");
+  s.async = true;
+  s.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE_CLIENT_ID}`;
+  s.crossOrigin = "anonymous";
+  document.head.appendChild(s);
+}
+
+// Called every time the Ads tab is rendered (see render()'s "ads" branch).
+// Loads the AdSense script the first time only, then asks AdSense to fill
+// whatever <ins class="adsbygoogle"> unit renderAds() just put in the DOM.
+function initAdsTab() {
+  loadAdSenseScriptOnce();
+  try {
+    (window.adsbygoogle = window.adsbygoogle || []).push({});
+  } catch (e) { console.warn("[ads] adsbygoogle push failed:", e); }
+}
+
 function renderAds() {
   return `<div class="tips-grid">
     <div class="tip-card" style="grid-column: 1 / -1;">
@@ -2538,11 +2575,21 @@ function renderAds() {
     </div>
     <div class="tip-card">
       <h3>🚧 The one rule</h3>
-      <p>Ads will be <b>strictly contained to this tab</b>. They will not show up in your deal lists, your dashboard, your wallet, your budget, or anywhere else in the app. If you never open this tab, you'll never see an ad. The goal is ad revenue that keeps the lights on — not an experience that gets worse for anyone using the actual tools.</p>
+      <p>Ads will be <b>strictly contained to this tab</b>. They will not show up in your deal lists, your dashboard, your wallet, your budget, or anywhere else in the app. If you never open this tab, you'll never see an ad — and the ad script itself doesn't even load unless you're on this tab. The goal is ad revenue that keeps the lights on — not an experience that gets worse for anyone using the actual tools.</p>
     </div>
     <div class="tip-card">
       <h3>🛠️ Status</h3>
-      <p>Nothing is live yet — no ad network is connected, nothing is being served, and nothing is being tracked here right now. When that changes, this page will say so plainly instead of ads just quietly showing up.</p>
+      <p>The wiring is in place (Google AdSense), but it's running on placeholder IDs — nothing real is being served or tracked yet. Once a live AdSense account is approved and its real publisher/slot IDs are dropped in, real ads will start appearing right here and nowhere else.</p>
+    </div>
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <h3>📺 Ad slot</h3>
+      <ins class="adsbygoogle"
+           style="display:block; min-height:90px;"
+           data-ad-client="${ADSENSE_CLIENT_ID}"
+           data-ad-slot="${ADSENSE_SLOT_ID}"
+           data-ad-format="auto"
+           data-full-width-responsive="true"></ins>
+      <p class="tip-note" style="margin-top:10px;">This will render blank until real AdSense IDs are in place — that's expected.</p>
     </div>
     <div class="tip-card" style="grid-column: 1 / -1; text-align:center;">
       <span class="help-hotline-btn" style="opacity:.85; cursor:default;">📣 Ads coming soon</span>
@@ -2609,7 +2656,7 @@ function render() {
   else if (state.tab === "tips") { content.innerHTML = renderTips(); initTipsMasonry(); }
   else if (state.tab === "about") content.innerHTML = renderAbout();
   else if (state.tab === "merch") content.innerHTML = renderMerch();
-  else if (state.tab === "ads") content.innerHTML = renderAds();
+  else if (state.tab === "ads") { content.innerHTML = renderAds(); initAdsTab(); }
   else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
   else if (state.tab === "achievements") content.innerHTML = renderAchievements();
