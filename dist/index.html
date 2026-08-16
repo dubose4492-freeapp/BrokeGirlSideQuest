@@ -974,7 +974,13 @@ const CATEGORIES = {
   // Handled via renderAbout() in render(); kept out of the scan/category
   // loops the same way "tips"/"help" are (see those exclusion filters
   // elsewhere in this file — "about" is added alongside them).
-  about: { label: "About", icon: "👾", static: true }
+  about: { label: "About", icon: "👾", static: true },
+  // Static content tab — no search/API call. Explains the shirt-for-a-
+  // donation setup and links out to checkout. Placed right after "about"
+  // per request. Handled via renderMerch() in render(); kept out of the
+  // scan/category loops the same way "about" is (see those exclusion
+  // filters elsewhere in this file — "merch" is added alongside them).
+  merch: { label: "Merch", icon: "👕", static: true }
 };
 
 // Short blurb shown on each Quest Board card on the dashboard — purely
@@ -1219,7 +1225,7 @@ function bumpCharLevel(id) {
 
 document.getElementById("zipInput").value = state.zip;
 document.getElementById("radiusInput").value = state.radius;
-Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements") state.results[k] = []; });
+Object.keys(CATEGORIES).forEach(k => { if (k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements") state.results[k] = []; });
 try {
   const saved = JSON.parse(lsGet("dff_results") || "null");
   if (saved) state.results = { ...state.results, ...saved };
@@ -1628,7 +1634,7 @@ function providerNoteHtml(key) {
 // this is a gamified estimate, not a receipt), and how many of the 8
 // searchable categories have been scanned at least once this run.
 function computeStats() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements");
   let totalFound = 0, estValue = 0, scannedCount = 0;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1651,7 +1657,7 @@ function computeStats() {
 // beyond what computeStats already uses elsewhere in the HUD, so the
 // highlighted item's implied value always matches what's shown there.
 function findBestDeal() {
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements");
   let best = null, bestValue = -1, bestFresh = false;
   catKeys.forEach(k => {
     const items = state.results[k] || [];
@@ -1681,7 +1687,7 @@ function renderHud() {
 
 function renderDashboard() {
   const stats = computeStats();
-  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
+  const catKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements");
   const bestDeal = findBestDeal();
 
   const boardCards = catKeys.map(k => {
@@ -2025,7 +2031,7 @@ function buildWalletPlan(budget, days) {
   // CATEGORIES) doesn't leak fuel prices into the free-finds list either.
   const freeCatKeys = Object.keys(CATEGORIES).filter(k =>
     k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
-    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements" && !CATEGORIES[k].isPriced);
+    k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements" && !CATEGORIES[k].isPriced);
   const freeFinds = [];
   freeCatKeys.forEach(k => {
     (state.results[k] || []).forEach(it => { if (it.isFree || !it.price) freeFinds.push(it); });
@@ -2491,6 +2497,32 @@ function renderAbout() {
   </div>`;
 }
 
+function renderMerch() {
+  return `<div class="tips-grid">
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <h3>👕 Merch — Coming Soon</h3>
+      <p><b>You never have to pay for anything here.</b> BrokeGirl SideQuest is, and always will be, free — it was built for people who are stretching every dollar, not as a sales funnel. Nothing on this page is a paywall. If money's tight, please just use the app and skip this tab entirely.</p>
+    </div>
+    <div class="tip-card">
+      <img src="/images/merch-shirt.png" alt="Broke Girl Side Quest coming-soon t-shirt" style="width:100%; border:3px solid var(--ink); box-shadow:5px 5px 0 var(--lav); margin-bottom:12px;">
+      <h3>🖤 The shirt</h3>
+      <p>If — and only if — you've got a little extra room and want to help keep this thing running, you can chip in <b>$25</b> and I'll send you this exact "Broke Girl Side Quest" shirt for free, as a thank-you. It's not really a sale — it's a donation that happens to come with a shirt.</p>
+    </div>
+    <div class="tip-card">
+      <h3>💸 Where the money goes</h3>
+      <ul>
+        <li>100% goes back into making the app better — new features, more deal sources, keeping it fast and free for everyone</li>
+        <li>Nothing here funds anything other than the app itself</li>
+        <li>Wearing the shirt is also just a fun, no-pressure way to help spread the word to other people who could use this</li>
+      </ul>
+    </div>
+    <div class="tip-card" style="grid-column: 1 / -1; text-align:center;">
+      <span class="help-hotline-btn" style="opacity:.85; cursor:default;">🛠️ Merch store coming soon</span>
+      <p class="tip-note" style="margin-top:10px;">No donation is required or expected — the app stays free either way. This tab is just here for anyone who asks "how can I support this?"</p>
+    </div>
+  </div>`;
+}
+
 // --- header collapse toggle (frees up screen space for deal lists on mobile) ---
 function toggleHeaderCollapse(force) {
   const header = document.querySelector("header");
@@ -2537,9 +2569,9 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
@@ -2547,6 +2579,7 @@ function render() {
   else if (state.tab === "budget") content.innerHTML = renderBudget();
   else if (state.tab === "tips") { content.innerHTML = renderTips(); initTipsMasonry(); }
   else if (state.tab === "about") content.innerHTML = renderAbout();
+  else if (state.tab === "merch") content.innerHTML = renderMerch();
   else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
   else if (state.tab === "achievements") content.innerHTML = renderAchievements();
@@ -2767,7 +2800,7 @@ function checkAchievements() {
   if (Object.keys(state.scannedAt).length >= 1) awardAchievement("first_scan");
   const searchableCats = Object.keys(CATEGORIES).filter(k =>
     k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" &&
-    k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
+    k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements");
   if (searchableCats.length && searchableCats.every(k => state.scannedAt[k])) awardAchievement("quest_master");
 
   const income = budgetNum(state.budgetIncome);
@@ -3351,7 +3384,7 @@ function buildAiPrompt() {
   ];
 
   for (const key of Object.keys(CATEGORIES)) {
-    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "wallet" || key === "budget" || key === "achievements") continue;
+    if (key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "tube" || key === "about" || key === "merch" || key === "wallet" || key === "budget" || key === "achievements") continue;
     const cat = CATEGORIES[key];
     lines.push(`## ${cat.label}`);
     if (key === "grocery") {
@@ -3409,7 +3442,7 @@ async function runFullScan() {
   stopBtn.style.display = "flex";
   icon.classList.add("spin");
 
-  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "wallet" && k !== "budget" && k !== "achievements");
+  const categoryKeys = Object.keys(CATEGORIES).filter(k => k !== "dashboard" && k !== "tips" && k !== "help" && k !== "game" && k !== "tube" && k !== "about" && k !== "merch" && k !== "wallet" && k !== "budget" && k !== "achievements");
   for (let i = 0; i < categoryKeys.length; i++) {
     if (state.stopRequested || state.timedOut) break;
     const key = categoryKeys[i];
@@ -3483,7 +3516,7 @@ function stopScan() {
 // currentAbortController/state.results slot. Triggered via
 // handleScanClick() — never call this directly for "dashboard" or "tips".
 async function scanSingleCategory(key) {
-  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "wallet" || key === "budget" || key === "achievements") return;
+  if (state.scanning || key === "dashboard" || key === "tips" || key === "help" || key === "game" || key === "about" || key === "merch" || key === "wallet" || key === "budget" || key === "achievements") return;
 
   state.scanning = true;
   state.scanningKey = key;
