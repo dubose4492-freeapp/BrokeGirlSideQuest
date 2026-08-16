@@ -581,6 +581,12 @@
     color: #7C4DFF; margin-top: 6px;
   }
   .footer-verse .cross { font-size: 16px; line-height: 1; }
+  .footer-links {
+    text-align: center; font-size: 11px; padding: 8px 10px 12px;
+    background: var(--sun-soft); border-top: 1px dashed var(--ink);
+  }
+  .footer-links a { color: var(--ink); font-weight: 800; text-decoration: underline; cursor: pointer; margin: 0 8px; }
+  .footer-links span.sep { opacity: .5; }
 
   /* ---- splash / start screen ---- */
   .splash-screen {
@@ -852,6 +858,9 @@
   <img src="/images/banner.jpg" alt="pixel street scene: grocery store and boba shop">
 </footer>
 <div class="pixel-footer-caption">thanks for questing, bestie 🌿-claraann<div class="footer-verse"><span class="cross">✝</span> John 3:16</div></div>
+<div class="footer-links">
+  <a onclick="state.tab='privacy'; render();">Privacy Policy</a><span class="sep">·</span><a onclick="state.tab='terms'; render();">Terms of Service</a><span class="sep">·</span><a onclick="state.tab='about'; render();">About</a>
+</div>
 
 <div class="claim-flash" id="claimFlash"></div>
 
@@ -2602,6 +2611,90 @@ function renderAds() {
 }
 
 
+function renderPrivacy() {
+  return `<div class="tips-grid">
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <h3>🔒 Privacy Policy</h3>
+      <p class="tip-note">Last updated: August 16, 2026</p>
+      <p>This app was built to help, not to harvest your data. This page explains, plainly, what happens with any information the app touches.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🗂️ What's stored, and where</h3>
+      <ul>
+        <li><b>No account, no server-side database.</b> There's no login. Your character, achievements, saved/claimed deals, budget numbers, and preferences are stored only in your own browser's local storage — they never get sent to or saved on a server, and I (the developer) never see them.</li>
+        <li><b>ZIP code.</b> Used only to fetch deals near you for that search. It isn't logged, profiled, sold, or tied to any identity — there isn't one to tie it to.</li>
+        <li><b>Location (auto-detect, optional).</b> If you use auto-detect, your device's GPS coordinates are rounded down to roughly a half-mile before being used to look up a ZIP code — precise enough to be useful, not precise enough to pinpoint your address.</li>
+      </ul>
+    </div>
+    <div class="tip-card">
+      <h3>🌐 Third-party services this app uses</h3>
+      <ul>
+        <li>The <b>Kroger API</b> for grocery pricing</li>
+        <li>The <b>Tavily API</b> and other search/AI data providers for finding current promos and freebies</li>
+        <li><b>BigDataCloud</b> to turn GPS coordinates into a ZIP code, if you use auto-detect</li>
+        <li><b>Google AdSense</b> — see the "Ads" section below</li>
+      </ul>
+      <p>Each of these receives only what's needed to answer that specific request (e.g., a ZIP code or search query) — never your name, account info, or browsing history, because this app doesn't collect those in the first place.</p>
+    </div>
+    <div class="tip-card">
+      <h3>📣 Ads &amp; cookies</h3>
+      <p>This app uses <b>Google AdSense</b>, confined strictly to the Ads tab (never shown anywhere else in the app). Google and its advertising partners may use cookies or similar technologies to serve ads and measure their performance. Google's use of advertising cookies enables it and its partners to serve ads based on your visits to this and other sites.</p>
+      <p>You can opt out of personalized advertising by visiting <a href="https://adssettings.google.com" target="_blank" rel="noopener noreferrer">Google Ads Settings</a>, or opt out of third-party vendors' use of cookies for personalized advertising by visiting <a href="https://www.aboutads.info/choices" target="_blank" rel="noopener noreferrer">www.aboutads.info/choices</a>.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🧒 Children's privacy</h3>
+      <p>This app is not directed at children under 13, and it does not knowingly collect personal information from anyone under 13.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🔐 Security</h3>
+      <p>API keys and credentials used by this app's backend are kept server-side and are never exposed to the browser. External links strip referrer data. The app enforces a strict content-security policy limiting exactly which domains it's allowed to load resources from or connect to.</p>
+    </div>
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <h3>✉️ Questions</h3>
+      <p>This policy may be updated occasionally — this page will always reflect the current version. For questions about this policy, contact: <b>[TODO: add your contact email here]</b>.</p>
+    </div>
+  </div>`;
+}
+
+function renderTerms() {
+  return `<div class="tips-grid">
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <h3>📜 Terms of Service</h3>
+      <p class="tip-note">Last updated: August 16, 2026</p>
+      <p>By using BrokeGirl SideQuest, you agree to these terms. They're written in plain language on purpose.</p>
+    </div>
+    <div class="tip-card">
+      <h3>🆓 The app is free</h3>
+      <p>BrokeGirl SideQuest is free to use, with no account required, and always will be. Nothing in the app is a paywall. The optional Merch tab is a donation, not a purchase requirement — you never have to pay for anything to use the app's tools.</p>
+    </div>
+    <div class="tip-card">
+      <h3>ℹ️ No guarantees on deals or prices</h3>
+      <ul>
+        <li>Deals, prices, and freebies shown come from third-party sources (store sites, search results, APIs) and can change, expire, or be inaccurate by the time you see them.</li>
+        <li>Always confirm a deal's terms directly with the merchant before relying on it.</li>
+        <li>This app is not affiliated with, endorsed by, or sponsored by any store, brand, or company whose deals it surfaces.</li>
+      </ul>
+    </div>
+    <div class="tip-card">
+      <h3>🚫 Acceptable use</h3>
+      <p>Don't use this app to violate any law, to scrape or resell its data at scale, or to attempt to disrupt or abuse the service (including its backend APIs).</p>
+    </div>
+    <div class="tip-card">
+      <h3>📣 Advertising</h3>
+      <p>Ads served through Google AdSense may appear on the Ads tab only. Using the app elsewhere means you won't encounter ads. See the <a onclick="state.tab='privacy'; render();">Privacy Policy</a> for details on ad cookies and opt-outs.</p>
+    </div>
+    <div class="tip-card">
+      <h3>⚖️ No warranty</h3>
+      <p>This app is provided "as is," without warranties of any kind. It's a side project built to help people save money — not a financial, legal, or professional advisory service. For anything urgent (rent, eviction, utility shutoff, safety), please use the resources on the Emergency Help tab and contact the relevant professional or agency directly.</p>
+    </div>
+    <div class="tip-card" style="grid-column: 1 / -1;">
+      <h3>✉️ Questions</h3>
+      <p>These terms may be updated occasionally. For questions, contact: <b>[TODO: add your contact email here]</b>.</p>
+    </div>
+  </div>`;
+}
+
+
 // --- header collapse toggle (frees up screen space for deal lists on mobile) ---
 function toggleHeaderCollapse(force) {
   const header = document.querySelector("header");
@@ -2648,9 +2741,9 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "privacy" || state.tab === "terms" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "privacy" || state.tab === "terms" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
@@ -2660,6 +2753,8 @@ function render() {
   else if (state.tab === "about") content.innerHTML = renderAbout();
   else if (state.tab === "merch") content.innerHTML = renderMerch();
   else if (state.tab === "ads") { content.innerHTML = renderAds(); initAdsTab(); }
+  else if (state.tab === "privacy") content.innerHTML = renderPrivacy();
+  else if (state.tab === "terms") content.innerHTML = renderTerms();
   else if (state.tab === "tube") content.innerHTML = renderTube();
   else if (state.tab === "game") { content.innerHTML = renderGame(); initGameTab(); }
   else if (state.tab === "achievements") content.innerHTML = renderAchievements();
