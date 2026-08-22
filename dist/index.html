@@ -2308,6 +2308,16 @@ function renderWallet() {
 function renderTips() {
   return `<div class="tips-masonry" id="tipsMasonry"><div id="tipsMasonryCards">
     <div class="tip-card">
+      <h3>🏷️ Shop the clearance section</h3>
+      <p>Grocery stores mark down items nearing their sell-by date or getting swapped out for new packaging — often 30-70% off:</p>
+      <ul>
+        <li>Check the clearance/markdown shelf or endcap, usually near the bakery, dairy, or meat department</li>
+        <li>Look for yellow/orange discount stickers on individual items throughout the store</li>
+        <li>Markdowns tend to happen on the same day(s) each week — ask an employee when your store restocks clearance</li>
+      </ul>
+      <p class="tip-note">Sell-by dates aren't expiration dates — most items are still perfectly good, and freezing meat, bread, or dairy on a markdown extends it even further.</p>
+    </div>
+    <div class="tip-card">
       <h3>📚 Free library apps</h3>
       <p>Your library card (free to get, even online in most counties) unlocks these — no extra cost:</p>
       <ul>
@@ -2741,9 +2751,9 @@ function render() {
   document.getElementById("lastScanLabel").textContent = state.lastScan ? `last run: ${state.lastScan}` : "no quest run yet";
   const content = document.getElementById("content");
   const searchTools = document.getElementById("searchToolsSection");
-  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "privacy" || state.tab === "terms" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
+  if (searchTools) searchTools.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "privacy" || state.tab === "terms" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements" || state.tab === "tips") ? "none" : "";
   const geminiPromo = document.getElementById("geminiPromoSection");
-  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "privacy" || state.tab === "terms" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements") ? "none" : "";
+  if (geminiPromo) geminiPromo.style.display = (state.tab === "game" || state.tab === "tube" || state.tab === "help" || state.tab === "about" || state.tab === "merch" || state.tab === "ads" || state.tab === "privacy" || state.tab === "terms" || state.tab === "wallet" || state.tab === "budget" || state.tab === "achievements" || state.tab === "tips") ? "none" : "";
   if (state.tab !== "game") gdStopLoop(); // leaving the mini-game tab: kill its render loop
   if (state.tab === "dashboard") content.innerHTML = renderDashboard();
   else if (state.tab === "help") content.innerHTML = renderHelp();
